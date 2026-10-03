@@ -33,7 +33,7 @@ The [user guide](docs/user-guide.md) and [benchmark guide](docs/benchmarks.md) c
 Requires **Windows**, **Node.js 24+**, **Git**, and **Codex or Claude Code** as the plugin host. Install and sign in to the CLI agents you want to use; see [supported agents](#supported-agents).
 
 ```powershell
-git clone --branch v0.3.2 --depth 1 https://github.com/adamczhang/Agent-vs-Agent.git
+git clone --branch v0.3.3 --depth 1 https://github.com/adamczhang/Agent-vs-Agent.git
 cd Agent-vs-Agent
 npm ci
 npm run package

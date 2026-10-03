@@ -31,7 +31,10 @@ export function startFailure(logFile:string,from:number,pid?:number):{code:strin
   const thrown=[...text.matchAll(/^\w*Error(?: \[\w+\])?: (.+)$/gm)].pop()?.[1];
   return thrown?{code:'SERVICE_CRASHED',error:scrub(thrown.trim())}:undefined;
 }
-export async function ensureService(projectRoot:string,dataRoot:string,waitMs=15000):Promise<Endpoint>{
+// A service that fails exits and is reported at once, so the wait only bounds a healthy start. The first start after an
+// install reads the engine's files cold (antivirus scanning them too), which a slow machine can take well over 15 s to
+// do; 45 s stays inside Codex's 60-second limit for a tool call.
+export async function ensureService(projectRoot:string,dataRoot:string,waitMs=45_000):Promise<Endpoint>{
   // ownerRunning: whether the recorded owner is still that process (checked once per call; it may ask the system).
   const logFile=join(dataRoot,'service.log');
   try{mkdirSync(dataRoot,{recursive:true});}
@@ -61,5 +64,5 @@ export async function ensureService(projectRoot:string,dataRoot:string,waitMs=15
     }
     await new Promise(resolve=>setTimeout(resolve,100));
   }
-  throw new AvAError('SERVICE_START_FAILED',`The AvA service did not become ready. Inspect ${logFile}.`);
+  throw new AvAError('SERVICE_START_FAILED',`The AvA service did not become ready within ${Math.round(waitMs/1000)} s. Inspect ${logFile}.`);
 }

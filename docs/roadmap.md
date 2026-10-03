@@ -31,7 +31,7 @@ Work one item at a time, starting with `next`. An item is done when its "Done wh
 | --- | --- | --- | --- |
 | H1 | Start with a data folder on a second drive (secret permissions no longer take ownership) | offline | done |
 | H2 | Install 0.2.1 in both hosts and confirm the service starts on the shared data folder | user | done |
-| H3 | Publish 0.3.1 (and the 0.3.2 fix) | user | in progress |
+| H3 | Publish 0.3.1 (with the 0.3.2 and 0.3.3 fixes) | user | in progress |
 | H4 | Service start failures reach the host with their reason (0.2.2) | offline | done |
 | H5 | Test the plugin the way the hosts run it | offline | done |
 | H6 | Upkeep: dependency and CLI updates on a schedule | offline + live | done |
@@ -44,6 +44,9 @@ Work one item at a time, starting with `next`. An item is done when its "Done wh
     - v0.3.1 was pushed with its tag and release page. Its CI run failed one test, the H1 test for a folder where the account holds only Modify rights.
     - **Why:** the hosted runner runs elevated, so new files belong to the Administrators group. Replacing that owner in the same write as the permissions needs WRITE_OWNER, which Modify lacks.
     - **Fix (0.3.2):** the permissions are written first, then the owner. A forced check in a Modify-only folder reproduced the error with the old single write and passed with the new order.
+    - **v0.3.2's CI run:** the tests and browser scenarios passed. The Codex smoke test then failed: the service, started from the freshly packaged copy, was neither ready nor stopped after the 15 s wait.
+    - **Most likely cause:** since H7, the service is the first process to read the engine's files, cold. Here that takes about 5 s, against about 0.4 s warm, and a hosted VM with antivirus scanning is slower.
+    - **Fix (0.3.3):** the wait is now 45 s (Codex allows a tool call 60 s), and the smoke test prints the failure detail and the end of the service log.
   - Export the public commit, tag `v0.3.1`, and push with the owner's go-ahead.
   - Update the README's clone tag, and create the GitHub release page.
   - *Done when* the release is public and CI passes on it.

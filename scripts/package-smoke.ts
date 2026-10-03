@@ -12,7 +12,9 @@ import {StdioClientTransport} from '@modelcontextprotocol/sdk/client/stdio.js';
 const args=process.argv.slice(2),flag=(n:string)=>args.includes(n),option=(n:string)=>{const i=args.indexOf(n);return i>=0?args[i+1]:undefined;};
 const source=resolve(args.find(a=>!a.startsWith('--')&&a!==option('--out'))??'release/marketplace/plugins/agent-vs-agent');
 const checkout=resolve('.');
-const checks:Array<{name:string;pass:boolean;detail?:unknown}>=[],check=(name:string,pass:boolean,detail?:unknown)=>{checks.push({name,pass,detail});console.log(`${pass?'PASS':'FAIL'} ${name}`);};
+// A failed check also prints its detail, so a CI log says why (tokens removed, shortened).
+const checks:Array<{name:string;pass:boolean;detail?:unknown}>=[],check=(name:string,pass:boolean,detail?:unknown)=>{checks.push({name,pass,detail});console.log(`${pass?'PASS':'FAIL'} ${name}`);
+  if(!pass&&detail!==undefined)console.log(`  ${JSON.stringify(detail).replace(/\b[a-f0-9]{64}\b/g,'[redacted]').slice(0,1200)}`);};
 let plugin=source;
 if(flag('--copy')){plugin=join(mkdtempSync(join(tmpdir(),'ava-pkg-copy-')),'agent-vs-agent');cpSync(source,plugin,{recursive:true});}
 const sharedDataDir=(JSON.parse(readFileSync(join(plugin,'package.json'),'utf8')) as {config?:{dataDir?:string}}).config?.dataDir;
@@ -100,7 +102,8 @@ catch(error){check(`the MCP server starts as ${hostName} launches it`,false,erro
 check(`the MCP server starts as ${hostName} launches it (${declared.command} ${declared.args.join(' ')}; handshake ${Date.now()-launchedAt} ms, hosts allow 30 s)`,Date.now()-launchedAt<10000);
 // The first call that needs the service (bare /ava help doesn't).
 const opening=await client.callTool({name:'ava_providers',arguments:{}});
-check('the service starts in a data folder where the account holds only Modify rights',opening.isError!==true,opening.isError?opening.content:undefined);
+const serviceLog=()=>{try{return readFileSync(join(dataRoot,'service.log'),'utf8').trim().split(/\r?\n/).slice(-8);}catch{return [];}};
+check('the service starts in a data folder where the account holds only Modify rights',opening.isError!==true,opening.isError?{error:opening.content,serviceLog:serviceLog()}:undefined);
 if(opening.isError)finish();
 const tools=(await client.listTools()).tools.map(t=>t.name);
 check('MCP tools include ava_command and ava_reconcile',tools.includes('ava_command')&&tools.includes('ava_reconcile'),tools);

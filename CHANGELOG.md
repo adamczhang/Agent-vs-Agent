@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.3](https://github.com/adamczhang/Agent-vs-Agent/releases/tag/v0.3.3) - 2026-10-03
+
+### Fixed
+
+- **The first `/ava` command after an install waits for a slow start.** Since 0.3.1, the service loads the engine when it first starts, so it reads the engine's files for the first time while antivirus scans them. On a slow machine that can take longer than the 15 seconds AvA waited, and the command failed with `did not become ready`.
+  - AvA now waits up to 45 seconds for a service that's still starting. A service that fails is still reported as soon as it stops.
+  - The packaged-plugin smoke tests print why a check failed, including the end of the service log.
+
 ## [0.3.2](https://github.com/adamczhang/Agent-vs-Agent/releases/tag/v0.3.2) - 2026-10-03
 
 ### Fixed
