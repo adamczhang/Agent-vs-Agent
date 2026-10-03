@@ -1,0 +1,17 @@
+id: tip-calculator
+version: 1
+title: Build a tip calculator
+mode: build
+time_limit_minutes: 5
+prompt: |
+  Build a small, dependency-free tip calculator in index.html with three inputs:
+  bill amount, tip percentage, and number of people. Show the tip and amount per person.
+  Implement and export calcTip(bill, percent, people) from tip.js as an ES module.
+  It must return { tip, perPerson }, where tip = bill * percent / 100 and
+  perPerson = (bill + tip) / people. Keep full numeric precision in this function.
+  Throw an error for non-finite numbers, a negative bill or percentage, or a
+  number of people that is not a positive integer. Use no dependencies or network.
+checks:
+  - file_exists: index.html
+  - run: node tests/verify.mjs
+    timeout_ms: 5000

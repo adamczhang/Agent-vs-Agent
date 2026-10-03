@@ -17,8 +17,11 @@ export class ActivationManager {
   constructor(readonly store: Store, private factory: ParticipantFactory, private clock: Clock = systemClock, private deadlineMs = 120_000) {}
   private key(pairId: string, seat: Seat) { return `${pairId}:${seat}`; }
   get(pairId: string, seat: Seat) { return this.live.get(this.key(pairId,seat)); }
+  isStarting(pairId:string,seat:Seat){return this.pending.has(this.key(pairId,seat));}
   // Set by the service: whether the agent is still answering a 1:1 message (a change of agent would cut it off).
   directBusy?:(pairId:string,seat:Seat)=>boolean;
+  // A synchronous service-wide admission guard. Called before a slot reserves activation work.
+  beforeActivate?:(pairId:string,seat:Seat)=>void;
   private assertNoDirect(pairId:string,seat:Seat){
     if(this.directBusy?.(pairId,seat))throw new AvAError('DIRECT_BUSY',`Agent ${seat==='cli1'?1:2} is still answering your 1:1 message. Wait for the reply, then change it.`);
   }
@@ -26,10 +29,11 @@ export class ActivationManager {
     this.assertNoDirect(pairId,seat);
     const slot=this.store.mutateSlot(pairId,seat,s=>{s.generation++;s.state='configuring';s.config=config;s.sessionId=null;s.verifiedAt=null;s.error=null;});
     const key=this.key(pairId,seat);this.pending.get(key)?.abort(new AvAError('SUPERSEDED','Selection changed.'));
-    const current=this.live.get(key);this.live.delete(key);if(current)await current.close();return slot;
+    const current=this.live.get(key);if(current){await current.close();if(this.live.get(key)===current)this.live.delete(key);}return slot;
   }
   async activate(pairId: string, seat: Seat, config: ProviderConfig) {
     this.assertNoDirect(pairId,seat);
+    this.beforeActivate?.(pairId,seat);
     const key = this.key(pairId,seat);
     const slot = this.store.mutateSlot(pairId,seat,s=>{s.generation++;s.state='verifying';s.config=config;s.sessionId=null;s.verifiedAt=null;s.error=null;});
     this.pending.get(key)?.abort(new AvAError('SUPERSEDED','Activation replaced by a newer selection.'));
@@ -42,7 +46,7 @@ export class ActivationManager {
     let participant:ConfiguredParticipant|undefined, adopted=false;
     const cancelled=new Promise<never>((_,reject)=>abort.signal.addEventListener('abort',()=>reject(abort.signal.reason),{once:true}));
     const work=(async()=>{
-      const old=this.live.get(key);this.live.delete(key);if(old)await old.close();
+      const old=this.live.get(key);if(old){await old.close();if(this.live.get(key)===old)this.live.delete(key);}
       assertCurrent();participant=await this.factory.open(config,{pairId,seat,generation:slot.generation},abort.signal,this.options(pairId,seat));assertCurrent();
       const nonce=`AVA_READY_${randomUUID()}`;
       const result=await participant.request({id:randomUUID(),text:`Reply exactly ${nonce}. Do not use tools or perform other work.`,signal:abort.signal,onStarted(){},onEvent(){}});
@@ -77,13 +81,15 @@ export class ActivationManager {
   // one that resumes the same native session (Codex allows only one process per session), and check it really is the
   // same session. If the resume fails, the agent is marked as needing setup again; nothing is resent.
   async relaunch(pairId:string,seat:Seat){
+    this.beforeActivate?.(pairId,seat);
     const key=this.key(pairId,seat),old=this.live.get(key),slot=this.store.pair(pairId).slots[seat];
     if(!old||slot.state!=='ready'||!slot.config||!slot.sessionId)throw new AvAError('NOT_READY',`${seat} is not connected and verified.`);
     const abort=new AbortController(),timeout=this.clock.timer(()=>abort.abort(new AvAError('RELAUNCH_TIMEOUT','The agent did not restart in time.')),this.deadlineMs);
     let next:ConfiguredParticipant|undefined;
-    this.live.delete(key);
+    this.pending.set(key,abort);
     try{
       await old.close();
+      if(this.live.get(key)===old)this.live.delete(key);
       next=await this.factory.open(slot.config,{pairId,seat,generation:slot.generation},abort.signal,{...this.options(pairId,seat),resumeSessionId:slot.sessionId});
       if(next.sessionId!==slot.sessionId)throw new AvAError('RESUME_FAILED','The agent started a new session instead of resuming its conversation.');
       if(this.store.pair(pairId).slots[seat].generation!==slot.generation)throw new AvAError('SUPERSEDED','The agent changed while it restarted.');
@@ -95,7 +101,7 @@ export class ActivationManager {
       this.store.failSlot(pairId,seat,slot.generation,message);
       throw new AvAError('RELAUNCH_FAILED',message);
     }
-    finally{timeout();}
+    finally{timeout();if(this.pending.get(key)===abort)this.pending.delete(key);}
   }
   cancel(pairId:string,seat:Seat){
     if(!this.pending.has(this.key(pairId,seat)))return;
@@ -114,12 +120,12 @@ export class ActivationManager {
   // Close this service's own sessions for one pair (recovery). A session is forgotten only after it confirms closing.
   async closePair(pairId:string){
     for(const seat of ['cli1','cli2'] as const)this.pending.get(this.key(pairId,seat))?.abort(new AvAError('CANCELLED','Pair released.'));
-    const results=await Promise.allSettled((['cli1','cli2'] as const).map(async seat=>{const key=this.key(pairId,seat),live=this.live.get(key);if(live){await live.close();this.live.delete(key);}}));
+    const results=await Promise.allSettled((['cli1','cli2'] as const).map(async seat=>{const key=this.key(pairId,seat),live=this.live.get(key);if(live){await live.close();if(this.live.get(key)===live)this.live.delete(key);}}));
     if(results.some(r=>r.status==='rejected'))throw new AvAError('CLEANUP_FAILED','An owned provider did not confirm cleanup. Recovery is required.');
   }
   async closeAll(){
     for(const pending of this.pending.values())pending.abort(new AvAError('SHUTDOWN','Service shutting down.'));
-    const results=await Promise.allSettled([...this.live.entries()].map(async([key,p])=>{await p.close();this.live.delete(key);}));
+    const results=await Promise.allSettled([...this.live.entries()].map(async([key,p])=>{await p.close();if(this.live.get(key)===p)this.live.delete(key);}));
     if(results.some(r=>r.status==='rejected'))throw new AvAError('CLEANUP_FAILED','An owned provider did not confirm cleanup. Recovery is required.');
   }
 }

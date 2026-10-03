@@ -74,8 +74,13 @@ for(const [name,args] of [['ava_start',{}],['ava_activation_menu',{seat:'cli1'}]
 }
 const server=existsSync(join(dataRoot,'server.json'))?JSON.parse(readFileSync(join(dataRoot,'server.json'),'utf8')):null;
 check(flag('--copy')?'data lives in the folder set by the plugin\'s config.dataDir':'data lives in the AVA_DATA_DIR override',!!server&&existsSync(join(dataRoot,'ava.sqlite')),{dataRoot});
-const health=server?await (await fetch(`http://127.0.0.1:${server.port}/api`,{method:'POST',headers:{Authorization:`Bearer ${server.token}`},body:JSON.stringify({method:'health',params:{}})})).json() as {result:{version:string;databaseVersion:number}}:null;
+const health=server?await (await fetch(`http://127.0.0.1:${server.port}/api`,{method:'POST',headers:{Authorization:`Bearer ${server.token}`},body:JSON.stringify({method:'health',params:{}})})).json() as {result:{version:string;databaseVersion:number;capabilities?:{benchmarks?:boolean;benchmarkResults?:boolean}}}:null;
 check('service reports the packaged version and current schema',health?.result.version===JSON.parse(readFileSync(join(plugin,'package.json'),'utf8')).version,health?.result);
+const benchCall=async(method:string)=>server?await (await fetch(`http://127.0.0.1:${server.port}/api`,{method:'POST',headers:{Authorization:`Bearer ${server.token}`},body:JSON.stringify({method,params:{}})})).json():null;
+const catalog=await benchCall('bench.catalog') as {result?:{tasks:Array<{id:string}>}}|null;
+check('packaged benchmark catalog includes all three starter tasks',health?.result.capabilities?.benchmarks===true&&catalog?.result?.tasks.length===3);
+const results=await benchCall('bench.results') as {result?:{total:number;scoreboard:{rows:unknown[]}}}|null;
+check('packaged Results API reads the isolated empty pool without model work',health?.result.capabilities?.benchmarkResults===true&&results?.result?.total===0&&results.result.scoreboard.rows.length===0);
 await client.close();
 for(const deadline=Date.now()+8000;existsSync(join(dataRoot,'server.json'))&&Date.now()<deadline;)await new Promise(r=>setTimeout(r,100));
 check('background service exits when idle',!existsSync(join(dataRoot,'server.json')));

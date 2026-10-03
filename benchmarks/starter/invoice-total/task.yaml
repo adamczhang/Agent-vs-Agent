@@ -1,0 +1,10 @@
+id: invoice-total
+version: 1
+title: Add invoice amounts
+mode: prompt
+time_limit_minutes: 2
+prompt: |
+  An invoice has three line amounts: 8, 12, and 22 dollars.
+  Return their total as a number, with no explanation, punctuation or currency sign.
+checks:
+  - equals: "42"

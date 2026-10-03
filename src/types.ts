@@ -37,7 +37,7 @@ export interface RunConfig {
   // Build runs: the task kind, the project it started from, and the folder (inside each agent's workspace) that holds
   // that agent's own copy.
   build?: { kind: 'review' | 'build'; source: string; folder: string };
-  // Who answers the opening prompt in a conversation: both at once (default), or one agent, with the other replying.
+  // Who answers the opening prompt: agent 1 by default, or agent 2 or independent simultaneous openings.
   opening?: 'both' | Seat;
   topic: string;
   instructions: Record<Seat, string>;
@@ -106,7 +106,7 @@ export function conversationConfig(topic: string, overrides: Partial<RunConfig> 
     topic, instructions: { cli1: '', cli2: '' }, stopWhen: { cli1: '', cli2: '' },
     completion: duration ? 'duration' : 'either', durationMs,
     maxRequests: duration ? Math.max(20, Math.ceil(durationMs / 5000) + 20) : 20,
-    perTurnMs: benchmark ? 3_600_000 : 300_000, paceMs: benchmark ? 0 : 5000, lead: 'cli1', ...overrides,
+    perTurnMs: benchmark ? 3_600_000 : 300_000, paceMs: benchmark ? 0 : 5000, lead: 'cli1', opening: benchmark ? 'both' : 'cli1', ...overrides,
   };
   // One agent opens: the other speaks next, then they alternate.
   if (config.opening && config.opening !== 'both' && !overrides.lead) config.lead = other(config.opening);

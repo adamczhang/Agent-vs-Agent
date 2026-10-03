@@ -5,5 +5,5 @@
     "skipLibCheck": true, "resolveJsonModule": true, "outDir": "dist",
     "rootDir": ".", "types": ["node"], "jsx": "react-jsx"
   },
-  "include": ["src/**/*.ts", "test/**/*.ts", "scripts/**/*.ts"]
+  "include": ["src/**/*.ts", "test/**/*.ts", "scripts/**/*.ts", "playwright.config.ts"]
 }

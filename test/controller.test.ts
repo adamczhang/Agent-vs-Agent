@@ -13,7 +13,7 @@ function fixture(overrides:Partial<RunConfig>={},honorAbort=true) {
   const participants={cli1:new FakeParticipant('session-A',honorAbort),cli2:new FakeParticipant('session-B',honorAbort)};
   for(const seat of SEATS)store.mutateSlot(pair.id,seat,s=>{s.state='ready';s.generation=1;s.sessionId=participants[seat].sessionId;s.verifiedAt=1;});
   const clock=new FakeClock(),engine=new ConversationController(store,clock,100);
-  const config=conversationConfig('Discuss a picnic menu',{completion:'duration',durationMs:10000,paceMs:0,maxRequests:20,perTurnMs:5000,...overrides});
+  const config=conversationConfig('Discuss a picnic menu',{opening:'both',completion:'duration',durationMs:10000,paceMs:0,maxRequests:20,perTurnMs:5000,...overrides});
   const run=engine.start(pair.id,config,'start-once',participants);
   return {store,pair,participants,clock,engine,config,run};
 }
@@ -59,10 +59,14 @@ test('paired opening freezes inputs; queued broadcasts do not leak into an earli
   assert.equal(f.participants.cli2.calls.length,1);
   assert.ok(!f.participants.cli2.calls[0]!.request.text.includes('Opening A'));
   f.participants.cli2.answer('Opening B');await flush();
-  for(const seat of SEATS){const text=f.participants[seat].calls[1]!.request.text;assert.ok(text.includes('FIRST NEW TOPIC'));assert.ok(!text.includes('SECOND NEW TOPIC'));}
+  const next=f.participants.cli1.calls[1]!.request.text;assert.ok(next.includes('FIRST NEW TOPIC'));assert.ok(!next.includes('SECOND NEW TOPIC'));
+  assert.equal(f.participants.cli2.calls.length,1,'the peer waits for the next turn');
   assert.equal(f.store.messages(f.run.id).find(m=>m.id===two)?.state,'queued');
-  f.participants.cli1.answer('Response A1');f.participants.cli2.answer('Response B1');await flush();
-  for(const seat of SEATS)assert.ok(f.participants[seat].calls[2]!.request.text.includes('SECOND NEW TOPIC'));
+  f.participants.cli1.answer('Response A1');await flush();
+  assert.ok(f.participants.cli2.calls[1]!.request.text.includes('SECOND NEW TOPIC'));
+  assert.ok(f.participants.cli2.calls[1]!.request.text.includes('Response A1'));
+  f.participants.cli2.answer('Response B1');await flush();
+  assert.ok(f.participants.cli1.calls[2]!.request.text.includes('SECOND NEW TOPIC'));
   f.engine.stop(f.run.id);await flush();f.store.close();
 });
 test('normal dialogue alternates and excludes own replies and private activity',async()=>{
@@ -75,6 +79,14 @@ test('normal dialogue alternates and excludes own replies and private activity',
   assert.equal(f.participants.cli2.calls.length,2);
   assert.ok(f.participants.cli2.calls[1]!.request.text.includes('A replies to B'));
   assert.equal(f.store.messages(f.run.id).filter(m=>m.sender!=='user').length,3);
+  f.engine.stop(f.run.id);await flush();f.store.close();
+});
+
+test('Debate length guidance defers to the operator request instead of imposing its default word count',async()=>{
+  const f=fixture({topic:'Give exactly two short sentences per turn.'});await flush();
+  const prompt=f.participants.cli1.calls[0]!.request.text;
+  assert.ok(prompt.includes('Give exactly two short sentences per turn.'));
+  assert.match(prompt,/Follow any reply-length or format limits in the discussion topic and operator messages\. Otherwise/);
   f.engine.stop(f.run.id);await flush();f.store.close();
 });
 test('Pause drains admitted work, freezes time only at the boundary, and Next reply is one request',async()=>{
@@ -115,11 +127,14 @@ test('a second malformed response halts without publishing the invalid content',
   assert.equal(f.store.run(f.run.id).status,'needs_attention');assert.equal(f.participants.cli1.calls.length,2);
   assert.equal(f.store.messages(f.run.id).filter(m=>m.sender!=='user').length,0);f.store.close();
 });
-test('request guard reserves a paired phase atomically and marks unsent messages',async()=>{
+test('request guard admits the final single turn and marks later unsent messages',async()=>{
   const f=fixture({maxRequests:3});await flush();const msg=f.engine.broadcast(f.run.id,'Another topic','next');
   f.participants.cli1.answer('A');f.participants.cli2.answer('B');await flush();
-  assert.equal(f.store.run(f.run.id).reason,'request_limit');assert.equal(f.store.run(f.run.id).requests,2);
-  assert.equal(f.store.messages(f.run.id).find(m=>m.id===msg)?.state,'not_delivered');f.store.close();
+  assert.equal(f.store.run(f.run.id).requests,3);
+  assert.deepEqual(f.store.messages(f.run.id).find(m=>m.id===msg)?.deliveredTo,['cli1']);
+  const later=f.engine.broadcast(f.run.id,'Too late','later');f.participants.cli1.answer('Final response');await flush();
+  assert.equal(f.store.run(f.run.id).reason,'request_limit');
+  assert.equal(f.store.messages(f.run.id).find(m=>m.id===later)?.state,'not_delivered');f.store.close();
 });
 test('viewer reads have no side effects and completed reply commit is idempotent',async()=>{
   const f=fixture();await flush();f.participants.cli1.answer('A');await flush();
@@ -208,7 +223,7 @@ test('expiry observed by a paced wake before the deadline callback ends normally
   for(const seat of SEATS)store.mutateSlot(pair.id,seat,s=>{s.state='ready';s.generation=1;s.sessionId=agents[seat].sessionId;});
   let now=0;const timers:Array<{fn:()=>void;ms:number;active:boolean}>=[];
   const clock={now:()=>now,timer:(fn:()=>void,ms:number)=>{const t={fn,ms,active:true};timers.push(t);return()=>{t.active=false;};}};
-  const engine=new ConversationController(store,clock),run=engine.start(pair.id,conversationConfig('topic',{completion:'duration',durationMs:1000,paceMs:500,perTurnMs:5000}),'start',agents);
+  const engine=new ConversationController(store,clock),run=engine.start(pair.id,conversationConfig('topic',{opening:'both',completion:'duration',durationMs:1000,paceMs:500,perTurnMs:5000}),'start',agents);
   await flush();agents.cli1.answer('a');agents.cli2.answer('b');await flush();
   now=1001;timers.find(t=>t.active&&t.ms===500)!.fn();await flush();
   assert.deepEqual([store.run(run.id).status,store.run(run.id).reason,store.run(run.id).requests],['completed','duration_reached',2]);

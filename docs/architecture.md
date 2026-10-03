@@ -1,6 +1,6 @@
 # Architecture
 
-How Agent vs Agent is built, and why. What has been verified is in [the release notes](release-v0.1.0.md); how to use it is in [the user guide](user-guide.md).
+How Agent vs Agent v0.2.0 is built. Verified scope is in the [release notes](release-v0.2.0.md) and [validation record](validation.md); usage is in the [user guide](user-guide.md).
 
 The executable implementation is in `src/`, the browser interface in `ui/`, and the Codex plugin in `.codex-plugin/`, `hooks/`, and `skills/`. The Claude Code wrapper is in `wrappers/claude/`. The agents are reached through [ACPX](https://www.npmjs.com/package/acpx) and the Agent Client Protocol (ACP).
 
@@ -64,6 +64,16 @@ Authenticated room RPCs expose `prompt.list`, `prompt.get`, `prompt.file`, `prom
 
 Complete saves are staged in a sibling directory before replacing the active directory. A `.previous-<id>` directory bridges the two renames and is recovered on startup after a crash. Content revisions detect stale editors, including external text edits. Plain filenames, unique file names/IDs, byte limits, and refusal of linked paths keep file operations within the library. Imported Markdown is plain prompt text, never executable metadata. `ui/prompt-manager.tsx` supplies the common editor in all three modes, including Build's Review task.
 
+## Benchmark runner and results
+
+`bench-runner.ts` owns durable jobs and immutable attempt rows in schema v9 (`bench_jobs`, `bench_attempts`). The room and compiled `bench-cli.ts` use the same authenticated service API. Starts carry durable request IDs; a restart marks unsettled jobs interrupted without resubmission. Every task/repetition owns a fresh pair. Before hidden checks are copied into an independent artifact directory, the runner closes its agents and verifies that its recorded processes have stopped. Cancellation, Stop all, activation limits and history-clear guards share the service's existing controls.
+
+A task's exact files and validation digest are captured before starting. Attempt records include the task prompt and check definitions, task version/digest, suite, provider/model/effort/speed, AvA version, simulation marker, answer, check evidence, times and available token reports. Program-verifier tasks are refused in live mode before activation until F1 supplies execution isolation: a trusted test can still import untrusted generated code. Mock acceptance uses only authored fixtures and never opens provider sessions.
+
+`bench-results.ts` exposes filtered cursor pages, scoreboard rows, UTC daily trends, and JSON/CSV exports. Summary queries select metadata without loading all answers into memory. Agent configuration and simulation source identify score rows. Graded pass rate excludes infrastructure outcomes, which are counted separately. pass@k uses `1 - C(n-c,k)/C(n,k)` per task/version/digest/job/AvA-version batch, averaged across eligible settled, fully graded batches; batches with insufficient samples or any ungraded result do not contribute. Exports are bounded to 5,000 attempts/16 MiB, redact credential-shaped values, and escape CSV formula prefixes.
+
+Benchmark rows and independent artifact copies are intentionally outside conversation-history clearing. `ui/benchmark-results.tsx` renders the shared Results tab, filters and per-check evidence. Neither result queries nor exports perform agent work.
+
 ## Build mode
 
 `RunConfig.mode='build'` with `build={kind:'build'|'review',source,folder}`. It runs like Prompt: one paired phase, raw-text answers, and the controller halts with `build_done`. A Build session holds one prompt: `run.start` refuses a second run in a thread whose first run was a build (`ONE_BUILD`), and `run.broadcast` refuses any Prompt or Build run (`ONE_PROMPT`).
@@ -81,10 +91,10 @@ Complete saves are staged in a sibling directory before replacing the active dir
 - `folder` is derived from the request ID. Identical in-flight starts share their preparation promise; conflicting inputs or a different start on the same pair are refused. Once started, retries find the persisted run (`previousStart`) and copy nothing twice. The file count is recorded in a `build_copied` event, outside the config.
 - The workspace is the agent's session folder (`participantWorkspace`, also used by `NativeFactory.open`), so the folder is right there for the agent with no new session. Anything a Build session's 1:1 lines set up (a cloned repository) sits beside it.
 
-**Access (policy: auto-approve everything in the agent's workspace).**
+**Access (Ask: explicitly scoped file operations only).**
 - `ActivationManager.workspaceAccess` (set by the service) returns the seat's workspace while that pair's active run is a running Build run, or while a 1:1 request sent with `tools` is answering. `NativeParticipant` reads it at each permission request.
 - `direct.send` accepts `tools` only in a Build session: a thread with no runs yet, or whose first run is a build.
-- `buildPermission` allows a request when every path in it lies inside the workspace. Paths are ACP `locations`, `rawInput` fields with a path-like name, and any absolute path under any key, at any depth and inside arrays (relative ones resolve against the workspace; URLs aren't paths). Command text isn't read for paths: commands run in the workspace.
+- `buildPermission` requires a recognized file-operation kind and complete, explicit workspace paths. It refuses shell/process/interpreter requests and executable argument fields regardless of other paths. File URLs are decoded and checked; linked components, hard-linked files, ambiguous Windows paths, missing paths, and unknown tool shapes fail closed. Literal file contents are data, not executable permission metadata.
 - It also refuses a write into a CLI's own settings folder in the workspace (`.claude`, `.codex`, `.gemini`, `.grok`), which would change that agent's permissions from its next start, and a request to leave the sandbox. That is found by the setting's name (Codex's `sandbox_permissions: require_escalated`, `with_escalated_permissions: true`), never by words in file content. Web tools stay with the internet switch.
 - Codex is switched to its `workspace-write` mode for Build runs and tool 1:1 lines (`setBuildAccess`), and back to read-only before anything else. `CODEX_CONFIG.sandbox_workspace_write.network_access` follows the internet switch (set at launch, like `web_search`).
 
@@ -240,9 +250,11 @@ The packaged plugin's `.mcp.json` uses a relative path with `cwd: "."` and an ex
 
 ## Known limits
 
-Known and accepted in 0.1.x, deliberately or for later. Fixes are planned in the [roadmap](roadmap.md).
+The Resources panel enforces a persisted active-agent admission limit and reports sampled process memory. Stop all cancels work, closes owned sessions and checks the process ledger while preserving history. Windows job objects were [evaluated separately](windows-job-objects.md); production resource controls do not impose OS memory or filesystem limits.
 
-- **Build commands aren't confined.** The Build gate checks the paths a tool request names, not what a command does: a command runs in the agent's copy but can read and write anywhere the user can. Only Codex runs commands in its own sandbox. For the other agents the internet switch governs web tools, not a command's network access (`curl`, `git clone`). Under **bypass** everything is allowed.
+Known limits in v0.2.0. Planned work is tracked in the [roadmap](roadmap.md).
+
+- **No common command sandbox yet.** Ask refuses execution requests even in Build; a workspace path is not confinement. Codex also has its own sandbox. A provider that approves work internally may not ask AvA, so the gate is not complete process isolation. Under **Bypass**, execution is explicitly trusted with the user's privileges. F1 remains necessary before executing untrusted benchmark candidates or verifiers.
 - **Claude Code's own settings come first.** Allow rules or a permissive `defaultMode` in the user's Claude Code settings approve tools before AvA's gate is asked, and ACPX can't turn those settings off for one session. The agent's screen says so once.
 - **Leftover processes are found by process tree and start time.** A process that left the tree (started through a service or re-parented by a launcher) isn't found or stopped. A server listening on the port an agent named is kept even if something outside its tree started it during the run.
 - **CLI versions.** Codex and Claude Code must meet the adapters' minimum versions; AvA refuses an older one with the update command rather than fall back. Moving to a newer adapter can raise the minimum.
@@ -253,6 +265,6 @@ Known and accepted in 0.1.x, deliberately or for later. Fixes are planned in the
 
 Keep the current native provider adapters. Add a scenario boundary before a proposed reply is committed to the room. A separate CAMEL Python worker can receive opaque seat IDs and typed actions and return public events, private observations, verdicts, and a terminal result. The controller must persist and validate that decision before routing anything to the peer. Do not forward CAMEL's raw state or let the two CLIs determine authoritative scores. The pinned reference is CAMEL 0.2.91a7; a production worker dependency still needs its own compatibility pilot.
 
-## Status (0.1.1)
+## Release scope
 
-Everything above is implemented, covered by the offline suite (`npm test`), and verified live on all five providers with `scripts/live-validate.ts` (see the release notes). Not implemented: automatic crash recovery, an MCP Apps view, and testing on macOS or Linux.
+The room, two host wrappers, prompt library, Resources and benchmark runner/results ship in v0.2.0. The [validation record](validation.md) distinguishes offline, browser and live-provider coverage. The future-games design above is a proposal. Common execution isolation, automatic crash recovery, an MCP Apps view, and macOS/Linux support are not implemented.

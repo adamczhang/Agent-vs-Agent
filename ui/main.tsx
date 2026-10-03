@@ -5,6 +5,8 @@ import type { ThreadStats } from '../src/stats';
 import { activityProjection,readableOutput,type ActivityLine,type Event } from './projection';
 import { RpcError,initialMode,roomId,roomLink,rpc } from './api';
 import { CommandClient } from './commands';
+import { ResourcesPanel } from './resources-panel';
+import { BenchmarksPanel } from './benchmarks-panel';
 import { replayTimeline } from './replay';
 import { StatsView } from './stats-view';
 import { ResultsTabs,ResultsView,openApp,type AppLink,type ResultsTab } from './results-view';
@@ -34,6 +36,8 @@ const message=(e:unknown)=>e instanceof Error?e.message:String(e);
 // Prompt, Debate or Build: which kind of thread the room shows and starts. Remembered in this browser only.
 const MODE_KEY='ava-mode';
 function loadMode():Mode{let m=initialMode;try{m??=localStorage.getItem(MODE_KEY);}catch{/* storage unavailable */}return m==='benchmark'||m==='build'?m:'conversation';}
+const OPENING_KEY='ava-opening';
+function loadOpening():'both'|Seat{try{const v=localStorage.getItem(OPENING_KEY);if(v==='both'||v==='cli2')return v;}catch{/* storage unavailable */}return 'cli1';}
 // Build mode: the last project folder and whether to build or review (this browser only).
 const PROJECT_KEY='ava-project',BUILD_KIND_KEY='ava-build-kind';
 function loadProject(){try{return localStorage.getItem(PROJECT_KEY)??'';}catch{return '';}}
@@ -128,7 +132,7 @@ function DirectWindow({seat,name,partner,messages,pending,blocked,readOnly,tools
   return <section className={`direct-window ${seat}`} role="dialog" aria-label={`Direct messages with ${name}`} onKeyDown={e=>{if(e.key==='Escape'){e.stopPropagation();onClose();}}}>
     <header><span className="seat-dot"/><div className="direct-title"><strong>{name}</strong><span>Agent {SEAT_NUMBER[seat]} · 1:1</span></div><button className="icon-btn" aria-label={`Close direct messages with ${name}`} onClick={onClose}><Icon.close/></button></header>
     <Scroller className="direct-feed" label={`Direct messages with ${name}`}>
-      <p className="direct-note">Private. Only {name} sees this, in the same session it uses in the shared chat. Nothing here reaches the room or {partner}.{tools?` In a Build session ${name} can also run commands and edit files in its own working folder, to clone a repository before the build, say.`:''}</p>
+      <p className="direct-note">Private. Only {name} sees this, in the same session it uses in the shared chat. Nothing here reaches the room or {partner}.{tools?` In a Build session ${name} can use file tools in its own folder. Ask mode refuses command execution.`:''}</p>
       {messages.map(m=><div key={m.id} className={`bubble ${m.sender}`}>{m.text}{m.sender==='user'&&m.state!=='pending'&&directStates[m.state]&&<span className="bubble-state">{directStates[m.state]}{m.error?`. ${m.error}`:''}</span>}</div>)}
       {pending&&<div className="bubble agent">
         {pending.steps?.length?<ul className="bubble-steps" aria-label="What it is doing">{pending.steps.map((step,i)=><li key={i}>{step}</li>)}</ul>:null}
@@ -156,14 +160,17 @@ function App(){
   const [results,setResults]=useState<{runId:string;tab:ResultsTab}|null>(null),[apps,setApps]=useState<Record<string,AppLink>>({}),appRequested=useRef(new Set<string>());
   const [optionsOpen,setOptionsOpen]=useState(false),[dialog,setDialog]=useState<DialogSpec|null>(null);
   const [library,setLibrary]=useState<'browse'|'draft'|null>(null);
+  const [resourcesOpen,setResourcesOpen]=useState(false);
+  const [benchmarksOpen,setBenchmarksOpen]=useState(false);
   const [settings,setSettings]=useState<PresetData>(DEFAULT_SETTINGS),[presets,setPresets]=useState<Preset[]>([]),[presetId,setPresetId]=useState(''),[presetName,setPresetName]=useState<string|null>(null);
   const [query,setQuery]=useState(''),[hits,setHits]=useState<{query:string;results:SearchHit[]}|null>(null),[focusedId,setFocusedId]=useState('');
   const [replay,setReplay]=useState<{threadId:string;offsets:Record<string,number>;total:number;speed:number;clock:number;tickAt:number}|null>(null);
   const [layout,setLayout]=useState(loadLayout);
   const [directOpen,setDirectOpen]=useState<Record<Seat,boolean>>({cli1:false,cli2:false}),[seen,setSeen]=useState<Record<string,number>>({});
-  const [mode,setMode]=useState<Mode>(loadMode),[opening,setOpening]=useState<'both'|Seat>('both'),[files,setFiles]=useState<Pending[]>([]),[renaming,setRenaming]=useState<string|null>(null),[lightbox,setLightbox]=useState('');
+  const [mode,setMode]=useState<Mode>(loadMode),[opening,setOpening]=useState<'both'|Seat>(loadOpening),[files,setFiles]=useState<Pending[]>([]),[renaming,setRenaming]=useState<string|null>(null),[lightbox,setLightbox]=useState('');
   const fileInput=useRef<HTMLInputElement>(null),knownRuns=useRef(new Set<string>()),[dropping,setDropping]=useState(false);
   useEffect(()=>{try{localStorage.setItem(MODE_KEY,mode);}catch{/* storage unavailable */}},[mode]);
+  useEffect(()=>{try{localStorage.setItem(OPENING_KEY,opening);}catch{/* storage unavailable */}},[opening]);
   const [project,setProject]=useState(loadProject),[buildKind,setBuildKind]=useState(loadBuildKind);
   useEffect(()=>{try{localStorage.setItem(PROJECT_KEY,project);localStorage.setItem(BUILD_KIND_KEY,buildKind);}catch{/* storage unavailable */}},[project,buildKind]);
   // What the page last showed, and whether the last poll lost the connection.
@@ -283,7 +290,7 @@ function App(){
   const benchmarkLive=live&&['benchmark','build'].includes(activeRun?.config.mode??thread?.mode??'');
   // A Build session holds one prompt; the next build starts in a fresh session.
   const buildDone=isRoomThread&&thread?.mode==='build'&&!!thread.runIds.length&&!live;
-  // In a Build session (no prompt yet, or a build), 1:1 lines may run commands in the agent's working folder.
+  // In a Build session (no prompt yet, or a build), 1:1 lines may use scoped workspace file tools.
   const directTools=building&&(!thread?.mode||thread.mode==='build');
   const canSend=isRoomThread&&ready&&!!shown&&!mismatch&&!benchmarkLive&&!buildDone&&status!=='stopping'&&status!=='needs_attention'&&!directPending&&(!building||buildKind==='build'||!!project.trim());
   function switchMode(next:Mode){
@@ -520,10 +527,10 @@ function App(){
   // Presets hold room settings only; provider, model, effort and speed stay with activation.
   async function loadPresets(){try{setPresets((await rpc<{presets:Preset[]}>('preset.list',{})).presets);}catch{/* connection errors surface through polling */}}
   useEffect(()=>{void loadPresets();},[]);
-  function applyPreset(id:string){setPresetId(id);const preset=presets.find(p=>p.id===id);if(preset)setSettings({...DEFAULT_SETTINGS,...preset.data});}
+  function applyPreset(id:string){setPresetId(id);const preset=presets.find(p=>p.id===id);if(preset){const {opening:first,...data}=preset.data;setSettings({...DEFAULT_SETTINGS,...data});if(first)setOpening(first);}}
   async function savePreset(){
     const name=presetName?.trim();if(!name)return;
-    await action('Saving preset',async()=>{const saved=await rpc<{id:string}>('preset.save',{requestId:crypto.randomUUID(),name,data:settings});await loadPresets();setPresetId(saved.id);setPresetName(null);});
+    await action('Saving preset',async()=>{const saved=await rpc<{id:string}>('preset.save',{requestId:crypto.randomUUID(),name,data:{...settings,opening}});await loadPresets();setPresetId(saved.id);setPresetName(null);});
   }
   async function deletePreset(){
     const preset=presets.find(p=>p.id===presetId);if(!preset)return;
@@ -555,9 +562,21 @@ function App(){
     if(slot?.state!=='ready')return {text:slot?.state==='failed'?'Activation failed':'Not active',tone:'off'};
     if(!pair?.connected[seat])return {text:'Offline',tone:'off'};
     if(direct.pending[seat])return {text:'Replying to you privately',tone:'busy'};
+    if(live&&pair.activeRun?.mode==='conversation'){
+      if(pair.activeRun.status==='paused')return {text:'Paused',tone:''};
+      if(pair.activeRun.status==='stopping')return {text:'Stopping',tone:''};
+      if(pair.activeRun.status==='needs_attention')return {text:'Needs attention',tone:'off'};
+      if(pair.activeRun.speaking?.includes(seat))return {text:'Speaking',tone:'busy'};
+      return {text:!pair.activeRun.speaking?.length&&pair.activeRun.nextSeat===seat?'Up next':'Waiting',tone:''};
+    }
     if(working[seat])return {text:'Thinking',tone:'busy'};
     return {text:live?'Waiting':'Ready',tone:''};
   }
+  const turnRun=roomView&&pair?.activeRun?.mode==='conversation'?pair.activeRun:null;
+  const turnLabel=(s:Seat)=>`Agent ${SEAT_NUMBER[s]} (${agentName(s)})`;
+  const turnNote=roomView&&mode==='conversation'?(turnRun
+    ?`${turnRun.speaking?.length?`Speaking: ${turnRun.speaking.map(turnLabel).join(' and ')}`:`Next: ${turnLabel(turnRun.nextSeat??'cli1')}`}${turnRun.queued?` · ${turnRun.queued} prompt${turnRun.queued===1?'':'s'} queued for the next turn`:''}`
+    :opening==='both'?'Both agents open independently, then alternate':`${turnLabel(opening)} opens, then agents alternate`):'';
 
   // The channel: messages grouped Slack-style, with day separators and a quiet note where each prompt ended.
   const messages=shown?(activeReplay?shown.messages.filter(m=>(activeReplay.offsets[m.id]??0)<=activeReplay.clock):shown.messages):[];
@@ -622,13 +641,19 @@ function App(){
         <div className="brand"><span>Agent vs Agent</span>{pair?.mode==='simulation'&&<span className="pill">Simulation</span>}</div>
         <button className="icon-btn" aria-label={`New ${MODE_NAMES[mode]} thread`} title={`New ${MODE_NAMES[mode]} thread: a clean page with its own two agents`} onClick={()=>void newThread()}><Icon.compose/></button>
       </div>
-      <label className="search"><Icon.search/><input type="search" placeholder="Search" aria-label="Search every thread" maxLength={200} value={query} onChange={e=>setQuery(e.target.value)} onKeyDown={e=>{if(e.key==='Escape')setQuery('');}}/></label>
       <div className="mode-switch" role="radiogroup" aria-label="Mode">
         {([['benchmark','Prompt',<Icon.prompt key="i"/>,'Both agents get the same prompt at the same moment; compare answers and speed'],['conversation','Debate',<Icon.chat key="i"/>,'The agents debate each other: prime each with its 1:1 line, then give them a topic'],
           ['build','Build',<Icon.build key="i"/>,'Both agents build the same app, each in its own folder, then compare them side by side. Or have both review a project']] as const).map(([value,label,icon,tip])=>
           <button key={value} role="radio" aria-checked={mode===value} title={tip} onClick={()=>switchMode(value)}>{icon}<span>{label}</span></button>)}
       </div>
-      <button className="library-open" onClick={()=>setLibrary('browse')}><Icon.folder/><span>Prompt library</span></button>
+      <div className="sidebar-tools" role="group" aria-label="Room tools">
+        <button className="library-open" onClick={()=>setLibrary('browse')}><Icon.folder/><span>Prompt library</span></button>
+        <button className="library-open" onClick={()=>setResourcesOpen(true)}><Icon.chart/><span>Resources</span></button>
+        <span aria-hidden="true"/>
+      </div>
+      <div className="sidebar-search">
+        <label className="search"><Icon.search/><input type="search" placeholder="Search" aria-label="Search every thread" maxLength={200} value={query} onChange={e=>setQuery(e.target.value)} onKeyDown={e=>{if(e.key==='Escape')setQuery('');}}/></label>
+      </div>
       <nav className="threads" aria-label={hits?'Search results':`${MODE_NAMES[mode]} threads`}>
         {hits?(hits.results.length?hits.results.map(hit=><button key={hit.messageId} className="hit" onClick={()=>openHit(hit)}>
           <span className="hit-who">{hit.sender==='user'?'You':names[hit.participants?.[hit.sender as Seat]?.provider??'']??hit.sender}</span>
@@ -644,6 +669,8 @@ function App(){
     </aside>
 
     {/* Results use the same resizable upper/lower split; their prompt row stays below the apps. */}
+    {resourcesOpen&&<ResourcesPanel onClose={()=>setResourcesOpen(false)}/>}
+    {benchmarksOpen&&<BenchmarksPanel pair={pair} onClose={()=>setBenchmarksOpen(false)}/>}
     <main ref={workspaceRef} className={`workspace${resultsRun?' results-mode':''}`} style={{'--split-a':`${layout.split}fr`,'--split-b':`${1-layout.split}fr`,'--split-top':`${layout.height}fr`,'--split-bottom':`${1-layout.height}fr`} as CSSProperties}>
       <section ref={agentsRef} className="agents" aria-label="Agent activity">
         {seats.flatMap((seat,i)=>{const who=identity(seat),state=paneStatus(seat),own=lines(seat),slot=pair?.slots[seat];const pane=<article key={seat} className={`agent ${seat}`} aria-label={`Agent ${i+1} activity`}>
@@ -669,7 +696,7 @@ function App(){
         onDrop={e=>{if(!e.dataTransfer.files.length)return;e.preventDefault();setDropping(false);if(canSend)void addFiles(e.dataTransfer.files);}}>
         <header className="channel-head">
           <div className="channel-title">{renaming!==null&&thread?<form onSubmit={e=>{e.preventDefault();void rename(renaming);}}><input className="rename" autoFocus aria-label="Thread name" maxLength={120} placeholder={thread.runIds.length?'Name (empty uses the first prompt)':'Name this session'} value={renaming} onChange={e=>setRenaming(e.target.value)} onBlur={()=>void rename(renaming)} onKeyDown={e=>{if(e.key==='Escape'){e.stopPropagation();setRenaming(null);}}}/></form>
-            :<h1 title={thread?'Double-click to rename':undefined} onDoubleClick={()=>thread&&setRenaming(thread.named?thread.title:'')}>{thread?(thread.named||!thread.empty?thread.title||'Untitled':thread.current?'New session':'Private messages only'):'Agent vs Agent'}</h1>}{subtitle&&<p className={live?'live':undefined}>{live&&<span className="live-dot"/>}{subtitle}</p>}</div>
+            :<h1 title={thread?'Double-click to rename':undefined} onDoubleClick={()=>thread&&setRenaming(thread.named?thread.title:'')}>{thread?(thread.named||!thread.empty?thread.title||'Untitled':thread.current?'New session':'Private messages only'):'Agent vs Agent'}</h1>}{subtitle&&<p className={live?'live':undefined}>{live&&<span className="live-dot"/>}{subtitle}</p>}{turnNote&&<p role="status" aria-label="Debate turn order">{turnNote}</p>}</div>
           <div className="toolbar">
             {resultsRun&&<><ResultsTabs runs={buildRuns} runId={resultsRun.id} tab={resultsTab} onChange={setResults}/><span className="toolbar-divider"/></>}
             {live&&<>{!benchmarkLive&&<><button className="icon-btn" aria-label={paused?'Resume':'Pause'} title={paused?(directPending?'Waiting for a private reply':'Resume'):'Pause after the current replies'} disabled={!!busy||status!=='running'&&status!=='paused'||paused&&directPending} onClick={()=>control(paused?'resume':'pause')}>{paused?<Icon.play/>:<Icon.pause/>}</button>
@@ -680,6 +707,7 @@ function App(){
               onClick={()=>{if(panel==='results'){setPanel('chat');return;}const last=buildRuns.at(-1)!;openResults(results&&buildRuns.some(r=>r.id===results.runId)?results.runId:last.id,results?.tab??(last.config.build?.kind==='review'?'changes':'preview'));}}>{panel==='results'?<Icon.chat/>:<Icon.window/>}</button>}
             <button className={`icon-btn${panel==='stats'?' pressed':''}`} aria-pressed={panel==='stats'} aria-label="Stats" title={panel==='stats'?'Back to the conversation':'Stats'} disabled={!promptCount} onClick={()=>setPanel(p=>p==='stats'?'chat':'stats')}>{panel==='stats'?<Icon.chat/>:<Icon.chart/>}</button>
             <Menu label="More" icon={<Icon.more/>} items={[
+              {label:'Benchmarks',icon:<Icon.prompt/>,onSelect:()=>setBenchmarksOpen(true)},
               {label:'Rename',icon:<Icon.pencil/>,disabled:!thread,onSelect:()=>thread&&setRenaming(thread.named?thread.title:'')},
               {label:'Replay',icon:<Icon.replay/>,disabled:live||!shown?.messages.length,onSelect:startReplay},
               {label:'Export JSON',icon:<Icon.download/>,disabled:!promptCount,onSelect:()=>void exportThread('json')},
@@ -705,7 +733,7 @@ function App(){
             :!ready&&roomView||!thread?<><h2>Activate both agents</h2><p>Use <strong>Activate</strong> above each agent’s screen to choose its CLI, model, effort and permissions. Each activation sends one short request to check access.</p></>
             :building&&buildKind==='review'?<><h2>Review a project with {agentName('cli1')} and {agentName('cli2')}</h2><p>{isRoomThread?'Each agent gets its own copy of the folder below and may read, edit and run commands there; your original is never touched. Both start at the same moment and report what they find. Watch them work above.':'No reports in this thread.'}</p>
               {isRoomThread&&<button className="suggestion" onClick={()=>{setDraft('Find bugs and risky code. Run the tests if there are any, and rank what you find by severity.');composerRef.current?.focus();}}>Find bugs, run the tests, rank by severity</button>}</>
-            :building?<><h2>Build with {agentName('cli1')} and {agentName('cli2')}</h2><p>{isRoomThread?'Both build the same thing at the same moment, each in its own folder, then post a link to their app here. Open the two side by side with Results. To set an agent up first (clone a repository, say), use its 1:1 line: in a Build session it can run commands in its own folder. One prompt per session.':'No builds in this thread.'}</p>
+            :building?<><h2>Build with {agentName('cli1')} and {agentName('cli2')}</h2><p>{isRoomThread?'Both build the same thing at the same moment, each in its own folder, then post a link to their app here. Open the two side by side with Results. Use a 1:1 line to prepare files first. Ask mode permits scoped file tools and refuses command execution. One prompt per session.':'No builds in this thread.'}</p>
               {isRoomThread&&<button className="suggestion" onClick={()=>{setDraft('Build a polished Snake game that runs in the browser: arrow keys to steer, a score, increasing speed, and a restart button.');composerRef.current?.focus();}}>A Snake game for the browser</button>}</>
             :benchmark?<><h2>Prompt {agentName('cli1')} and {agentName('cli2')}</h2><p>{isRoomThread?'Both get your prompt at the same moment. Watch them work above, compare their final answers here, then open Stats for speed and timing. Attach files or images with the paperclip.':'No answers in this thread.'}</p>
               {isRoomThread&&<button className="suggestion" onClick={()=>{setDraft('Write a function that merges overlapping intervals, explain its complexity, and include three test cases.');composerRef.current?.focus();}}>Merge overlapping intervals, with tests</button>}</>
@@ -743,7 +771,7 @@ function App(){
             <label><Icon.folder/><input aria-label="Project folder" placeholder={buildKind==='review'?'Project folder to review, for example D:\\Projects\\my-app':'Optional: a project folder to start from (empty starts from scratch)'} value={project} maxLength={1000} spellCheck={false} disabled={mismatch||benchmarkLive} onChange={e=>setProject(e.target.value)}/></label>
           </div>}
           <div className="composer-row">
-            <button ref={optionsButton} type="button" className={`icon-btn${optionsOpen?' pressed':''}`} aria-label="Options for the next prompt" title="Options for the next prompt" aria-expanded={optionsOpen} disabled={mismatch} onClick={()=>{setOptionsOpen(o=>!o);void loadPresets();}}><Icon.sliders/>{customized||opening!=='both'&&!benchmark?<span className="badge"/>:null}</button>
+            <button ref={optionsButton} type="button" className={`icon-btn${optionsOpen?' pressed':''}`} aria-label="Options for the next prompt" title="Options for the next prompt" aria-expanded={optionsOpen} disabled={mismatch} onClick={()=>{setOptionsOpen(o=>!o);void loadPresets();}}><Icon.sliders/>{customized||opening!=='cli1'&&!benchmark?<span className="badge"/>:null}</button>
             <button type="button" className="icon-btn" aria-label="Attach files or images" title={seats.some(s=>pair?.images?.[s]===false)?`Attach text files (${seats.filter(s=>pair?.images?.[s]===false).map(agentName).join(' and ')} can’t read images)`:'Attach images or text files (or paste or drop them here)'} disabled={!canSend||files.length>=8} onClick={()=>fileInput.current?.click()}><Icon.attach/></button>
             <button type="button" className="icon-btn" aria-label="Save draft to prompt library" title="Save this prompt and its files" disabled={!draft.trim()||!!busy||uploading||files.some(f=>f.status==='error')} onClick={()=>setLibrary('draft')}><Icon.folder/></button>
             <input ref={fileInput} type="file" multiple hidden accept="image/png,image/jpeg,image/gif,image/webp,text/*,.md,.json,.jsonl,.csv,.yaml,.yml,.toml,.xml,.html,.css,.js,.mjs,.jsx,.ts,.tsx,.py,.rb,.go,.rs,.java,.kt,.swift,.c,.cpp,.h,.cs,.php,.sh,.ps1,.sql,.log,.diff,.patch" onChange={e=>{if(e.target.files)void addFiles(e.target.files);e.target.value='';}}/>
@@ -756,7 +784,7 @@ function App(){
         :<div className="readonly-bar"><span>{thread.pairId===pair?.id?'This session was cleared. Its agents no longer remember it.':'From another chat. Read-only here.'}</span>{roomThreadId&&<button className="link" onClick={()=>select('')}>Go to the current session</button>}</div>}
 
         {optionsOpen&&isRoomThread&&<div ref={sheetRef} className="sheet" role="dialog" aria-label="Options for the next prompt">
-          <header><div><h2>{benchmark?'Prompt options':building?'Build options':'Options'}</h2><p>{benchmark?'The prompt goes to both agents exactly as you write it. To give one agent extra context, use its 1:1 line first.':building?'Each agent may read, edit and run commands in its own working folder only. Anything outside it is refused.':live?'Used when the next prompt starts. The running conversation keeps its settings.':'Used when the next prompt starts.'}</p></div><button className="icon-btn" aria-label="Close options" onClick={()=>setOptionsOpen(false)}><Icon.close/></button></header>
+          <header><div><h2>{benchmark?'Prompt options':building?'Build options':'Options'}</h2><p>{benchmark?'The prompt goes to both agents exactly as you write it. To give one agent extra context, use its 1:1 line first.':building?'Ask mode allows scoped file tools in each agent’s own folder and refuses command execution. Bypass explicitly trusts unrestricted tools.':live?'Used when the next prompt starts. The running conversation keeps its settings.':'Used when the next prompt starts.'}</p></div><button className="icon-btn" aria-label="Close options" onClick={()=>setOptionsOpen(false)}><Icon.close/></button></header>
           {benchmark||building?<div className="sheet-body">
             <div className="group limits single">
               <label><span>Time limit (minutes)</span><input type="number" min="0.5" max="60" step="any" placeholder={building?'30':'60'} value={settings.minutes} onChange={e=>setSettings(s=>({...s,minutes:e.target.value}))}/></label>
@@ -768,7 +796,7 @@ function App(){
             <div className="group">
               <h3>First to speak</h3>
               <div className="segmented wide" role="radiogroup" aria-label="First to speak">
-                {([['both','Both at once'],['cli1',agentName('cli1')],['cli2',agentName('cli2')]] as const).map(([value,label])=><button key={value} type="button" role="radio" aria-checked={opening===value} aria-pressed={opening===value} onClick={()=>setOpening(value)}>{label}</button>)}
+                {([['cli1',turnLabel('cli1')],['cli2',turnLabel('cli2')],['both','Both at once']] as const).map(([value,label])=><button key={value} type="button" role="radio" aria-checked={opening===value} aria-pressed={opening===value} onClick={()=>setOpening(value)}>{label}</button>)}
               </div>
             </div>
             <div className="group">
@@ -787,7 +815,7 @@ function App(){
               <label><span>Requests</span><input type="number" min="2" max="10000" placeholder="Automatic" value={settings.requests} onChange={e=>setSettings(s=>({...s,requests:e.target.value}))}/></label>
               <label><span>Pace (s)</span><input type="number" min="0" max="60" value={settings.pace} onChange={e=>setSettings(s=>({...s,pace:e.target.value}))}/></label>
             </div>
-            {(customized||opening!=='both')&&<button className="link" onClick={()=>{setSettings(DEFAULT_SETTINGS);setPresetId('');setOpening('both');}}>Reset to defaults</button>}
+            {(customized||opening!=='cli1')&&<button className="link" onClick={()=>{setSettings(DEFAULT_SETTINGS);setPresetId('');setOpening('cli1');}}>Reset to defaults</button>}
           </div>}
         </div>}
         {thread&&<div className="direct-dock">{seats.filter(seat=>directOpen[seat]).map(seat=><DirectWindow key={`${threadId}:${seat}`} seat={seat} name={agentName(seat)} partner={agentName(seat==='cli1'?'cli2':'cli1')}

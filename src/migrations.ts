@@ -33,5 +33,12 @@ export const MIGRATIONS: ReadonlyArray<(db: DatabaseSync) => void> = [
       CREATE TABLE IF NOT EXISTS attachments(id TEXT PRIMARY KEY, name TEXT NOT NULL, media_type TEXT NOT NULL, kind TEXT NOT NULL, size INTEGER NOT NULL, sha256 TEXT NOT NULL, created_at TEXT NOT NULL);`);
     if (!db.prepare('PRAGMA table_info(messages)').all().some(c => c.name === 'attachments')) db.exec('ALTER TABLE messages ADD COLUMN attachments TEXT');
   },
+  // 8: service-wide settings, independent of conversation history.
+  db => db.exec('CREATE TABLE IF NOT EXISTS app_settings(key TEXT PRIMARY KEY, value TEXT NOT NULL)'),
+  // 9: durable benchmark jobs and immutable attempt records; separate from conversation history.
+  db => db.exec(`CREATE TABLE IF NOT EXISTS bench_jobs(id TEXT PRIMARY KEY, data TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS bench_attempts(id TEXT PRIMARY KEY, job_id TEXT NOT NULL REFERENCES bench_jobs(id), task_id TEXT NOT NULL, task_version INTEGER NOT NULL, digest TEXT NOT NULL, provider TEXT NOT NULL, model TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, data TEXT NOT NULL);
+    CREATE INDEX IF NOT EXISTS bench_attempts_job ON bench_attempts(job_id);
+    CREATE INDEX IF NOT EXISTS bench_attempts_task ON bench_attempts(task_id,task_version,digest);`),
 ];
 export const SCHEMA_VERSION = MIGRATIONS.length;

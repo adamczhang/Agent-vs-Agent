@@ -79,7 +79,7 @@ test('run.stats works end to end on a stored run without sending anything to the
   try {
     const pair = await service.call('pair.create', { thread: 'stats' }) as Pair;
     for (const seat of ['cli1', 'cli2']) { await service.call('slot.configure', { pairId: pair.id, seat, config: { provider: 'codex', model: 'model', auth: 'provider-login' } }); await service.call('slot.activate', { pairId: pair.id, seat }); }
-    const run = await service.call('run.start', { pairId: pair.id, text: 'topic', requestId: 's', options: { paceMs: 0, maxRequests: 2 } }) as Run; await flush();
+    const run = await service.call('run.start', { pairId: pair.id, text: 'topic', requestId: 's', options: { opening: 'both', paceMs: 0, maxRequests: 2 } }) as Run; await flush();
     factory.agents[0]!.emit('output', 'hello world'); const first = factory.agents[0]!.calls.at(-1)!; first.settled=true; first.resolve({status:'completed',text:JSON.stringify({message:'A',stop_requested:false,stop_reason:null}),usage:{input:50,output:9}}); factory.agents[1]!.answer('B'); await flush();
     await service.call('run.control', { runId: run.id, action: 'stop' }); await flush();
     const calls = factory.agents.map(a => a.calls.length);

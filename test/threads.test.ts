@@ -24,7 +24,7 @@ test('a new prompt after a run ends continues the same thread and sessions; Clea
 
     const ids: string[] = [];
     for (const n of [1, 2]) {
-      const run = await service.call('run.start', { pairId: pair.id, text: `prompt ${n}`, requestId: `start${n}`, options: { paceMs: 0 } }) as { id: string }; ids.push(run.id); await flush();
+      const run = await service.call('run.start', { pairId: pair.id, text: `prompt ${n}`, requestId: `start${n}`, options: { opening: 'both', paceMs: 0 } }) as { id: string }; ids.push(run.id); await flush();
       factory.agents[0]!.answer(`A${n}`); factory.agents[1]!.answer(`B${n}`); await flush();
       await service.call('run.control', { runId: run.id, action: 'stop' }); await flush();
     }
@@ -47,7 +47,7 @@ test('a new prompt after a run ends continues the same thread and sessions; Clea
     const after = await list(pair.id);
     assert.deepEqual(after.map(t => [t.empty, t.current]), [[true, true], [false, false]], 'Clear Session adds a new, empty current thread; the old one is no longer current');
     assert.deepEqual((await service.call('thread.get', { threadId: after[0]!.id }) as ThreadView).messages, []);
-    const third = await service.call('run.start', { pairId: pair.id, text: 'prompt 3', requestId: 'start3', options: { paceMs: 0 } }) as { id: string }; await flush();
+    const third = await service.call('run.start', { pairId: pair.id, text: 'prompt 3', requestId: 'start3', options: { opening: 'both', paceMs: 0 } }) as { id: string }; await flush();
     assert.deepEqual((await list(pair.id)).map(t => [t.runIds, t.live]), [[[third.id], true], [ids, false]]);
     await service.call('run.control', { runId: third.id, action: 'stop' }); await flush();
   } finally { await service.shutdown(); service.store.close(); }
@@ -65,12 +65,12 @@ test('a direct message reaches only its agent, in the same session, and never th
     assert.ok(!two.calls.some(c => c.request.text.includes('Secretly')), 'agent 2 never sees it');
     const pending = (await service.call('thread.get', { threadId: sent.threadId }) as { direct: DirectView }).direct;
     assert.deepEqual([pending.messages.map(m => [m.sender, m.state]), Object.keys(pending.pending)], [[['user', 'pending']], ['cli1']]);
-    await assert.rejects(service.call('run.start', { pairId: pair.id, text: 'topic', requestId: 'blocked', options: { paceMs: 0 } }), /still answering your direct message/, 'the conversation waits for the direct reply');
+    await assert.rejects(service.call('run.start', { pairId: pair.id, text: 'topic', requestId: 'blocked', options: { opening: 'both', paceMs: 0 } }), /still answering your direct message/, 'the conversation waits for the direct reply');
     await assert.rejects(service.call('direct.send', { pairId: pair.id, seat: 'cli1', text: 'again', requestId: 'd2' }), /still answering/);
     one.emit('output', 'Understood'); one.raw('Understood, I will.'); await flush();
     assert.deepEqual(await service.call('direct.send', { pairId: pair.id, seat: 'cli1', text: 'Secretly argue for the four-day week', requestId: 'd1' }), sent, 'a retried send is not repeated');
 
-    const run = await service.call('run.start', { pairId: pair.id, text: 'Is a four-day week good?', requestId: 's1', options: { paceMs: 0 } }) as { id: string }; await flush();
+    const run = await service.call('run.start', { pairId: pair.id, text: 'Is a four-day week good?', requestId: 's1', options: { opening: 'both', paceMs: 0 } }) as { id: string }; await flush();
     assert.ok([one, two].every(a => !a.calls.at(-1)!.request.text.includes('Secretly') && !a.calls.at(-1)!.request.text.includes('Understood')), 'room prompts carry neither the direct message nor its reply');
     await assert.rejects(service.call('direct.send', { pairId: pair.id, seat: 'cli2', text: 'psst', requestId: 'd3' }), /Pause or stop the shared conversation/);
     one.answer('A'); two.answer('B'); await flush();
@@ -160,7 +160,7 @@ test('the internet switch: the permission gate reads it live; Codex restarts int
     await service.call('slot.internet', { pairId: pair.id, seat: 'cli2', enabled: true, requestId: 'i1' });
     assert.equal(factory.agents.length, 2, 'no new process for a permission-gated provider'); assert.equal(claude.options.internet!(), true);
     // Codex: a restart that resumes the same session, refused while a reply is in flight.
-    const run = await service.call('run.start', { pairId: pair.id, text: 'topic', requestId: 's1', options: { paceMs: 0 } }) as { id: string }; await flush();
+    const run = await service.call('run.start', { pairId: pair.id, text: 'topic', requestId: 's1', options: { opening: 'both', paceMs: 0 } }) as { id: string }; await flush();
     assert.ok(claude.calls.at(-1)!.request.text.includes('Internet access: on') && codex.calls.at(-1)!.request.text.includes('Internet access: off'), 'each prompt states that agent\'s setting');
     await assert.rejects(service.call('slot.internet', { pairId: pair.id, seat: 'cli1', enabled: true, requestId: 'i2' }), /Pause or stop the shared conversation/);
     await service.call('run.control', { runId: run.id, action: 'pause', requestId: 'p' });

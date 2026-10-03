@@ -33,6 +33,10 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
+      - name: Install the browser test runtime
+        run: npx playwright install chromium --only-shell
+      - name: Browser regressions with simulated agents
+        run: npm run test:browser
       - run: npm run package -- --out "${{ runner.temp }}\ava-marketplace"
       - name: Smoke test Codex plugin (no provider requests)
         run: node --import tsx scripts/package-smoke.ts "${{ runner.temp }}\ava-marketplace\plugins\agent-vs-agent"

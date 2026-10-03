@@ -80,6 +80,7 @@ export class Store implements ProcessLedger {
   openProcesses(pairId: string): LedgerProcess[] {
     return this.db.prepare('SELECT pid,spawned_at,owner_pid FROM processes WHERE pair_id=? AND exited_at IS NULL').all(pairId).map(r => ({ pid: Number(r.pid), spawnedAt: String(r.spawned_at), ownerPid: Number(r.owner_pid) }));
   }
+  recordedProcesses():LedgerProcess[]{return this.db.prepare('SELECT pid,owner_pid,spawned_at,exited_at FROM processes').all().map(r=>({pid:Number(r.pid),ownerPid:Number(r.owner_pid),spawnedAt:String(r.spawned_at),exited:r.exited_at!=null,...(r.exited_at!=null?{exitedAt:String(r.exited_at)}:{})}));}
   // Clear history: every saved run, message, 1:1 message, thread name and attachment in this data folder. Pairs,
   // rooms, presets and the process ledger stay. The caller makes sure nothing is running.
   clearHistory() {
@@ -254,7 +255,7 @@ export class Store implements ProcessLedger {
         phaseId = String(original.phase_id);
       } else {
         phaseId = randomUUID();
-        this.db.prepare("INSERT INTO phases VALUES(?,?,?,?,?,'open')").run(phaseId, runId, broadcastId ? 'paired' : 'single', broadcastId ?? null, JSON.stringify(seats));
+        this.db.prepare("INSERT INTO phases VALUES(?,?,?,?,?,'open')").run(phaseId, runId, seats.length > 1 ? 'paired' : 'single', broadcastId ?? null, JSON.stringify(seats));
       }
       const all = this.messages(runId);
       const turns = seats.map(seat => {

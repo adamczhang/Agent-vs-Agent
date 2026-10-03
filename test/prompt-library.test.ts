@@ -148,6 +148,7 @@ for (const mode of ['benchmark', 'conversation', 'build'] as const) {
     const run = await service.call('run.start', { pairId: pair.id, text: ready.prompt.text, attachments: ready.attachments.map(f => f.id), requestId: 'run-' + mode, options: { mode, paceMs: 0 }, ...(mode === 'build' ? { build: { kind: 'build' } } : {}) }) as Run;
     await flush();
     assert.equal(factory.agents.length, 2);
+    if(mode==='conversation'){assert.equal(factory.agents[1]!.calls.length,1,'the second agent waits for the opener');factory.agents[0]!.answer('Opening answer');await flush();}
     for (const agent of factory.agents) {
       assert.equal(agent.calls.length, 2, 'one activation plus one task');
       assert.match(agent.calls[1]!.request.text, /Use the attached reference to answer/);

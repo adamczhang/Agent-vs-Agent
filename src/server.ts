@@ -78,7 +78,7 @@ if(process.argv.includes('--mcp')){
     idle=setInterval(()=>{
       if(Date.now()-http.lastRequestAt()<idleMs||closing)return;
       const hasActive=service.store.db.prepare('SELECT data FROM pairs').all().some(row=>(JSON.parse(String(row.data)) as Pair).activeRunId);
-      if(!hasActive)void shutdown();
+      if(!hasActive&&!service.benchmarks.busy)void shutdown();
     },Math.min(10000,idleMs));
   }
   console.log(JSON.stringify({status:'listening',port:http.port,pid:process.pid,dataRoot,version:packageVersion}));

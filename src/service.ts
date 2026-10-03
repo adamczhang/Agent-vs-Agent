@@ -16,6 +16,9 @@ import { listProcesses,survivors,systemCensus,type Census,type ProcessLedger,typ
 import { combineStats,computeStats } from './stats.js';
 import { checkProject,copyFolder,copyProject,participantWorkspace,projectChanges } from './workspace.js';
 import { prepareProject } from './prepare-project.js';
+import { Resources } from './resources.js';
+import { BenchmarkRunner } from './bench-runner.js';
+import { BenchmarkResults } from './bench-results.js';
 import { protectPrivatePath } from './private-files.js';
 import type { DoctorReport } from './doctor.js';
 import { Previews,appTarget,pageIn } from './preview.js';
@@ -23,10 +26,12 @@ import { createGatewayKey,forgetGatewayKey,gatewayCredit,gatewayKeyStatus,gatewa
 import { AvAError,PROVIDERS,SEATS,conversationConfig,type AgentUsage,type Pair,type Provider,type ProviderConfig,type Run,type Seat } from './types.js';
 
 const id=z.string().min(1).max(200),seat=z.enum(SEATS),provider=z.enum(PROVIDERS);
+const resultDate=z.string().datetime({offset:true}).transform(value=>new Date(value).toISOString());
+const resultFilters=z.object({jobId:id.optional(),suite:z.string().min(1).max(1000).optional(),taskId:id.optional(),provider:z.string().min(1).max(100).optional(),model:z.string().min(1).max(300).optional(),from:resultDate.optional(),to:resultDate.optional(),simulation:z.enum(['all','only','exclude']).optional()}).strict().refine(p=>!p.from||!p.to||p.from<=p.to,'The start date must precede the end date.');
 const choice=z.object({key:z.string().min(1).max(100),value:z.string().max(200)});
 const providerConfig=z.object({provider,model:z.string().min(1).max(300),effort:choice.optional(),speed:choice.optional(),auth:z.enum(['provider-login','api'])}).strict();
 // Preset data mirrors the room's settings form; .strict() keeps provider/model choices out (they belong to Codex activation).
-const presetData=z.object({instructions:z.object({cli1:z.string().max(8000),cli2:z.string().max(8000)}).strict(),stopWhen:z.object({cli1:z.string().max(4000),cli2:z.string().max(4000)}).strict(),completion:z.enum(['auto','duration','either','both']),minutes:z.string().max(20),requests:z.string().max(20),pace:z.string().max(20)}).strict();
+const presetData=z.object({instructions:z.object({cli1:z.string().max(8000),cli2:z.string().max(8000)}).strict(),stopWhen:z.object({cli1:z.string().max(4000),cli2:z.string().max(4000)}).strict(),completion:z.enum(['auto','duration','either','both']),minutes:z.string().max(20),requests:z.string().max(20),pace:z.string().max(20),opening:z.enum(['both','cli1','cli2']).optional()}).strict();
 const runOptions=z.object({instructions:z.object({cli1:z.string().max(8000),cli2:z.string().max(8000)}).optional(),stopWhen:z.object({cli1:z.string().max(4000),cli2:z.string().max(4000)}).optional(),completion:z.enum(['duration','either','both']).optional(),durationMs:z.number().positive().max(86400000).optional(),maxRequests:z.number().int().min(2).max(10000).optional(),perTurnMs:z.number().positive().max(3600000).optional(),paceMs:z.number().min(0).max(60000).optional(),lead:seat.optional(),mode:z.enum(['conversation','benchmark','build']).optional(),opening:z.enum(['both','cli1','cli2']).optional()}).strict();
 
 // A direct reply is plain text; if the agent answers in the room's JSON envelope out of habit, show just its message.
@@ -38,7 +43,7 @@ function plainReply(text:string){
 // codex-command-runner-<version>.exe), never treated as something an agent left running.
 const AGENT_HELPER=/^(codex|claude|grok|agy|antigravity)([-_.][\w.-]*)?\.exe$/i;
 // Calls that start or change runs, agents or history (refused while Clear history runs).
-const CHANGING=new Set(['run.start','run.broadcast','run.control','run.reconcile','direct.send','pair.clear','pair.reset','slot.configure','slot.activate','slot.cancel','slot.internet','slot.permissions','menu.choose','room.new','history.clear','prompt.save','prompt.delete','prompt.prepare','attachment.add']);
+const CHANGING=new Set(['run.start','run.broadcast','run.control','run.reconcile','direct.send','pair.clear','pair.reset','slot.configure','slot.activate','slot.cancel','slot.internet','slot.permissions','menu.choose','room.new','history.clear','prompt.save','prompt.delete','prompt.prepare','attachment.add','resources.configure','resources.stop','bench.validate','bench.start','bench.cancel']);
 // Stops each process with its whole tree (Windows: taskkill /T; it fails for any that already exited, which is fine).
 function stopTrees(pids:number[]){
   if(!pids.length)return Promise.resolve();
@@ -69,6 +74,9 @@ export class AvAService {
   readonly prompts:PromptLibrary;
   readonly activation:ActivationManager;
   readonly engine:ConversationController;
+  readonly resources:Resources;
+  readonly benchmarks:BenchmarkRunner;
+  readonly benchmarkResults:BenchmarkResults;
   readonly menus:Menus;
   private catalogs=new Map<string,{value:Catalog;at:number}>();
   private tickets=new Map<string,{pairId:string;generations:number[];expires:number}>();
@@ -77,6 +85,7 @@ export class AvAService {
   private preparing=new Set<string>();
   private preparationDone=new Set<Promise<void>>();
   private shuttingDown=false;
+  private stoppingAgents=false;
   private census:Census;
   private processes:()=>Promise<SystemProcess[]>;
   private stopProcesses:(pids:number[])=>Promise<void>;
@@ -97,6 +106,8 @@ export class AvAService {
       this.store.savePair(pair);
     }
     this.activation=new ActivationManager(this.store,factory);this.engine=new ConversationController(this.store);
+    this.resources=new Resources(this.store,this.activation,this.processes);
+    this.activation.beforeActivate=(pairId,seat)=>{if(this.stoppingAgents)throw new AvAError('STOPPING_AGENTS','AvA is stopping its agents. Wait for cleanup to finish.');this.resources.admit(pairId,seat);};
     // While a Build run is running for a pair, each agent may work in its own workspace (which holds its copy).
     // So may a Build session's 1:1 line while it is answering.
     this.activation.workspaceAccess=(pairId,seat)=>{
@@ -110,6 +121,8 @@ export class AvAService {
     this.menus=new Menus(this.store,this.activation,(p,m,a)=>this.catalog(p,m,a),(pairId,seat,level)=>this.setPermissions(pairId,seat,level),{
       models:()=>this.factory.gatewayModels?.()??gatewayModels(this.dataRoot),keyStatus:()=>gatewayKeyStatus(this.dataRoot),
       createKey:budget=>createGatewayKey(this.dataRoot,budget,this.factory.runVercel),forgetKey:()=>forgetGatewayKey(this.dataRoot)},()=>this.factory.cliWarnings?.()??Promise.resolve({}));
+    this.benchmarks=new BenchmarkRunner(this);
+    this.benchmarkResults=new BenchmarkResults(this.store);
   }
   async catalog(provider:Provider,model='',auth:ProviderConfig['auth']='provider-login'){
     const key=JSON.stringify([provider,model,auth]),cached=this.catalogs.get(key);
@@ -118,12 +131,31 @@ export class AvAService {
   }
   async call(method:string,input:unknown):Promise<unknown>{
     if(this.shuttingDown&&CHANGING.has(method))throw new AvAError('SHUTTING_DOWN','The service is shutting down.');
+    if(this.stoppingAgents&&CHANGING.has(method)&&method!=='resources.stop')throw new AvAError('STOPPING_AGENTS','AvA is stopping its agents. Wait for cleanup to finish.');
+    if(method==='history.clear'&&this.benchmarks.busy)throw new AvAError('BENCH_BUSY','Stop the benchmark job before clearing conversation history.');
     const changingPair=input&&typeof input==='object'?(input as {pairId?:string}).pairId:undefined;
     if(method!=='run.start'&&CHANGING.has(method)&&(method==='history.clear'?this.preparing.size>0:changingPair&&this.preparing.has(changingPair)))throw new AvAError('BUILD_PREPARING','A project is being prepared. Wait for it to finish, then try again.');
     // While history is being cleared nothing may start or change: the clear deletes runs and agents' folders.
     if(this.clearing&&CHANGING.has(method))throw new AvAError('CLEARING','History is being cleared. Try again in a moment.');
     switch(method){
-      case 'health': return {mode:this.mode,pid:process.pid,version:packageVersion,schemaVersion:1,databaseVersion:SCHEMA_VERSION};
+      case 'health': return {mode:this.mode,pid:process.pid,version:packageVersion,schemaVersion:1,databaseVersion:SCHEMA_VERSION,capabilities:{benchmarks:true,benchmarkResults:true}};
+      case 'bench.catalog':{const p=z.object({suite:z.string().max(1000).optional()}).parse(input);return {tasks:this.benchmarks.catalog(p.suite)};}
+      case 'bench.validate':{const p=z.object({taskIds:z.array(id).min(1).max(20),suite:z.string().max(1000).optional()}).parse(input);return {validations:await this.benchmarks.validate(p.taskIds,p.suite)};}
+      case 'bench.start':{
+        const p=z.object({taskIds:z.array(id).min(1).max(20),suite:z.string().max(1000).optional(),repeats:z.number().int().min(1).max(10).default(1),stopOnFailure:z.boolean().default(false),pairId:id.optional(),agents:z.object({cli1:providerConfig,cli2:providerConfig}).strict().optional(),requestId:id}).refine(p=>!!p.pairId!==!!p.agents,'Choose a room pair or two explicit agent configurations.').parse(input);
+        return this.once('bench-start',p.requestId,{...p,requestId:undefined},async()=>{
+          const pair=p.pairId?this.store.pair(p.pairId):undefined;
+          const agents=p.agents??{cli1:pair!.slots.cli1.config!,cli2:pair!.slots.cli2.config!};
+          if(!agents.cli1||!agents.cli2)throw new AvAError('NOT_READY','Choose both agent models in the room first.');
+          return this.benchmarks.start({taskIds:p.taskIds,suite:p.suite,repeats:p.repeats,stopOnFailure:p.stopOnFailure,agents});
+        });
+      }
+      case 'bench.jobs':return {jobs:this.benchmarks.jobs()};
+      case 'bench.results':{const p=z.object({filters:resultFilters.optional(),before:z.number().int().positive().optional(),limit:z.number().int().min(1).max(200).default(50)}).strict().parse(input);const filters=p.filters??{};return {...this.benchmarkResults.page(filters,p.before,p.limit),scoreboard:this.benchmarkResults.scoreboard(filters),choices:this.benchmarkResults.choices()};}
+      case 'bench.export':{const p=z.object({filters:resultFilters.optional(),format:z.enum(['json','csv'])}).strict().parse(input);return this.benchmarkResults.export(p.filters??{},p.format);}
+      case 'bench.get':{const p=z.object({jobId:id}).parse(input);return this.benchmarks.get(p.jobId);}
+      case 'bench.attempt':{const p=z.object({attemptId:id}).parse(input);return this.benchmarks.attempt(p.attemptId);}
+      case 'bench.cancel':{const p=z.object({jobId:id,requestId:id}).parse(input);return this.once('bench-cancel',p.requestId,{jobId:p.jobId},async()=>this.benchmarks.cancel(p.jobId));}
       case 'pair.create': {const p=z.object({thread:id}).parse(input);return this.store.createPair(p.thread);}
       case 'providers.list':return this.factory.list();
       case 'doctor':if(!this.factory.doctor)throw new AvAError('SIMULATION','Diagnostics require the live provider factory (no model requests).');return this.factory.doctor();
@@ -137,6 +169,12 @@ export class AvAService {
       case 'slot.activate':{const p=z.object({pairId:id,seat}).parse(input);const config=this.store.pair(p.pairId).slots[p.seat].config;if(!config)throw new AvAError('NO_CONFIG','Configure the slot first.');return this.activation.activate(p.pairId,p.seat,config);}
       case 'slot.cancel':{const p=z.object({pairId:id,seat}).parse(input);this.activation.cancel(p.pairId,p.seat);return this.store.pair(p.pairId);}
       case 'pair.get':{const p=z.object({pairId:id}).parse(input);return this.pairView(p.pairId);}
+      case 'resources.get':return this.resources.snapshot(this.stoppingAgents);
+      case 'resources.configure':{
+        const p=z.object({maxActiveAgents:z.number().int().min(0).max(32).refine(n=>n!==1,'Use 0 for unlimited, or 2–32 agents.'),requestId:id}).parse(input);
+        return this.once('resources-configure',p.requestId,{maxActiveAgents:p.maxActiveAgents},async()=>this.resources.configure(p.maxActiveAgents));
+      }
+      case 'resources.stop':{const p=z.object({requestId:id}).parse(input);return this.once('resources-stop',p.requestId,{},()=>this.stopAllAgents());}
       // An older name for Clear Session, kept for callers that still use it: one implementation for both.
       case 'pair.reset':{const p=z.object({pairId:id,requestId:id.optional()}).parse(input);return this.call('pair.clear',{pairId:p.pairId,requestId:p.requestId??randomUUID()});}
       // Clear context: stop any running conversation, then give both agents fresh native sessions so neither remembers it.
@@ -240,7 +278,7 @@ export class AvAService {
             }
             // (Codex's sandbox is set again before each request; this spares its first one the switch.)
             for(const seat of SEATS)await participants[seat].setBuildAccess?.(!!config.build);
-            if(this.shuttingDown)throw new AvAError('SHUTTING_DOWN','The service is shutting down.');
+            if(this.shuttingDown||this.stoppingAgents)throw new AvAError('STOPPING_AGENTS','The service is stopping its agents.');
             const run=this.engine.start(p.pairId,config,p.requestId,participants,attachments);
             if(copied)this.store.event(run.id,'build_copied',{files:copied.files,bytes:copied.bytes,gitSource:copied.gitSource,baseline:copied.baseline});
             return run;
@@ -491,14 +529,14 @@ export class AvAService {
     const questionId=randomUUID(),abort=new AbortController();
     // Tools only in a Build session: one with no prompt yet, or whose prompt was a build.
     const runs=this.store.threads().find(t=>t.id===threadId)?.runs??[];
-    if(tools&&runs.length&&runs[0]!.config.mode!=='build')throw new AvAError('NOT_BUILD','Only a Build session’s 1:1 lines can run commands.');
+    if(tools&&runs.length&&runs[0]!.config.mode!=='build')throw new AvAError('NOT_BUILD','Only a Build session’s 1:1 lines can use workspace file tools.');
     this.store.addDirect({id:questionId,pairId,threadId,seat,sender:'user',text,state:'pending'});
     const entry={threadId,abort,partial:'',steps:[] as string[],done:Promise.resolve()};this.direct.set(key,entry);
     const prompt=[
       `Private message from the operator to you (${seat}) only. Your partner in the shared conversation can't see this message or your reply, and neither appears in the shared room.`,
       'Use it in the shared conversation as the operator intends, but don’t quote or mention this private exchange there unless the operator asks you to.',
       slot.permissions==='bypass'?'You may use your tools, run commands and edit files to do what the operator asks. Reply to the operator directly, in plain text (no JSON).'
-        :tools?'You may run commands and create or edit files in your working folder (your current directory) to do what the operator asks, for example cloning a repository there. Keep everything inside it. Reply to the operator directly, in plain text (no JSON).'
+        :tools?'You may use scoped file tools to read, create, or edit files in your working folder. Ask mode refuses command execution: do not run shells, scripts, tests, package managers, or process-control tools. Reply directly in plain text (no JSON), and report any execution you could not perform.'
         :'Reply to the operator directly, in plain text (no JSON). Do not edit files or run commands.',
       internetNote(slot.internet===true),
       `Message:\n${text}`,
@@ -624,8 +662,60 @@ export class AvAService {
   }
   pairView(pairId:string){
     const pair=this.store.pair(pairId),active=pair.activeRunId?this.store.run(pair.activeRunId):undefined;
-    return {...pair,activeRun:active?{id:active.id,status:active.status,reason:active.reason}:null,connected:Object.fromEntries(SEATS.map(s=>[s,!!this.activation.get(pairId,s)&&this.activation.get(pairId,s)?.isConnected?.()!==false])),
+    const speaking=active?[...new Set(this.store.db.prepare("SELECT seat FROM turns WHERE run_id=? AND status IN ('queued','submitted')").all(active.id).map(r=>String(r.seat) as Seat))]:[];
+    return {...pair,activeRun:active?{id:active.id,status:active.status,reason:active.reason,mode:active.config.mode??'conversation',nextSeat:active.nextSeat,speaking,queued:this.store.queued(active.id).length}:null,connected:Object.fromEntries(SEATS.map(s=>[s,!!this.activation.get(pairId,s)&&this.activation.get(pairId,s)?.isConnected?.()!==false])),
       images:Object.fromEntries(SEATS.map(s=>[s,this.activation.get(pairId,s)?.imageInput!==false])),usage:Object.fromEntries(SEATS.map(s=>[s,this.usageOf(pair,s)])),mode:this.mode};
+  }
+  private async stopAllAgents(){
+    this.stoppingAgents=true;
+    this.benchmarks.cancelAll();
+    const errors:string[]=[],before=this.resources.active().length;
+    try{
+      for(const pair of this.resources.pairs())if(pair.activeRunId)this.engine.stop(pair.activeRunId);
+      for(const entry of this.direct.values())entry.abort.abort(new AvAError('CANCELLED','All AvA agents were stopped.'));
+      await Promise.allSettled(this.preparationDone);
+      this.previews.closeAll();
+      let cleanupTimer:ReturnType<typeof setTimeout>|undefined;
+      try{await Promise.race([this.activation.closeAll(),new Promise<never>((_,reject)=>{cleanupTimer=setTimeout(()=>reject(new Error('A provider did not confirm cleanup within 15 seconds.')),15000);})]);}
+      catch(e){errors.push(e instanceof Error?e.message:'A provider did not confirm cleanup.');}
+      finally{clearTimeout(cleanupTimer);}
+      const recorded=this.store.recordedProcesses();
+      let remaining:number[]=[];
+      try{
+        const owned=survivors(recorded,await this.processes());
+        if(owned.length)await this.stopProcesses(owned.map(p=>p.pid));
+        remaining=(await this.census(recorded)).map(p=>p.pid);
+      }catch{errors.push('Could not verify that all owned processes stopped.');}
+      const unfinished=()=>this.resources.pairs().some(p=>p.activeRunId&&['running','pausing','stopping'].includes(this.store.run(p.activeRunId).status));
+      for(const end=Date.now()+5000;unfinished()&&Date.now()<end;)await new Promise(r=>setTimeout(r,25));
+      for(const original of this.resources.pairs()){
+        let pair=this.store.pair(original.id);
+        if(pair.activeRunId&&this.store.run(pair.activeRunId).status==='needs_attention'&&!remaining.length&&!errors.length){
+          const run=this.store.run(pair.activeRunId);this.engine.detach(run.id);
+          this.store.reconcile(run.id,{note:'Stopped all AvA agents; no owned process survived.',checked:this.store.runProcesses(pair.id,run.generations)});
+          pair=this.store.pair(pair.id);
+        }
+        if(pair.activeRunId){errors.push('A conversation still needs attention. Open its room to inspect or release it.');continue;}
+        for(const seat of SEATS){
+          if(this.activation.get(pair.id,seat))continue;
+          const slot=pair.slots[seat];slot.generation++;slot.state=slot.config?'configuring':'empty';slot.sessionId=null;slot.verifiedAt=null;slot.error=slot.config?'Stopped from Resources. Activate this agent again.':null;
+        }
+        this.store.savePair(pair);
+      }
+      return {status:remaining.length||errors.length?'needs_attention':'stopped',agentsBefore:before,remainingProcesses:remaining.length,errors};
+    }finally{this.stoppingAgents=false;}
+  }
+  // Benchmarks own fresh pairs. Retire just those agents before exposing hidden checks.
+  async retireBenchmarkPair(pairId:string){
+    let pair=this.store.pair(pairId);if(!pair.thread.startsWith('benchmark-'))throw new AvAError('BENCH_PAIR','Only a benchmark-owned pair may be retired this way.');
+    if(pair.activeRunId)this.engine.stop(pair.activeRunId);
+    await this.activation.closePair(pairId);
+    const recorded=this.store.runProcesses(pairId,{cli1:pair.slots.cli1.generation,cli2:pair.slots.cli2.generation});
+    if(recorded.length){const own=survivors(recorded,await this.processes());if(own.length)await this.stopProcesses(own.map(p=>p.pid));if((await this.census(recorded)).length)throw new AvAError('BENCH_CLEANUP','A benchmark process survived cleanup. Hidden checks were not exposed.');}
+    for(const deadline=Date.now()+5000;pair.activeRunId&&['running','pausing','stopping'].includes(this.store.run(pair.activeRunId).status)&&Date.now()<deadline;){await new Promise(r=>setTimeout(r,25));pair=this.store.pair(pairId);}
+    pair=this.store.pair(pairId);
+    if(pair.activeRunId){const run=this.store.run(pair.activeRunId);if(run.status!=='needs_attention')throw new AvAError('BENCH_CLEANUP','Benchmark work has not settled.');this.engine.detach(run.id);this.store.reconcile(run.id,{note:'Benchmark sessions closed and no owned process survived; no request was resent.',checked:recorded});pair=this.store.pair(pairId);}
+    for(const seat of SEATS){const slot=pair.slots[seat];slot.generation++;slot.state='configuring';slot.sessionId=null;slot.verifiedAt=null;slot.error='Benchmark attempt finished.';}this.store.savePair(pair);
   }
   // An active agent's latest usage report (null before it reports any), with the Gateway key's credit for a Gateway agent.
   private usageOf(pair:Pair,seat:Seat):AgentUsage|null{
@@ -635,7 +725,7 @@ export class AvAService {
     return report||credit?{...report,...(credit?{credit}:{}),at:report?.at??Date.now()}:null;
   }
   async shutdown(){
-    this.shuttingDown=true;await Promise.allSettled(this.preparationDone);
+    this.shuttingDown=true;await this.benchmarks.shutdown();await Promise.allSettled(this.preparationDone);
     for(const row of this.store.db.prepare('SELECT data FROM runs').all()){
       const run=JSON.parse(String(row.data)) as {id:string;status:string};
       if(['running','pausing','paused'].includes(run.status))this.engine.stop(run.id);

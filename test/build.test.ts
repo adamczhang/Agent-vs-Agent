@@ -47,9 +47,9 @@ test('only a real project folder can be handed to the agents', () => {
 
 test('in a build run the gate allows work inside the agent\'s copy and nothing outside it', () => {
   const root = process.platform === 'win32' ? 'C:\\ava\\workspaces\\p\\cli1\\1' : '/ava/workspaces/p/cli1/1';
-  const ask = (rawInput: unknown, locations: Array<{ path: string }> = []) => buildPermission({ raw: { toolCall: { rawInput, locations, title: 't' } } }, root).decision;
+  const ask = (rawInput: unknown, locations: Array<{ path: string }> = []) => buildPermission({ raw: { toolCall: { kind: 'edit', rawInput, locations, title: 't' } } }, root).decision;
   assert.deepEqual(ask({ file_path: join(root, 'shop', 'src', 'cart.js') }), { outcome: 'allow_once' }, 'an edit in the copy');
-  assert.deepEqual(ask({ command: 'npm test' }), { outcome: 'allow_once' }, 'a command (it runs in the copy)');
+  assert.equal(ask({ command: 'npm test' }), undefined, 'a working directory cannot confine arbitrary test scripts');
   assert.deepEqual(ask({ path: 'shop/src' }), { outcome: 'allow_once' }, 'a relative path inside');
   assert.equal(ask({ file_path: join(root, '..', '..', 'other', 'secret.txt') }), undefined, 'a path outside the copy');
   assert.equal(ask({}, [{ path: process.platform === 'win32' ? 'C:\\Windows\\win.ini' : '/etc/hosts' }]), undefined, 'a location outside');
@@ -209,12 +209,13 @@ test('a Build session: 1:1 setup with tools, one prompt, an empty folder per age
     const [one, two] = factory.agents as [typeof factory.agents[number], typeof factory.agents[number]];
     const workspaces = (['cli1', 'cli2'] as const).map(seat => participantWorkspace(data, { pairId, seat, generation: generation(seat) }));
 
-    // Before the prompt: a 1:1 line with tools, so the agent can set things up (clone a repository, say) in its workspace.
-    await service.call('direct.send', { pairId, seat: 'cli2', text: 'Clone the starter repo', requestId: 'd1', tools: true }); await flush();
+    // Before the prompt: a 1:1 line can prepare files inside its workspace without approving execution.
+    await service.call('direct.send', { pairId, seat: 'cli2', text: 'Prepare the starter files', requestId: 'd1', tools: true }); await flush();
     assert.equal(two.options.workspace!(), workspaces[1], 'its workspace is open to it while it answers');
     assert.deepEqual(two.buildAccess, [true], 'Codex may write there for it');
-    assert.match(two.calls.at(-1)!.request.text, /You may run commands and create or edit files in your working folder/);
-    two.raw('Cloned.'); for (let i = 0; i < 50 && two.options.workspace!(); i++) await new Promise(r => setTimeout(r, 2));
+    assert.match(two.calls.at(-1)!.request.text, /You may use scoped file tools/);
+    assert.match(two.calls.at(-1)!.request.text, /Ask mode refuses command execution/);
+    two.raw('Files ready.'); for (let i = 0; i < 50 && two.options.workspace!(); i++) await new Promise(r => setTimeout(r, 2));
     assert.equal(two.options.workspace!(), undefined, 'and closed again once it has answered');
 
     await assert.rejects(service.call('run.start', { pairId, text: 'Review it', requestId: 'r0', options: { mode: 'build' }, build: { kind: 'review' } }), /folder for the agents to review/);
@@ -225,7 +226,8 @@ test('a Build session: 1:1 setup with tools, one prompt, an empty folder per age
     const copies = workspaces.map(w => join(w, run.config.build.folder));
     assert.ok(copies.every(c => existsSync(join(c, '.git'))), 'each agent gets its own empty folder with a baseline');
     const prompt = one.calls.at(-1)!.request.text;
-    assert.ok(prompt.includes('it starts empty') && prompt.includes('such as a repository you cloned') && prompt.includes(`APP: ${run.config.build.folder}/index.html`), 'the prompt: an empty folder, earlier setup, and the APP line');
+    assert.ok(prompt.includes('it starts empty') && prompt.includes('You may use existing files') && prompt.includes(`APP: ${run.config.build.folder}/index.html`), 'the prompt: an empty folder, earlier files, and the APP line');
+    assert.match(prompt, /Ask mode permits scoped file tools only/);
     await assert.rejects(service.call('run.broadcast', { runId: run.id, text: 'Faster!', requestId: 'b1' }), /no further messages/, 'no steering during a build');
     mkdirSync(join(copies[1]!, 'game')); writeFileSync(join(copies[1]!, 'game', 'index.html'), '<h1>Snake 2</h1>\n');
     writeFileSync(join(copies[0]!, 'server.js'), 'listen(5173)\n');

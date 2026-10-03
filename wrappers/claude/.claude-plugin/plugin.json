@@ -1,7 +1,7 @@
 {
   "name": "agent-vs-agent",
-  "version": "0.1.3",
-  "description": "Activate two CLI agents (Codex, Claude Code, Grok Build, Antigravity, or the Vercel AI Gateway) and run controlled conversations in a shared room. Same core as the Codex plugin; this is the Claude Code wrapper.",
+  "version": "0.2.0",
+  "description": "AvA plugin for the Claude Code host. Run two agents from Codex CLI, Claude Code, Grok Build, Antigravity or Vercel AI Gateway in a shared room.",
   "author": {
     "name": "Adam Zhang",
     "email": "adam.dadvibes@gmail.com",

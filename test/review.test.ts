@@ -24,13 +24,14 @@ test('the Build gate reads paths by shape, refuses a CLI settings folder and san
   assert.ok(allowed({ file_path: join(root, 'App.jsx'), content: '<div dangerouslySetInnerHTML={x} /> // escalate' }), 'words in file content are not requests');
   assert.ok(!allowed({ command: 'npm i', sandbox_permissions: 'require_escalated' }), 'Codex asking to leave its sandbox');
   assert.ok(!allowed({ command: 'npm i', with_escalated_permissions: true }));
-  assert.ok(allowed({ command: 'npm i', sandbox_permissions: 'use_default', with_escalated_permissions: false }), 'the default sandbox is fine');
+  assert.ok(!allowed({ command: 'npm i', sandbox_permissions: 'use_default', with_escalated_permissions: false }), 'a requested sandbox setting does not prove confinement');
   assert.ok(!allowed({ edits: [{ changes: [{ target: outside }] }] }), 'a path nested in arrays is still found');
   assert.ok(!allowed({ note: outside }), 'an absolute path under any key counts');
   assert.ok(!allowed({ file_path: join(root, '.claude', 'settings.local.json') }), 'its own settings would change its permissions');
   assert.ok(!allowed({ file_path: join(root, 'sub', '.CODEX', 'config.toml') }));
-  assert.ok(allowed({ url: 'https://example.com/a', file_path: join(root, '.claude-notes.md') }), 'a URL is not a path; a similar name is fine');
-  assert.ok(allowed({ command: `type ${outside}` }), 'command text is not read as paths (commands run in the copy)');
+  assert.ok(allowed({ file_path: join(root, '.claude-notes.md') }), 'a similar name is fine');
+  assert.ok(!allowed({ url: 'file:///etc/x', file_path: join(root, 'local.md') }), 'a file URL cannot hide an outside path');
+  assert.ok(!allowed({ command: `type ${outside}` }), 'command text is never evidence of confinement');
 });
 
 test('web tools are recognized by the name leading their title, never by a mention', () => {

@@ -13,7 +13,7 @@ export interface MenuContext { maker?:string; page?:number; query?:string }
 export interface Menu { id:string; pairId:string; seat:Seat; generation:number; phase:'home'|'provider'|'model'|'effort'|'speed'|'auth'|'permissions'|'gateway-key'; title:string; choices:MenuChoice[]; text:string; context?:MenuContext; search?:boolean }
 // How each CLI's own name for "approve everything" reads, so the choice is recognisable.
 const BYPASS_NAMES:Record<Provider,string>={claude:'bypass permissions',codex:'full access','grok-build':'always allow',antigravity:'YOLO',vercel:'full access'};
-export const PERMISSION_LABELS={ask:'Ask: tools only where the mode allows (a Build session’s own folder)',bypass:'Bypass: approve every tool request, in every mode'};
+export const PERMISSION_LABELS={ask:'Ask: scoped file tools in Build; command execution refused',bypass:'Bypass: approve every tool request, in every mode'};
 // The Vercel AI Gateway's side of the menus: its model list, and AvA's Gateway key (status only; never the key).
 export interface GatewayMenus {
   models():Promise<GatewayModel[]>;

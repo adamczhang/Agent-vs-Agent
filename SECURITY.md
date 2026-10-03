@@ -12,7 +12,9 @@ The database, transcripts, attachments and generated projects live in the config
 
 ## What the agent permissions mean
 
-**Ask** is AvA's tool gate. Prompt and Debate refuse tools except supported web tools when Internet is enabled. Build allows work in the agent's own copy. A command's working directory is not an operating-system sandbox: the command can access whatever the user account can, except where Codex's own sandbox restricts it. For other CLIs, Internet controls recognized web tools, not arbitrary command network access.
+**Ask** is AvA's tool gate. Prompt and Debate refuse tools except supported web tools when Internet is enabled. Build approves only recognized file operations with complete, explicit paths inside the workspace. Linked paths, CLI settings folders, outside paths and sandbox escalation are refused. Shells, scripts, interpreters, package managers, process control and unknown tool shapes are refused even when they also name a valid workspace path. A working directory is not an operating-system sandbox, so command text is never evidence of confinement.
+
+This closes the automatic approval defect that allowed `Get-Process node | Stop-Process -Force` during a live Build. Regression tests pass that command and variants as inert strings to the gate; they never execute them. Command-dependent builds need real execution isolation before Ask can safely approve them. The gate controls only permission requests that providers send to AvA; provider-side permissions remain a separate boundary.
 
 **Bypass** approves every tool request in every mode and gives Codex full access. It trusts the provider, prompt, project and any instructions the agent encounters with the user's account permissions. Claude Code's own allow rules or default permission mode can approve tools before AvA's gate is asked; AvA displays a notice about this limitation. Do not use untrusted projects or benchmark verifiers as if the Build copy were a sandbox.
 

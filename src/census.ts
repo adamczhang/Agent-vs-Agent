@@ -8,7 +8,7 @@ export interface ProcessLedger { spawned(process: { pid: number; pairId: string;
 // `exited`: the adapter's own exit was recorded. It can no longer be the survivor, but its children still can.
 // exitedAt: when its exit was recorded; children of that PID started after then belong to whatever reused the PID.
 export interface LedgerProcess { pid: number; spawnedAt: string; ownerPid: number; exited?: boolean; exitedAt?: string }
-export interface SystemProcess { pid: number; ppid: number; started: number; name: string }
+export interface SystemProcess { pid: number; ppid: number; started: number; name: string; memoryBytes?: number }
 export interface Survivor { pid: number; parentPid: number; name: string }
 export type Census = (recorded: LedgerProcess[]) => Promise<Survivor[]>;
 
@@ -43,13 +43,13 @@ export function survivors(recorded: LedgerProcess[], processes: SystemProcess[])
 const run = promisify(execFile);
 export async function listProcesses(): Promise<SystemProcess[]> {
   if (process.platform === 'win32') {
-    const script = "Get-CimInstance Win32_Process | Where-Object { $_.CreationDate } | ForEach-Object { [pscustomobject]@{ pid = $_.ProcessId; ppid = $_.ParentProcessId; started = $_.CreationDate.ToUniversalTime().ToString('o'); name = $_.Name } } | ConvertTo-Json -Compress";
+    const script = "Get-CimInstance Win32_Process | Where-Object { $_.CreationDate } | ForEach-Object { [pscustomobject]@{ pid = $_.ProcessId; ppid = $_.ParentProcessId; started = $_.CreationDate.ToUniversalTime().ToString('o'); name = $_.Name; memoryBytes = [double]$_.WorkingSetSize } } | ConvertTo-Json -Compress";
     const { stdout } = await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { windowsHide: true, maxBuffer: 32 * 1024 * 1024, timeout: 60_000 });
-    const rows = JSON.parse(stdout) as Array<{ pid: number; ppid: number; started: string; name: string }>;
-    return (Array.isArray(rows) ? rows : [rows]).map(r => ({ pid: r.pid, ppid: r.ppid, started: Date.parse(r.started), name: r.name }));
+    const rows = JSON.parse(stdout) as Array<{ pid: number; ppid: number; started: string; name: string; memoryBytes:number }>;
+    return (Array.isArray(rows) ? rows : [rows]).map(r => ({ pid: r.pid, ppid: r.ppid, started: Date.parse(r.started), name: r.name, memoryBytes:r.memoryBytes }));
   }
-  const { stdout } = await run('ps', ['-A', '-o', 'pid=,ppid=,etimes=,comm='], { maxBuffer: 32 * 1024 * 1024, timeout: 60_000 });
+  const { stdout } = await run('ps', ['-A', '-o', 'pid=,ppid=,etimes=,rss=,comm='], { maxBuffer: 32 * 1024 * 1024, timeout: 60_000 });
   const now = Date.now();
-  return stdout.trim().split('\n').map(line => line.trim().split(/\s+/)).map(([pid, ppid, elapsed, ...name]) => ({ pid: Number(pid), ppid: Number(ppid), started: now - Number(elapsed) * 1000, name: name.join(' ') }));
+  return stdout.trim().split('\n').map(line => line.trim().split(/\s+/)).map(([pid, ppid, elapsed, rss, ...name]) => ({ pid: Number(pid), ppid: Number(ppid), started: now - Number(elapsed) * 1000, name: name.join(' '),memoryBytes:Number(rss)*1024 }));
 }
 export const systemCensus: Census = async recorded => recorded.length ? survivors(recorded, await listProcesses()) : [];

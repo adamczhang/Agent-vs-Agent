@@ -11,7 +11,7 @@ const outAt=process.argv.indexOf('--out'),out=outAt>=0?resolve(process.argv[outA
 for(const required of ['dist/src/server.js','dist/web/index.html'])if(!existsSync(required))throw new Error(`Missing ${required}; run npm run build first.`);
 rmSync(out,{recursive:true,force:true});mkdirSync(plugin,{recursive:true});
 
-for(const dir of ['.codex-plugin','assets','hooks','skills',join('dist','src'),join('dist','web')])cpSync(join(root,dir),join(plugin,dir),{recursive:true});
+for(const dir of ['.codex-plugin','assets','hooks','skills','benchmarks',join('dist','src'),join('dist','web')])cpSync(join(root,dir),join(plugin,dir),{recursive:true});
 // Both manifests carry the package's version (the Claude Code one is stamped below).
 const codexManifest=join(plugin,'.codex-plugin','plugin.json');writeFileSync(codexManifest,JSON.stringify({...JSON.parse(readFileSync(codexManifest,'utf8')),version:pkg.version},null,2));
 // Runtime package only: production dependencies, ESM, the Node requirement the code checks at startup, and the shared
@@ -59,7 +59,7 @@ const walk=(dir:string):string[]=>readdirSync(dir,{withFileTypes:true}).flatMap(
 // from a plugin root, which would pick up the Codex wrapper's files. Core files are hard links (no extra disk space).
 const claudePlugin=join(out,'plugins','agent-vs-agent-claude');
 const share=(from:string,to:string)=>{for(const file of walk(from)){const target=join(to,file.slice(from.length));mkdirSync(dirname(target),{recursive:true});try{linkSync(file,target);}catch{cpSync(file,target);}}};
-for(const core of ['dist','node_modules'])share(join(plugin,core),join(claudePlugin,core));
+for(const core of ['dist','node_modules','benchmarks'])share(join(plugin,core),join(claudePlugin,core));
 for(const file of ['package.json','package-lock.json','packaged.json','THIRD_PARTY_NOTICES.md'])if(existsSync(join(plugin,file)))cpSync(join(plugin,file),join(claudePlugin,file));
 cpSync(join(root,'wrappers','claude'),claudePlugin,{recursive:true});
 const claudeManifest=join(claudePlugin,'.claude-plugin','plugin.json'),manifest=JSON.parse(readFileSync(claudeManifest,'utf8'));

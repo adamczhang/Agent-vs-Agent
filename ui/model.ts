@@ -15,8 +15,8 @@ export interface ThreadRun { id: string; status: string; reason: string | null; 
 export type ThreadMessage = RoomMessage & { time: string | null };
 export interface ThreadView { thread: ThreadSummary | null; runs: ThreadRun[]; messages: ThreadMessage[]; direct: { messages: DirectMessage[]; pending: Partial<Record<Seat, { partial: string; steps?: string[] }>> } }
 export interface SearchHit { runId: string; threadId: string; messageId: string; sender: string; snippet: string; runTopic: string; runCreatedAt: string | null; participants: Record<Seat, ProviderConfig> | null }
-export type PairView = Pair & { connected: Record<Seat, boolean>; images?: Record<Seat, boolean>; usage?: Record<Seat, AgentUsage | null>; mode: 'live' | 'simulation'; activeRun: { id: string; status: string; reason: string | null } | null };
-export interface PresetData { instructions: Record<Seat, string>; stopWhen: Record<Seat, string>; completion: 'duration' | 'either' | 'both' | 'auto'; minutes: string; requests: string; pace: string }
+export type PairView = Pair & { connected: Record<Seat, boolean>; images?: Record<Seat, boolean>; usage?: Record<Seat, AgentUsage | null>; mode: 'live' | 'simulation'; activeRun: { id: string; status: string; reason: string | null; mode?: Mode; nextSeat?: Seat; speaking?: Seat[]; queued?: number } | null };
+export interface PresetData { instructions: Record<Seat, string>; stopWhen: Record<Seat, string>; completion: 'duration' | 'either' | 'both' | 'auto'; minutes: string; requests: string; pace: string; opening?: 'both' | Seat }
 export interface Preset { id: string; name: string; data: PresetData }
 
 export const seats: Seat[] = ['cli1', 'cli2'];

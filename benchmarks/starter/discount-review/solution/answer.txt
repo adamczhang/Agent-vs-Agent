@@ -1,0 +1,2 @@
+src/cart.js:4 adds the discount, increasing the total. Subtract discount from subtotal.
+src/cart.js:8 reverses the stock comparison. Keep quantity > 0 and require quantity <= stock.

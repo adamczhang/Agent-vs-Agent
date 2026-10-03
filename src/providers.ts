@@ -1,8 +1,10 @@
 import { createAcpRuntime, createAgentRegistry, createFileSessionStore, type AcpxRuntime, type AcpRuntimeHandle, type AcpRuntimeSessionUsage, type AcpRuntimeUsageBreakdown } from 'acpx/runtime';
 import { existsSync, mkdirSync, readFileSync,writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, isAbsolute, join, relative, resolve } from 'node:path';
-import { isInside, participantWorkspace } from './workspace.js';
+import { basename, isAbsolute, join } from 'node:path';
+import { participantWorkspace } from './workspace.js';
+import { buildPermission, executionRequest, type ToolPermissionRequest } from './build-permissions.js';
+export { buildPermission } from './build-permissions.js';
 import { GATEWAY, gatewayKey, gatewayModels } from './gateway.js';
 import { installedCli, type InstalledCli } from './clis.js';
 import { createHash, randomUUID } from 'node:crypto';
@@ -185,41 +187,6 @@ export function participantEnvironment(provider:Provider,configured:Record<strin
 // workspace: while a Build run is active for this agent, the folder it may work in (its workspace, which holds its copy).
 // bypass: the agent's permissions are set to bypass, so every tool request is approved (web tools still follow internet).
 export interface ParticipantOptions {internet?:()=>boolean;resumeSessionId?:string;workspace?:()=>string|undefined;bypass?:()=>boolean}
-// Build runs, policy "auto-approve everything in the copy": any tool request whose paths all lie inside the agent's
-// workspace is allowed, as are commands (they run there). A path outside it, or a request to leave the sandbox, is not.
-// Web tools stay with the internet switch.
-// Paths are found by key name (the CLIs' own names for them) and, under any key, by looking like an absolute path, at
-// any depth and in arrays: an unfamiliar shape can't hide a path. Command text is left alone (a command names programs
-// and arguments, not the paths it touches; commands run in the workspace).
-const PATH_KEYS=new Set(['path','paths','file_path','filePath','file','files','notebook_path','cwd','workdir','directory','dir','target','source','destination','old_path','new_path','uri','url']);
-const COMMAND_KEYS=new Set(['command','cmd','commandLine','script','args','argv']);
-const ABSOLUTE=/^(?:[A-Za-z]:[\\/]|\\\\|\/(?!\/))/;
-// A CLI's own settings inside the workspace would change its permissions from its next start (Claude Code reads
-// .claude/settings*.json from its working folder), so an agent may not write there.
-const AGENT_SETTINGS=/(^|[\\/])\.(claude|codex|gemini|grok)([\\/]|$)/i;
-// A request to leave the sandbox (Codex: sandbox_permissions "require_escalated", with_escalated_permissions true) is
-// found by its setting's name, never by file content that happens to contain such a word.
-const ESCALATION_KEY=/escalat|sandbox_permissions|danger/i,ESCALATION_VALUE=/^(require_escalated|danger-full-access)$/i;
-export function buildPermission(request:{raw:{toolCall?:{locations?:Array<{path?:string}>|null;rawInput?:unknown;title?:string|null}}},root:string){
-  const call=request.raw.toolCall,raw=call?.rawInput,paths=[...(call?.locations??[]).map(l=>l.path)];
-  let escalates=false;
-  const visit=(v:unknown,depth=0)=>{
-    if(!v||typeof v!=='object'||depth>8)return;
-    for(const [k,x] of Object.entries(v as Record<string,unknown>)){
-      if(ESCALATION_KEY.test(k)&&!!x&&x!=='use_default'||typeof x==='string'&&ESCALATION_VALUE.test(x))escalates=true;
-      if(COMMAND_KEYS.has(k))continue;
-      if(typeof x==='string'){if(PATH_KEYS.has(k)||ABSOLUTE.test(x))paths.push(x);}
-      else visit(x,depth+1);
-    }
-  };
-  visit(raw);
-  if(escalates)return {decision:undefined,reason:'asks to leave its sandbox'};
-  const norm=(p:string)=>process.platform==='win32'?p.toLowerCase():p,base=resolve(root),resolved=paths.filter((p):p is string=>!!p&&!/^[a-z][a-z0-9+.-]*:\/\//i.test(p)).map(p=>resolve(base,p));
-  const outside=resolved.find(p=>!isInside(norm(p),norm(base)));
-  if(outside)return {decision:undefined,reason:`outside its copy (${outside})`};
-  const settings=resolved.find(p=>AGENT_SETTINGS.test(relative(base,p)));
-  return settings?{decision:undefined,reason:`a CLI's own settings folder (${settings})`}:{decision:{outcome:'allow_once' as const},reason:''};
-}
 // Claude Code also obeys the user's own permission settings: allow rules or a permissive default mode approve a tool
 // before AvA's gate is asked, and ACPX offers no way to switch those settings off for one session. The agent's screen
 // says so once, rather than the gate appearing to be in charge.
@@ -250,7 +217,8 @@ export const LAUNCH_TIME_WEB=new Set<Provider>(['codex','grok-build','vercel']);
 // merely mentions "web search" is not a web tool (a title is free text), and edits, commands and reads never are.
 const WEB_TOOL=/^(?:Run\s+)?(?:search_web|read_url_content|read_url|url_content|web[ _-]?search|web[ _-]?fetch|google_web_search|fetch_url|browse_url)\b/i;
 const NEVER_WEB=new Set(['edit','execute','delete','move','read','think','switch_mode']);
-export function webPermission(request:{inferredKind?:string;raw:{toolCall?:{kind?:string|null;title?:string|null}}},internet:boolean){
+export function webPermission(request:ToolPermissionRequest,internet:boolean){
+  if(executionRequest(request))return undefined;
   const call=request.raw.toolCall,kind=call?.kind??request.inferredKind??'';
   const web=kind==='fetch'||request.inferredKind==='fetch'||!NEVER_WEB.has(kind)&&WEB_TOOL.test((call?.title??'').trim());
   return internet&&web?{outcome:'allow_once' as const}:undefined;
@@ -266,6 +234,12 @@ export function toolPermission(request:{inferredKind?:string;raw:{toolCall?:{kin
   if(state.bypass)return {decision:{outcome:'allow_once'},status:`Allowed (permissions: bypass): ${title}`};
   if(state.workspace){const build=buildPermission(request,state.workspace);return {decision:build.decision,status:build.decision?`Allowed in its copy: ${title}`:`Refused (${build.reason}): ${title}`};}
   return {decision:undefined,status:`Refused (permissions: ask; this mode allows no tools): ${title}`};
+}
+// Antigravity can finish an edit under a separate tool ID, then close its approval placeholder with this report.
+// Preserve the diagnostic and identify its source; it is not an AvA verdict on the separately observed file edit.
+export function providerToolActivity(provider:Provider,text:string):{type:'tool'|'status';text:string}{
+  if(provider==='antigravity'&&text.trim()==='tool call (failed): Tool call was approved but never executed.')return {type:'status',text:`Antigravity approval warning: a pending approval had no matching execution update. Check the separate edit results and output files. Original provider report: ${text}`};
+  return {type:'tool',text};
 }
 export class NativeParticipant implements ConfiguredParticipant {
   sessionId:string;
@@ -335,7 +309,7 @@ export class NativeParticipant implements ConfiguredParticipant {
         const thought=event.stream==='thought'||event.tag==='agent_thought_chunk';
         request.onEvent({type:thought?'thought':'output',text:event.text});
         if(!thought){last=event.messageId??'default';const text=(messages.get(last)??'')+event.text;if(text.length>256000)throw new AvAError('OUTPUT_LIMIT','Provider output exceeded the capture limit.');messages.set(last,text);}
-      }else if(event.type==='tool_call'){request.onEvent({type:'tool',text:event.text});}
+      }else if(event.type==='tool_call'){request.onEvent(providerToolActivity(this.accepted.provider,event.text));}
       else if(event.type==='status'){
         // A usage report is kept for the context ring rather than shown as an activity line.
         if(event.tag==='usage_update'){if(event.used!=null&&event.size!=null&&event.size>0)this.report={...this.report,context:{used:event.used,size:event.size},...(event.cost?{cost:event.cost}:{}),at:Date.now()};continue;}

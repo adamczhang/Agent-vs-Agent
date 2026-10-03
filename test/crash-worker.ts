@@ -31,7 +31,7 @@ const pair = store.createPair('crash');
 const participants = { cli1: new AutoParticipant('session-1', 'cli1'), cli2: new AutoParticipant('session-2', 'cli2') };
 for (const seat of SEATS) store.mutateSlot(pair.id, seat, s => { s.state = 'ready'; s.generation = 1; s.sessionId = participants[seat].sessionId; s.verifiedAt = 1; });
 const engine = new ConversationController(store);
-const run = engine.start(pair.id, conversationConfig('Crash topic', { completion: 'duration', durationMs: 600_000, maxRequests: 6, perTurnMs: 60_000, paceMs: 0 }), 'start', participants);
+const run = engine.start(pair.id, conversationConfig('Crash topic', { opening: 'both', completion: 'duration', durationMs: 600_000, maxRequests: 6, perTurnMs: 60_000, paceMs: 0 }), 'start', participants);
 log({ type: 'started', runId: run.id, pairId: pair.id });
 const deadline = Date.now() + 20_000;
 while (!['completed', 'stopped', 'needs_attention'].includes(store.run(run.id).status)) {

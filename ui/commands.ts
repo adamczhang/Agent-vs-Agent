@@ -5,6 +5,7 @@ export class CommandClient {
   constructor(private storage:Storage,private key:string){try{this.pending=JSON.parse(storage.getItem(key)||'null')||undefined;}catch{this.pending=undefined;}}
   get draft(){return typeof this.pending?.params.text==='string'?this.pending.params.text:'';}
   get hasPending(){return !!this.pending;}
+  get pendingInput(){return this.pending?{method:this.pending.method,params:structuredClone(this.pending.params)}:undefined;}
   async execute(signature:string,method:string,params:Record<string,unknown>,send:(method:string,params:unknown)=>Promise<unknown>){
     if(this.pending?.signature!==signature){this.pending={signature,method,params,requestId:crypto.randomUUID()};this.storage.setItem(this.key,JSON.stringify(this.pending));}
     const pending=this.pending;

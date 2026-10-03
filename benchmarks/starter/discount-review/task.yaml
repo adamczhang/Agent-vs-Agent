@@ -1,0 +1,15 @@
+id: discount-review
+version: 1
+title: Find two shop logic bugs
+mode: review
+time_limit_minutes: 3
+prompt: |
+  Review src/cart.js for functional bugs. Do not edit the project.
+  Requirements: total(items, discountPercent) subtracts the percentage discount
+  from the sum of price * quantity. canShip(stock, quantity) returns true only
+  for a positive requested quantity no larger than the available stock.
+  For each bug, begin the finding with the exact location src/cart.js:<line>,
+  then explain the incorrect behavior and the correction. Do not report style issues.
+checks:
+  - contains: "src/cart.js:4"
+  - contains: "src/cart.js:8"

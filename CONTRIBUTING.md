@@ -1,6 +1,6 @@
 # Contributing to Agent vs Agent
 
-Start with the [roadmap](docs/roadmap.md) and [architecture](docs/architecture.md). Keep a change focused on one roadmap item or one reproducible problem. Windows is the supported platform; use Node.js 24 or newer and Git. No provider account is needed for the offline tests.
+The first stable baseline is **v0.2.0**. Start with the [roadmap](docs/roadmap.md) and [architecture](docs/architecture.md). Keep a change focused on one roadmap item or one reproducible problem. Windows is the supported platform; use Node.js 24 or newer and Git. No provider account is needed for the offline tests.
 
 ## Set up and verify
 
@@ -14,6 +14,8 @@ npm test
 `npm test` builds first and runs the full offline suite, including a synthetic schema-v1 migration fixture. Tests create temporary data folders. A skipped test is a regression; a clean checkout should run them all. CI repeats the checks on Windows with Node 24, packages the plugins, and smoke-tests both wrappers without model requests.
 
 For an interactive room with simulated agents, run `npm run dev:sim`. It uses isolated simulator data and prints the path of a private file containing the room link. Keep that link out of issues and screenshots. Stop the simulator with Ctrl+C.
+
+Run the browser regressions with `npx playwright install chromium --only-shell`, then `npm run test:browser`. They use one headless Chromium worker, fresh temporary data and scripted agents, with no model requests. They cover pane sizing, saved prompts/files, Build previews, Debate turns, Resources, benchmark execution and results. Preview security is covered separately by the server tests. Screenshots and the JSON report are in `test-results/`; network traces and videos are disabled to keep room credentials out of artifacts.
 
 For other development commands, set a temporary data folder first:
 

@@ -20,7 +20,7 @@ test('the room opens before its agents are active (they activate from it), and r
   assert.equal(factory.agents.length,0,'opening the room starts nothing');
   await activate(service,pair);
   const before=factory.agents.map(a=>a.calls.length);
-  const run=await service.call('run.start',{pairId:pair.id,text:'topic',requestId:'start',options:{paceMs:0}}) as {id:string};await flush();
+  const run=await service.call('run.start',{pairId:pair.id,text:'topic',requestId:'start',options:{opening:'both',paceMs:0}}) as {id:string};await flush();
   const reopened=await service.call('room.prepare',{pairId:pair.id}) as {roomId:string};assert.equal(reopened.roomId,room.roomId);
   assert.deepEqual(factory.agents.map(a=>a.calls.length),before.map(n=>n+1));
   await service.call('run.control',{runId:run.id,action:'stop'});await flush();await service.shutdown();service.store.close();
@@ -68,7 +68,7 @@ test('a new service owner invalidates stale activation receipts without losing s
 });
 test('a run keeps the participant identities recorded at its start after the slots change',async()=>{
   const {service}=fixture(),pair=await service.call('pair.create',{thread:'identity'}) as Pair;await activate(service,pair);
-  const run=await service.call('run.start',{pairId:pair.id,text:'topic',requestId:'start',options:{paceMs:0}}) as {id:string};await flush();
+  const run=await service.call('run.start',{pairId:pair.id,text:'topic',requestId:'start',options:{opening:'both',paceMs:0}}) as {id:string};await flush();
   await service.call('run.control',{runId:run.id,action:'stop'});await flush();
   await service.call('slot.configure',{pairId:pair.id,seat:'cli1',config:{provider:'claude',model:'other',auth:'provider-login'}});
   const view=await service.call('run.get',{runId:run.id}) as {run:{participants:Record<string,{provider:string;model:string}>;createdAt:string}};
@@ -85,7 +85,7 @@ test('run history lists a pair\'s runs newest first, pages, and sends no provide
   const ids:string[]=[];
   for(const n of [1,2,3]){
     if(n>1)await service.call('pair.reset',{pairId:pair.id,requestId:'reset'+n});
-    const run=await service.call('run.start',{pairId:pair.id,text:'topic '+n,requestId:'start'+n,options:{paceMs:0}}) as {id:string};ids.push(run.id);await flush();
+    const run=await service.call('run.start',{pairId:pair.id,text:'topic '+n,requestId:'start'+n,options:{opening:'both',paceMs:0}}) as {id:string};ids.push(run.id);await flush();
     factory.agents.at(-2)!.answer('A'+n);factory.agents.at(-1)!.answer('B'+n);await flush();
     await service.call('run.control',{runId:run.id,action:'stop'});await flush();
   }
@@ -102,7 +102,7 @@ test('run history lists a pair\'s runs newest first, pages, and sends no provide
 });
 test('message search is case-insensitive, treats wildcards literally, stays within the pair, and sends nothing',async()=>{
   const {service,factory}=fixture(),pair=await service.call('pair.create',{thread:'search'}) as Pair;await activate(service,pair);
-  const run=await service.call('run.start',{pairId:pair.id,text:'Talk about the Vikings',requestId:'start',options:{paceMs:0}}) as {id:string};await flush();
+  const run=await service.call('run.start',{pairId:pair.id,text:'Talk about the Vikings',requestId:'start',options:{opening:'both',paceMs:0}}) as {id:string};await flush();
   factory.agents[0]!.answer('Offense wins 100% of the time');factory.agents[1]!.answer('Defense_first, honestly');await flush();
   await service.call('run.control',{runId:run.id,action:'stop'});await flush();
   const calls=factory.agents.map(a=>a.calls.length);
@@ -137,7 +137,7 @@ test('presets save, replace by name, list, delete idempotently, and refuse provi
 });
 test('clear context stops the running conversation and gives both agents fresh sessions that the next run uses',async()=>{
   const {service,factory}=fixture(),pair=await service.call('pair.create',{thread:'clear'}) as Pair;await activate(service,pair);
-  const first=await service.call('run.start',{pairId:pair.id,text:'first topic',requestId:'start1',options:{paceMs:0}}) as {id:string;sessions:Record<string,string>};await flush();
+  const first=await service.call('run.start',{pairId:pair.id,text:'first topic',requestId:'start1',options:{opening:'both',paceMs:0}}) as {id:string;sessions:Record<string,string>};await flush();
   const old=factory.agents.slice();
   const cleared=await service.call('pair.clear',{pairId:pair.id,requestId:'clear1'}) as Pair;
   assert.equal(service.store.run(first.id).status,'stopped');assert.equal(cleared.activeRunId,null);
@@ -145,7 +145,7 @@ test('clear context stops the running conversation and gives both agents fresh s
   for(const seat of ['cli1','cli2'] as const){assert.equal(cleared.slots[seat].state,'ready');assert.notEqual(cleared.slots[seat].sessionId,first.sessions[seat]);}
   assert.deepEqual(await service.call('pair.clear',{pairId:pair.id,requestId:'clear1'}),cleared,'a retried clear is not repeated');
   assert.equal(factory.agents.length,old.length+2);
-  const second=await service.call('run.start',{pairId:pair.id,text:'fresh test prompt',requestId:'start2',options:{paceMs:0}}) as {id:string};await flush();
+  const second=await service.call('run.start',{pairId:pair.id,text:'fresh test prompt',requestId:'start2',options:{opening:'both',paceMs:0}}) as {id:string};await flush();
   const fresh=factory.agents.slice(-2);
   assert.ok(fresh.every(a=>a.calls.at(-1)!.request.text.includes('fresh test prompt')),'the fresh sessions receive the new prompt');
   assert.ok(fresh.every(a=>!a.calls.some(c=>c.request.text.includes('first topic'))),'nothing from the first conversation reaches them');
@@ -153,14 +153,14 @@ test('clear context stops the running conversation and gives both agents fresh s
 });
 test('clear context refuses a conversation that needs attention',async()=>{
   const {service,factory}=fixture(),pair=await service.call('pair.create',{thread:'clear-attention'}) as Pair;await activate(service,pair);
-  await service.call('run.start',{pairId:pair.id,text:'topic',requestId:'start',options:{paceMs:0}});await flush();
+  await service.call('run.start',{pairId:pair.id,text:'topic',requestId:'start',options:{opening:'both',paceMs:0}});await flush();
   factory.agents[0]!.raw('not json');await flush();factory.agents[0]!.raw('still not json');await flush();
   await assert.rejects(service.call('pair.clear',{pairId:pair.id,requestId:'c'}),/needs attention/);
   await service.shutdown();service.store.close();
 });
 test('replayed step and reset commands do not submit additional model requests',async()=>{
   const {service,factory}=fixture(),pair=await service.call('pair.create',{thread:'duplicate-control'}) as Pair;await activate(service,pair);
-  const run=await service.call('run.start',{pairId:pair.id,text:'topic',requestId:'start',options:{paceMs:0}}) as {id:string};await flush();
+  const run=await service.call('run.start',{pairId:pair.id,text:'topic',requestId:'start',options:{opening:'both',paceMs:0}}) as {id:string};await flush();
   await service.call('run.control',{runId:run.id,action:'pause',requestId:'pause'});
   factory.agents[0]!.answer('A');factory.agents[1]!.answer('B');await flush();
   await service.call('run.control',{runId:run.id,action:'step',requestId:'step'});await flush();

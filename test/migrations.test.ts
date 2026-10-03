@@ -14,7 +14,7 @@ const tables = (db: DatabaseSync) => db.prepare("SELECT name FROM sqlite_master 
 test('a new database is created at the latest schema with every table', () => {
   const store = new Store(join(tempDir('ava-mig-'), 'ava.sqlite'));
   assert.equal(version(store.db), SCHEMA_VERSION);
-  assert.deepEqual(tables(store.db), ['attachments', 'commands', 'deliveries', 'direct_messages', 'events', 'menus', 'messages', 'pairs', 'phases', 'presets', 'processes', 'rooms', 'runs', 'thread_titles', 'turns']);
+  assert.deepEqual(tables(store.db), ['app_settings', 'attachments', 'bench_attempts', 'bench_jobs', 'commands', 'deliveries', 'direct_messages', 'events', 'menus', 'messages', 'pairs', 'phases', 'presets', 'processes', 'rooms', 'runs', 'thread_titles', 'turns']);
   store.close();
 });
 test('a pilot-era database that already has the ad hoc menus and rooms tables migrates without losing rows', () => {
