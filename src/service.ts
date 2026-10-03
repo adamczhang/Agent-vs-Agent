@@ -1,0 +1,612 @@
+import { randomUUID } from 'node:crypto';
+import { execFile } from 'node:child_process';
+import { existsSync,readdirSync,rmSync,statSync } from 'node:fs';
+import { basename,dirname,join,relative } from 'node:path';
+import { z } from 'zod';
+import { SCHEMA_VERSION,Store,threadKey } from './store.js';
+import { packageVersion } from './paths.js';
+import { ConversationController,internetNote } from './controller.js';
+import { ActivationManager,type ParticipantFactory } from './activation.js';
+import { NativeFactory,loadProviderSetups,type Catalog } from './providers.js';
+import { LABELS,Menus } from './menus.js';
+import { listProcesses,survivors,systemCensus,type Census,type ProcessLedger,type SystemProcess } from './census.js';
+import { combineStats,computeStats } from './stats.js';
+import { checkProject,copyFolder,copyProject,participantWorkspace,projectChanges,startProject } from './workspace.js';
+import { Previews,appTarget,pageIn } from './preview.js';
+import { createGatewayKey,forgetGatewayKey,gatewayCredit,gatewayKeyStatus,gatewayModels,type GatewayModel,type RunVercel } from './gateway.js';
+import { AvAError,PROVIDERS,SEATS,conversationConfig,type AgentUsage,type Pair,type Provider,type ProviderConfig,type Run,type Seat } from './types.js';
+
+const id=z.string().min(1).max(200),seat=z.enum(SEATS),provider=z.enum(PROVIDERS);
+const choice=z.object({key:z.string().min(1).max(100),value:z.string().max(200)});
+const providerConfig=z.object({provider,model:z.string().min(1).max(300),effort:choice.optional(),speed:choice.optional(),auth:z.enum(['provider-login','api'])}).strict();
+// Preset data mirrors the room's settings form; .strict() keeps provider/model choices out (they belong to Codex activation).
+const presetData=z.object({instructions:z.object({cli1:z.string().max(8000),cli2:z.string().max(8000)}).strict(),stopWhen:z.object({cli1:z.string().max(4000),cli2:z.string().max(4000)}).strict(),completion:z.enum(['auto','duration','either','both']),minutes:z.string().max(20),requests:z.string().max(20),pace:z.string().max(20)}).strict();
+const runOptions=z.object({instructions:z.object({cli1:z.string().max(8000),cli2:z.string().max(8000)}).optional(),stopWhen:z.object({cli1:z.string().max(4000),cli2:z.string().max(4000)}).optional(),completion:z.enum(['duration','either','both']).optional(),durationMs:z.number().positive().max(86400000).optional(),maxRequests:z.number().int().min(2).max(10000).optional(),perTurnMs:z.number().positive().max(3600000).optional(),paceMs:z.number().min(0).max(60000).optional(),lead:seat.optional(),mode:z.enum(['conversation','benchmark','build']).optional(),opening:z.enum(['both','cli1','cli2']).optional()}).strict();
+
+// Attachments the agents can take: images (as image content) and text files (inlined). Anything else is refused up
+// front, so nothing is silently dropped.
+const IMAGE_TYPES=new Set(['image/png','image/jpeg','image/gif','image/webp']);
+const TEXT_NAME=/\.(txt|md|markdown|json|jsonl|csv|tsv|ya?ml|toml|ini|xml|html?|css|scss|js|mjs|cjs|jsx|ts|tsx|py|rb|go|rs|java|kt|swift|c|cc|cpp|h|hpp|cs|php|sh|bash|ps1|sql|log|diff|patch|cfg|conf)$/i;
+function attachmentKind(name:string,mediaType:string,data:Buffer):'image'|'text'{
+  if(IMAGE_TYPES.has(mediaType)){if(data.length>8*1024*1024)throw new AvAError('FILE_TOO_LARGE',`${name} is larger than 8 MB.`);return 'image';}
+  if(mediaType.startsWith('text/')||/^application\/(json|xml|javascript|x-yaml|yaml|toml|x-sh)$/.test(mediaType)||TEXT_NAME.test(name)){
+    if(data.length>512*1024)throw new AvAError('FILE_TOO_LARGE',`${name} is larger than 512 KB. Text files are inlined into the prompt, so keep them small.`);
+    if(data.includes(0))throw new AvAError('UNSUPPORTED_FILE',`${name} isn't a text file.`);
+    return 'text';
+  }
+  throw new AvAError('UNSUPPORTED_FILE',`${name}: attach images (PNG, JPEG, GIF, WebP) or text files. Other files can't be sent to the agents.`);
+}
+// A direct reply is plain text; if the agent answers in the room's JSON envelope out of habit, show just its message.
+function plainReply(text:string){
+  try{const parsed=JSON.parse(text) as {message?:unknown};if(parsed&&typeof parsed.message==='string')return parsed.message.slice(0,32000);}catch{/* plain text */}
+  return text.trim().slice(0,32000)||'(empty reply)';
+}
+// Executables that belong to the agent CLIs themselves (seen live: codex-code-mode-host.exe,
+// codex-command-runner-<version>.exe), never treated as something an agent left running.
+const AGENT_HELPER=/^(codex|claude|grok|agy|antigravity)([-_.][\w.-]*)?\.exe$/i;
+// Calls that start or change runs, agents or history (refused while Clear history runs).
+const CHANGING=new Set(['run.start','run.broadcast','run.control','run.reconcile','direct.send','pair.clear','pair.reset','slot.configure','slot.activate','slot.cancel','slot.internet','slot.permissions','menu.choose','room.new','history.clear']);
+// Stops each process with its whole tree (Windows: taskkill /T; it fails for any that already exited, which is fine).
+function stopTrees(pids:number[]){
+  if(!pids.length)return Promise.resolve();
+  if(process.platform==='win32')return new Promise<void>(done=>{execFile('taskkill',['/F','/T',...pids.flatMap(pid=>['/PID',String(pid)])],{windowsHide:true,timeout:30_000},()=>done());});
+  for(const pid of pids){try{process.kill(-pid,'SIGTERM');}catch{try{process.kill(pid,'SIGTERM');}catch{/* already gone */}}}
+  return Promise.resolve();
+}
+// The processes listening on a local TCP port.
+function listeningOn(port:number){
+  return new Promise<number[]>(done=>{
+    const [command,args]=process.platform==='win32'?['powershell.exe',['-NoProfile','-NonInteractive','-Command',`Get-NetTCPConnection -State Listen -LocalPort ${port} -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess`]] as const
+      :['lsof',['-nP',`-iTCP:${port}`,'-sTCP:LISTEN','-t']] as const;
+    execFile(command,[...args],{windowsHide:true,timeout:30_000},(_error,stdout)=>done([...new Set(String(stdout??'').split(/\s+/).filter(Boolean).map(Number).filter(n=>n>0))]));
+  });
+}
+export interface ServiceFactory extends ParticipantFactory {
+  ledger?:ProcessLedger;
+  // Test doubles for the Vercel AI Gateway: its model list and the Vercel CLI.
+  gatewayModels?():Promise<GatewayModel[]>;
+  runVercel?:RunVercel;
+  list():unknown;
+  discover(provider:Provider,signal:AbortSignal,model?:string,auth?:ProviderConfig['auth']):Promise<Catalog>;
+}
+export class AvAService {
+  readonly store:Store;
+  readonly activation:ActivationManager;
+  readonly engine:ConversationController;
+  readonly menus:Menus;
+  private catalogs=new Map<string,{value:Catalog;at:number}>();
+  private tickets=new Map<string,{pairId:string;generations:number[];expires:number}>();
+  private operations=new Map<string,Promise<unknown>>();
+  private census:Census;
+  private processes:()=>Promise<SystemProcess[]>;
+  private stopProcesses:(pids:number[])=>Promise<void>;
+  private listeners:(port:number)=>Promise<number[]>;
+  readonly previews=new Previews();
+  constructor(readonly dataRoot:string,readonly factory:ServiceFactory=new NativeFactory(dataRoot,loadProviderSetups(dataRoot)),readonly mode:'live'|'simulation'='live',
+    options:{census?:Census;processes?:()=>Promise<SystemProcess[]>;stopProcesses?:(pids:number[])=>Promise<void>;listeners?:(port:number)=>Promise<number[]>}={}){
+    this.store=new Store(join(dataRoot,'ava.sqlite'));this.store.interruptUnfinished();
+    this.factory.ledger??=this.store;this.census=options.census??systemCensus;
+    this.processes=options.processes??listProcesses;this.stopProcesses=options.stopProcesses??stopTrees;this.listeners=options.listeners??listeningOn;
+    // Persisted receipts describe the old native processes, not this new owner.
+    for(const row of this.store.db.prepare('SELECT data FROM pairs').all()){
+      const pair=JSON.parse(String(row.data)) as import('./types.js').Pair;
+      for(const seat of SEATS){const slot=pair.slots[seat];if(slot.state==='ready'||slot.state==='verifying'){slot.state=pair.activeRunId?'failed':'configuring';slot.error='The service restarted. Activate this agent again.';if(!pair.activeRunId){slot.generation++;slot.sessionId=null;slot.verifiedAt=null;}}}
+      this.store.savePair(pair);
+    }
+    this.activation=new ActivationManager(this.store,factory);this.engine=new ConversationController(this.store);
+    // While a Build run is running for a pair, each agent may work in its own workspace (which holds its copy).
+    // So may a Build session's 1:1 line while it is answering.
+    this.activation.workspaceAccess=(pairId,seat)=>{
+      const pair=this.pairOrUndefined(pairId),run=pair?.activeRunId?this.store.run(pair.activeRunId):undefined;
+      const building=!!run&&run.config.mode==='build'&&['running','pausing'].includes(run.status);
+      if(!pair||!building&&!this.directTools.has(`${pairId}:${seat}`))return undefined;
+      return participantWorkspace(this.dataRoot,{pairId,seat,generation:pair.slots[seat].generation});
+    };
+    this.engine.cleanup=run=>this.stopLeftovers(run);
+    this.activation.directBusy=(pairId,seat)=>this.direct.has(`${pairId}:${seat}`);
+    this.menus=new Menus(this.store,this.activation,(p,m,a)=>this.catalog(p,m,a),(pairId,seat,level)=>this.setPermissions(pairId,seat,level),{
+      models:()=>this.factory.gatewayModels?.()??gatewayModels(this.dataRoot),keyStatus:()=>gatewayKeyStatus(this.dataRoot),
+      createKey:budget=>createGatewayKey(this.dataRoot,budget,this.factory.runVercel),forgetKey:()=>forgetGatewayKey(this.dataRoot)});
+  }
+  async catalog(provider:Provider,model='',auth:ProviderConfig['auth']='provider-login'){
+    const key=JSON.stringify([provider,model,auth]),cached=this.catalogs.get(key);
+    if(cached&&Date.now()-cached.at<60000)return cached.value;
+    const value=await this.factory.discover(provider,AbortSignal.timeout(120000),model,auth);this.catalogs.set(key,{value,at:Date.now()});return value;
+  }
+  async call(method:string,input:unknown):Promise<unknown>{
+    // While history is being cleared nothing may start or change: the clear deletes runs and agents' folders.
+    if(this.clearing&&CHANGING.has(method))throw new AvAError('CLEARING','History is being cleared. Try again in a moment.');
+    switch(method){
+      case 'health': return {mode:this.mode,pid:process.pid,version:packageVersion,schemaVersion:1,databaseVersion:SCHEMA_VERSION};
+      case 'pair.create': {const p=z.object({thread:id}).parse(input);return this.store.createPair(p.thread);}
+      case 'providers.list':return this.factory.list();
+      case 'providers.catalog':{const p=z.object({provider,model:z.string().optional(),auth:z.enum(['provider-login','api']).optional()}).parse(input);return this.catalog(p.provider,p.model,p.auth);}
+      case 'menu.show':{const p=z.object({pairId:id,seat,phase:z.enum(['home','provider','model','effort','speed','auth','permissions','gateway-key']).optional()}).parse(input);return this.menus.show(p.pairId,p.seat,p.phase);}
+      // The room's search over a long model list (the Vercel AI Gateway's); the result is a numbered menu like any other.
+      case 'menu.search':{const p=z.object({pairId:id,seat,query:z.string().max(100)}).parse(input);return this.menus.search(p.pairId,p.seat,p.query);}
+      case 'menu.current':{const p=z.object({pairId:id,seat}).parse(input);return this.menus.current(p.pairId,p.seat)??null;}
+      case 'menu.choose':{const p=z.object({pairId:id,seat,menuId:id,choice:z.string().min(1).max(20)}).parse(input);return this.menus.choose(p.pairId,p.seat,p.menuId,p.choice);}
+      case 'slot.configure':{const p=z.object({pairId:id,seat,config:providerConfig}).parse(input);return this.activation.configure(p.pairId,p.seat,p.config);}
+      case 'slot.activate':{const p=z.object({pairId:id,seat}).parse(input);const config=this.store.pair(p.pairId).slots[p.seat].config;if(!config)throw new AvAError('NO_CONFIG','Configure the slot first.');return this.activation.activate(p.pairId,p.seat,config);}
+      case 'slot.cancel':{const p=z.object({pairId:id,seat}).parse(input);this.activation.cancel(p.pairId,p.seat);return this.store.pair(p.pairId);}
+      case 'pair.get':{const p=z.object({pairId:id}).parse(input);return this.pairView(p.pairId);}
+      // An older name for Clear Session, kept for callers that still use it: one implementation for both.
+      case 'pair.reset':{const p=z.object({pairId:id,requestId:id.optional()}).parse(input);return this.call('pair.clear',{pairId:p.pairId,requestId:p.requestId??randomUUID()});}
+      // Clear context: stop any running conversation, then give both agents fresh native sessions so neither remembers it.
+      // Each new session makes one short access check. The old transcript stays in history.
+      case 'pair.clear':{
+        const p=z.object({pairId:id,requestId:id}).parse(input);
+        return this.once('clear',p.requestId,{pairId:p.pairId},async()=>{
+          const pair=this.store.pair(p.pairId);
+          if(SEATS.some(s=>!pair.slots[s].config))throw new AvAError('NOT_READY','Both agents need a saved configuration. Set them up with /ava CLI1 and /ava CLI2.');
+          if(pair.activeRunId){
+            const runId=pair.activeRunId;
+            if(this.store.run(runId).status!=='needs_attention')this.engine.stop(runId);
+            for(const deadline=Date.now()+30_000;;await new Promise(r=>setTimeout(r,100))){
+              const status=this.store.run(runId).status;
+              if(status==='stopped'||status==='completed')break;
+              if(status==='needs_attention')throw new AvAError('NEEDS_ATTENTION','This conversation needs attention. Release the pair first, then clear context.');
+              if(Date.now()>deadline)throw new AvAError('STOP_TIMEOUT','The conversation did not stop in time. Try again.');
+            }
+          }
+          await this.settleDirect(p.pairId);
+          await this.stopKeptServers(p.pairId);
+          const configs=this.store.pair(p.pairId).slots;
+          for(const s of SEATS)await this.activation.configure(p.pairId,s,configs[s].config!);
+          for(const s of SEATS)await this.activation.activate(p.pairId,s,configs[s].config!);
+          return this.pairView(p.pairId);
+        });
+      }
+      // The room opens whether or not its agents are ready: each one can be activated from the room itself (or with
+      // /ava CLI1 and CLI2 in the host). A ticket still binds the opening to the slots as they were when it was prepared.
+      case 'room.prepare':{
+        const p=z.object({pairId:id}).parse(input);
+        const existing=this.store.db.prepare('SELECT room_id FROM rooms WHERE pair_id=?').get(p.pairId);
+        if(existing)return {roomId:existing.room_id,reopened:true,pair:this.pairView(p.pairId)};
+        const pair=this.store.pair(p.pairId);
+        for(const [key,old] of this.tickets)if(old.expires<Date.now())this.tickets.delete(key);
+        const ticket=randomUUID();this.tickets.set(ticket,{pairId:p.pairId,generations:SEATS.map(s=>pair.slots[s].generation),expires:Date.now()+30000});
+        return {ticket,pair:this.pairView(p.pairId)};
+      }
+      case 'room.open':{
+        const p=z.object({ticket:id}).parse(input),ticket=this.tickets.get(p.ticket);
+        if(!ticket||ticket.expires<Date.now())throw new AvAError('INVALID_TICKET','Prepare the room again.');
+        const pair=this.store.pair(ticket.pairId);
+        if(SEATS.some((s,i)=>pair.slots[s].generation!==ticket.generations[i]))throw new AvAError('STALE_TICKET','An agent changed before the room opened. Open it again.');
+        const roomId=randomUUID();this.store.db.prepare('INSERT OR IGNORE INTO rooms VALUES(?,?)').run(pair.id,roomId);this.tickets.delete(p.ticket);
+        return {roomId:this.store.db.prepare('SELECT room_id FROM rooms WHERE pair_id=?').get(pair.id)!.room_id,pair:this.pairView(pair.id)};
+      }
+      // A new thread in a page of its own: a fresh pair, whose agents the user activates from that room.
+      case 'room.new':{
+        z.object({}).passthrough().parse(input);
+        const pair=this.store.createPair(`room-${randomUUID()}`),roomId=randomUUID();
+        this.store.db.prepare('INSERT INTO rooms VALUES(?,?)').run(pair.id,roomId);
+        return {roomId,pairId:pair.id};
+      }
+      // Threads whose agents are live (or starting) in this service: each one runs two CLI processes on this computer.
+      case 'pairs.active':{
+        const pairs=this.store.db.prepare('SELECT data FROM pairs').all().map(r=>JSON.parse(String(r.data)) as Pair);
+        return {pairs:pairs.map(p=>({pairId:p.id,agents:SEATS.filter(s=>!!this.activation.get(p.id,s)||p.slots[s].state==='verifying').length,running:!!p.activeRunId})).filter(p=>p.agents>0)};
+      }
+      case 'room.get':{const p=z.object({roomId:id}).parse(input);const row=this.store.db.prepare('SELECT pair_id FROM rooms WHERE room_id=?').get(p.roomId);if(!row)throw new AvAError('NOT_FOUND','Room not found.');return {mode:this.mode,pair:this.pairView(String(row.pair_id))};}
+      case 'run.start':{
+        const p=z.object({pairId:id,text:z.string().min(1).max(16000),requestId:id,options:runOptions.optional(),attachments:z.array(id).max(8).optional(),
+          build:z.object({kind:z.enum(['review','build']),path:z.string().max(1000).optional()}).strict().optional()}).parse(input);
+        const config=conversationConfig(p.text,p.options);
+        // Build: the copy's folder name comes from the request ID, so a retried start finds the same run. Building may
+        // start from an empty folder; a review needs a project.
+        if(config.mode==='build'){
+          const path=p.build?.path?.trim()??'';
+          if(!p.build||!path&&p.build.kind==='review')throw new AvAError('INVALID_PROJECT','Choose the project folder for the agents to review.');
+          const source=path?checkProject(path,this.dataRoot):'';config.build={kind:p.build.kind,source,folder:copyFolder(source||'app',p.requestId)};
+        }
+        const previous=this.store.previousStart(p.pairId,config,p.requestId);
+        if(previous)return previous;
+        this.assertNotRestarting(p.pairId);
+        // A Build session holds one prompt: its agents' folders and apps belong to that build.
+        const openThread=this.openThreadId(this.store.pair(p.pairId)),earlier=openThread?this.store.threads().find(t=>t.id===openThread)?.runs??[]:[];
+        if(earlier.length&&(config.mode==='build'||earlier[0]!.config.mode==='build'))throw new AvAError('ONE_BUILD','A Build session takes one prompt. Clear Session to start the next one.');
+        // A new prompt after a run ends continues the same thread: the agents keep their sessions and remember it.
+        // Clear Session (pair.clear) is how the user gives both agents fresh ones.
+        this.assertNoDirect(p.pairId);
+        const participants=this.activation.participants(p.pairId),attachments=this.attachable(p.pairId,p.attachments);
+        let copied:ReturnType<typeof copyProject>|undefined;const made:string[]=[];
+        try{
+          if(config.build){
+            // Each agent gets its own copy (or empty folder), inside its own workspace; then Codex may edit and run commands there.
+            const pair=this.store.pair(p.pairId);
+            for(const seat of SEATS){
+              const target=join(participantWorkspace(this.dataRoot,{pairId:p.pairId,seat,generation:pair.slots[seat].generation}),config.build.folder);
+              copied=config.build.source?copyProject(config.build.source,target):startProject(target);made.push(target);
+            }
+          }
+          // (Codex's sandbox is set again before each request; this spares its first one the switch.)
+          for(const seat of SEATS)await participants[seat].setBuildAccess?.(!!config.build);
+          const run=this.engine.start(p.pairId,config,p.requestId,participants,attachments);
+          if(copied)this.store.event(run.id,'build_copied',{files:copied.files,bytes:copied.bytes,gitSource:copied.gitSource,baseline:copied.baseline});
+          return run;
+        // A start that fails takes its copies with it, so a retry with the same request starts clean.
+        }catch(error){for(const dir of made)rmSync(dir,{recursive:true,force:true});throw error;}
+      }
+      // Build results: what each agent changed in its copy, and a preview of it served on its own origin.
+      case 'build.changes':{const p=z.object({runId:id,seat}).parse(input);return projectChanges(this.buildCopy(p.runId,p.seat).copy);}
+      // The app the agent named (APP: …), else the page found in its folder. A server it left running opens directly.
+      case 'build.preview':{
+        const p=z.object({runId:id,seat}).parse(input),{copy,workspace}=this.buildCopy(p.runId,p.seat),app=this.appOf(p.runId,p.seat);
+        if(app?.kind==='server')return {kind:'server',url:app.url,origin:new URL(app.url).origin,entry:app.url,named:true};
+        const target=app?join(workspace,app.path):copy,file=statSync(target).isFile();
+        const place=file?{root:dirname(target),page:basename(target)}:pageIn(target);
+        const opened=await this.previews.open(`${p.runId}:${p.seat}`,place.root,place.page);
+        return {kind:'static',...opened,entry:place.page?relative(workspace,join(place.root,place.page)).replaceAll('\\','/'):'',named:!!app};
+      }
+      case 'history.clear':{
+        const p=z.object({pairId:id.optional(),requestId:id}).parse(input);
+        return this.once('history',p.requestId,{pairId:p.pairId??null},async()=>this.clearHistory(p.pairId));
+      }
+      // Files for the next room message: stored first, then referenced by ID (so retries never resend the bytes).
+      case 'attachment.add':{
+        const p=z.object({name:z.string().trim().min(1).max(200),mediaType:z.string().max(100),data:z.string().max(12_000_000)}).parse(input),bytes=Buffer.from(p.data,'base64');
+        return this.store.saveAttachment(p.name,p.mediaType||'application/octet-stream',attachmentKind(p.name,p.mediaType,bytes),bytes);
+      }
+      case 'attachment.get':{const p=z.object({id}).parse(input);return {...this.store.attachment(p.id),data:this.store.attachmentData(p.id).toString('base64')};}
+      case 'slot.permissions':{const p=z.object({pairId:id,seat,level:z.enum(['ask','bypass'])}).parse(input);await this.setPermissions(p.pairId,p.seat,p.level);return this.pairView(p.pairId);}
+      case 'thread.rename':{
+        const p=z.object({threadId:id,title:z.string().trim().max(120)}).parse(input),thread=this.findThread(p.threadId);
+        this.store.setThreadTitle(thread.id,p.title||null);return {threadId:thread.id,title:p.title||null};
+      }
+      case 'run.get':{
+        const p=z.object({runId:id,after:z.number().int().min(0).optional()}).parse(input),run=this.engine.snapshot(p.runId);
+        const attention=run.status==='needs_attention'?{uncertainTurns:Number(this.store.db.prepare("SELECT COUNT(*) n FROM turns WHERE run_id=? AND status IN ('uncertain','queued','submitted')").get(p.runId)!.n),ownedHere:!!this.engine.ownership(p.runId)}:undefined;
+        return {run,messages:this.store.messages(p.runId),events:this.store.events(p.runId,p.after),attention};
+      }
+      case 'run.stats':{const p=z.object({runId:id}).parse(input);return this.runStats(p.runId);}
+      // Threads: the room's left panel. The whole pool (every chat, from every host), newest activity first. Read-only.
+      case 'threads.list':{const p=z.object({pairId:id.optional(),limit:z.number().int().min(1).max(500).optional()}).parse(input);return {threads:this.threadList(p.pairId).slice(0,p.limit??200)};}
+      case 'thread.get':{const p=z.object({threadId:id}).parse(input);return this.threadView(p.threadId);}
+      case 'thread.stats':{const p=z.object({threadId:id}).parse(input),thread=this.findThread(p.threadId);return combineStats(thread.id,thread.runs.map(r=>this.runStats(r.id)));}
+      case 'runs.list':{const p=z.object({pairId:id.optional(),limit:z.number().int().min(1).max(200).optional(),before:z.number().int().positive().optional()}).parse(input);return this.store.listRuns(p.pairId,p.limit??50,p.before);}
+      case 'preset.list':return {presets:this.store.listPresets()};
+      case 'preset.save':{const p=z.object({requestId:id,name:z.string().trim().min(1).max(80),data:presetData}).parse(input);return this.once('preset-save',p.requestId,{name:p.name,data:p.data},async()=>this.store.savePreset(p.name,p.data));}
+      case 'preset.delete':{const p=z.object({requestId:id,id}).parse(input);return this.once('preset-delete',p.requestId,{id:p.id},async()=>this.store.deletePreset(p.id));}
+      case 'runs.search':{const p=z.object({pairId:id.optional(),query:z.string().trim().min(1).max(200),limit:z.number().int().min(1).max(200).optional()}).parse(input);return {results:this.store.searchMessages(p.pairId,p.query,p.limit??50)};}
+      case 'run.reconcile':{
+        const p=z.object({runId:id,requestId:id,note:z.string().max(2000).optional()}).parse(input);
+        return this.once('reconcile',p.requestId,{runId:p.runId,note:p.note??null},async()=>{
+          const run=this.store.run(p.runId);
+          if(run.status!=='needs_attention')throw new AvAError('NOT_NEEDS_ATTENTION','Only a run that needs attention can be released.');
+          if(this.engine.ownership(p.runId)?.active)throw new AvAError('OWNED_WORK_ACTIVE','A request for this run is still registered here. Stop the run and wait for cancellation first.');
+          if(this.store.pair(run.pairId).activeRunId!==run.id)throw new AvAError('NOT_PAIR_OWNER','This run no longer holds its pair; nothing was released.');
+          // Close this service's own sessions for the pair so nothing can produce late work, then prove that no process
+          // recorded for this run's sessions (or any child of one, even if the adapter itself exited) survives.
+          await this.activation.closePair(run.pairId);this.engine.detach(p.runId);
+          const checked=this.store.runProcesses(run.pairId,run.generations),alive=await this.census(checked);
+          if(alive.length)throw new AvAError('PROCESSES_ALIVE',`Provider processes from this pair are still running: ${alive.map(s=>`${s.name} (PID ${s.pid})`).join(', ')}. Close them, then release the pair again.`);
+          return this.store.reconcile(p.runId,{note:p.note??null,checked});
+        });
+      }
+      case 'run.broadcast':{const p=z.object({runId:id,text:z.string().min(1).max(16000),requestId:id,attachments:z.array(id).max(8).optional()}).parse(input);const pairId=this.store.run(p.runId).pairId;this.assertNoDirect(pairId);this.assertNotRestarting(pairId);
+        if(['benchmark','build'].includes(this.store.run(p.runId).config.mode??''))throw new AvAError('ONE_PROMPT','Each agent answers this prompt once; it takes no further messages.');return {messageId:this.engine.broadcast(p.runId,p.text,p.requestId,this.attachable(pairId,p.attachments))};}
+      case 'run.control':{
+        const p=z.object({runId:id,action:z.enum(['pause','resume','step','stop']),requestId:id.optional()}).parse(input);
+        return this.once('control',p.requestId??randomUUID(),{runId:p.runId,action:p.action},async()=>{
+          if(p.action==='resume'||p.action==='step'){const pairId=this.store.run(p.runId).pairId;this.assertNoDirect(pairId);this.assertNotRestarting(pairId);}
+          this.engine[p.action](p.runId);return this.engine.snapshot(p.runId);
+        });
+      }
+      // The agent's internet switch: enforced instantly by AvA's permission gate, or by restarting the agent (same
+      // session) when its provider fixes web access at launch (Codex).
+      case 'slot.internet':{
+        const p=z.object({pairId:id,seat,enabled:z.boolean(),requestId:id}).parse(input);
+        return this.once('internet',p.requestId,{pairId:p.pairId,seat:p.seat,enabled:p.enabled},async()=>this.setInternet(p.pairId,p.seat,p.enabled));
+      }
+      case 'direct.send':{
+        // tools: in a Build session, the agent may also run commands and edit files in its working folder (to clone a
+        // repository before the build, say).
+        const p=z.object({pairId:id,seat,text:z.string().trim().min(1).max(16000),requestId:id,tools:z.boolean().optional()}).parse(input);
+        return this.once('direct',p.requestId,{pairId:p.pairId,seat:p.seat,text:p.text,tools:!!p.tools},async()=>this.sendDirect(p.pairId,p.seat,p.text,!!p.tools));
+      }
+      case 'run.export':{
+        const p=z.object({runId:id}).parse(input);const run=this.store.run(p.runId);
+        const label=(sender:string)=>{const who=run.participants?.[sender as Seat];return who?`${sender} · ${LABELS[who.provider]} (${who.model})`:sender;};
+        const messages=this.store.messages(p.runId).filter(m=>m.state!=='queued'),times=this.store.messageTimes(p.runId);
+        // Portable record: identities, settings, timing, and text. Session IDs and generations stay internal.
+        const json={format:'ava-transcript',version:1,exportedAt:new Date().toISOString(),
+          run:{id:run.id,createdAt:run.createdAt??null,status:run.status,reason:run.reason,elapsedMs:run.elapsedMs,requests:run.requests,participants:run.participants??null,
+            settings:{topic:run.config.topic,completion:run.config.completion,durationMs:run.config.durationMs,maxRequests:run.config.maxRequests,paceMs:run.config.paceMs,lead:run.config.lead,instructions:run.config.instructions,stopWhen:run.config.stopWhen}},
+          messages:messages.map(m=>({id:m.id,seq:m.seq,sender:m.sender,label:m.sender==='user'?'user':label(m.sender),state:m.state,deliveredTo:m.deliveredTo??[],time:times.get(m.id)??null,text:m.text}))};
+        return {run:{id:run.id,status:run.status,reason:run.reason,elapsedMs:run.elapsedMs,createdAt:run.createdAt??null,participants:run.participants??null},messages,markdown:messages.map(m=>`## ${label(m.sender)}\n\n${m.text}`).join('\n\n'),json};
+      }
+      default:throw new AvAError('UNKNOWN_METHOD','Unknown AvA method.');
+    }
+  }
+  private async once(kind:string,requestId:string,input:unknown,work:()=>Promise<unknown>):Promise<unknown>{
+    const key=`${kind}:${requestId}`,saved=this.store.beginOperation(key,input);
+    if(!saved.fresh){
+      if(saved.record.status==='completed')return saved.record.result;
+      if(saved.record.status==='failed')throw new AvAError(String(saved.record.code),String(saved.record.error));
+      const pending=this.operations.get(key);if(pending)return pending;
+      throw new AvAError('OPERATION_INTERRUPTED','The earlier command has an uncertain outcome. Inspect the pair before issuing a new command.');
+    }
+    const task=Promise.resolve().then(work).then(result=>{this.store.finishOperation(key,{status:'completed',result});return result;},error=>{this.store.finishOperation(key,{status:'failed',code:error instanceof AvAError?error.code:'FAILED',error:error instanceof Error?error.message:String(error)});throw error;}).finally(()=>this.operations.delete(key));
+    this.operations.set(key,task);return task;
+  }
+  private runStats(runId:string){
+    const run=this.engine.snapshot(runId),rows=this.store.statsRows(runId);
+    return computeStats(run,rows.turns,rows.events,rows.replies,this.store.runProcesses(run.pairId,run.generations).length);
+  }
+  // The pair's current sessions as a thread ID, or null while either agent has no session.
+  private openThreadId(pair:Pair){
+    const sessions={cli1:pair.slots.cli1.sessionId,cli2:pair.slots.cli2.sessionId};
+    return sessions.cli1&&sessions.cli2?threadKey(pair.id,sessions):null;
+  }
+  private pairOrUndefined(id:string){try{return this.store.pair(id);}catch{return undefined;}}
+  // One summary for the thread list and the thread view. A thread with no prompts yet is "empty": the pair's fresh
+  // sessions (so Clear Session visibly starts a new one), possibly with direct messages already sent to prime them.
+  private summarize(thread:{id:string;pairId:string;runs:Run[]},activity:ReturnType<Store['runActivity']>,pair:Pair|undefined,direct?:{count:number;first:string;last:string}){
+    const current=!!pair&&this.openThreadId(pair)===thread.id,first=thread.runs[0],last=thread.runs.at(-1);
+    const live=pair?.activeRunId&&thread.runs.some(r=>r.id===pair.activeRunId)?this.engine.snapshot(pair.activeRunId):undefined,shown=live??last;
+    const counts=thread.runs.map(r=>activity.get(r.id));
+    const verified=current&&pair?Math.max(...SEATS.map(s=>pair.slots[s].verifiedAt??0)):0;
+    const times=[...counts.map(c=>c?.lastAt),...thread.runs.map(r=>r.createdAt),direct?.last,verified?new Date(verified).toISOString():undefined].filter((t):t is string=>!!t).sort();
+    const slots=current&&pair&&pair.slots.cli1.config&&pair.slots.cli2.config?{cli1:pair.slots.cli1.config,cli2:pair.slots.cli2.config}:null;
+    const named=(this.titles??=this.store.threadTitles()).get(thread.id);
+    // A thread's mode is its first prompt's: conversation threads and benchmark threads are listed separately.
+    return {id:thread.id,pairId:thread.pairId,title:named??first?.config.topic.slice(0,300)??'',named:!!named,mode:first?(first.config.mode??'conversation'):null,createdAt:first?.createdAt??direct?.first??times[0]??null,updatedAt:times.at(-1)??null,runIds:thread.runs.map(r=>r.id),
+      prompts:counts.reduce((n,c)=>n+(c?.prompts??0),0),replies:counts.reduce((n,c)=>n+(c?.replies??0),0),requests:thread.runs.reduce((n,r)=>n+r.requests,0),directMessages:direct?.count??0,
+      status:(shown?.status??(current?'ready':'cleared')) as string,reason:shown?.reason??null,live:!!live,current,participants:last?.participants??slots,empty:!first};
+  }
+  // Thread names, read once per list or view.
+  private titles?:Map<string,string>;
+  private threadList(pairId?:string){
+    this.titles=this.store.threadTitles();
+    const activity=this.store.runActivity(),pairs=new Map<string,Pair|undefined>(),pairOf=(id:string)=>{if(!pairs.has(id))pairs.set(id,this.pairOrUndefined(id));return pairs.get(id);};
+    const direct=new Map(this.store.directThreads().map(d=>[d.threadId,d]));
+    const groups=this.store.threads();
+    // Threads that so far only hold direct messages, plus this room's fresh sessions.
+    for(const d of direct.values())if(!groups.some(g=>g.id===d.threadId))groups.push({id:d.threadId,pairId:d.pairId,runs:[]});
+    const open=pairId?pairOf(pairId):undefined,openId=open&&this.openThreadId(open);
+    if(open&&openId&&!groups.some(g=>g.id===openId))groups.push({id:openId,pairId:open.id,runs:[]});
+    // Another chat's untouched fresh sessions are not a conversation; leave them out.
+    return groups.filter(g=>g.runs.length||direct.has(g.id)||g.id===openId).map(g=>this.summarize(g,activity,pairOf(g.pairId),direct.get(g.id))).sort((a,b)=>(b.updatedAt??'').localeCompare(a.updatedAt??''));
+  }
+  private findThread(threadId:string):{id:string;pairId:string;runs:Run[]}{
+    const found=this.store.threads().find(t=>t.id===threadId);if(found)return found;
+    const direct=this.store.directThreads().find(d=>d.threadId===threadId);if(direct)return {id:threadId,pairId:direct.pairId,runs:[]};
+    for(const row of this.store.db.prepare('SELECT data FROM pairs').all()){const pair=JSON.parse(String(row.data)) as Pair;if(this.openThreadId(pair)===threadId)return {id:threadId,pairId:pair.id,runs:[]};}
+    throw new AvAError('NOT_FOUND','Thread not found.');
+  }
+  // Everything the room shows for one thread: its runs (prompts), their messages with the time each appeared, and the
+  // direct messages with each agent (plus any reply still being written).
+  private threadView(threadId:string){
+    const thread=this.findThread(threadId),pair=this.pairOrUndefined(thread.pairId);
+    this.titles=this.store.threadTitles();
+    const summary=this.summarize(thread,this.store.runActivity(),pair,this.store.directThreads().find(d=>d.threadId===thread.id));
+    const runs=thread.runs.map(r=>{const run=this.engine.snapshot(r.id);return {id:run.id,status:run.status,reason:run.reason,createdAt:run.createdAt??null,elapsedMs:run.elapsedMs,requests:run.requests,
+      config:{topic:run.config.topic,completion:run.config.completion,durationMs:run.config.durationMs,maxRequests:run.config.maxRequests,mode:run.config.mode??'conversation',build:run.config.build??null},participants:run.participants??null};});
+    const messages=thread.runs.flatMap(r=>{const times=this.store.messageTimes(r.id);return this.store.messages(r.id).map((m,i)=>({...m,time:times.get(m.id)??(i===0?r.createdAt??null:null)}));});
+    const pending:Partial<Record<Seat,{partial:string;steps:string[]}>>={};
+    for(const seat of SEATS){const entry=this.direct.get(`${thread.pairId}:${seat}`);if(entry&&entry.threadId===thread.id)pending[seat]={partial:entry.partial.slice(-4000),steps:entry.steps.slice(-4)};}
+    return {thread:summary,runs,messages,direct:{messages:this.store.directMessages(thread.id),pending}};
+  }
+  // Direct (1:1) messages: one agent, inside its own session, in plain text. Nothing reaches the shared room or the
+  // other agent. The agent can't be asked two things at once, so a direct message needs the shared conversation to be
+  // stopped or paused between replies, and the conversation waits while a direct reply is being written.
+  private direct=new Map<string,{threadId:string;abort:AbortController;partial:string;steps:string[];done:Promise<void>}>();
+  // 1:1 requests (pairId:seat) that may use tools in the agent's workspace while they run.
+  private directTools=new Set<string>();
+  // Clear history in progress; agents (pairId:seat) restarting to change their internet access.
+  private clearing=false;
+  private restarting=new Set<string>();
+  private assertNotRestarting(pairId:string){
+    const seat=SEATS.find(s=>this.restarting.has(`${pairId}:${s}`));
+    if(seat)throw new AvAError('AGENT_BUSY',`Agent ${seat==='cli1'?1:2} is restarting to change its internet access. Try again in a moment.`);
+  }
+  private assertNoDirect(pairId:string){
+    const busy=SEATS.filter(s=>this.direct.has(`${pairId}:${s}`));
+    if(busy.length)throw new AvAError('DIRECT_BUSY',`${busy.map(s=>`Agent ${s==='cli1'?1:2}`).join(' and ')} ${busy.length>1?'are':'is'} still answering your direct message. Wait for the reply, then continue.`);
+  }
+  private async settleDirect(pairId:string){
+    const entries=SEATS.map(s=>this.direct.get(`${pairId}:${s}`)).filter((e):e is NonNullable<typeof e>=>!!e);
+    for(const entry of entries)entry.abort.abort(new AvAError('CANCELLED','Session cleared.'));
+    let timer:ReturnType<typeof setTimeout>|undefined;
+    await Promise.race([Promise.all(entries.map(e=>e.done)),new Promise(resolve=>{timer=setTimeout(resolve,10_000);})]).finally(()=>clearTimeout(timer));
+  }
+  private async setInternet(pairId:string,seat:Seat,enabled:boolean){
+    const pair=this.store.pair(pairId),live=this.activation.get(pairId,seat),n=seat==='cli1'?1:2;
+    // One restart at a time per agent: a second switch while it restarts would be lost (the new process reads the setting
+    // as it starts).
+    this.assertNotRestarting(pairId);
+    const restart=!!live&&live.launchedWithInternet!==undefined&&live.launchedWithInternet!==enabled;
+    if(restart){
+      // A restart can't interrupt a reply: the agent must be between requests.
+      if(this.direct.has(`${pairId}:${seat}`))throw new AvAError('DIRECT_BUSY',`Agent ${n} is still answering your direct message.`);
+      const run=pair.activeRunId?this.store.run(pair.activeRunId):undefined;
+      if(run&&(run.status!=='paused'||(this.engine.ownership(run.id)?.active??0)>0))throw new AvAError('AGENT_BUSY',`Agent ${n} restarts to change its internet access (it keeps its memory). Pause or stop the shared conversation first.`);
+    }
+    this.store.setSlotInternet(pairId,seat,enabled);
+    if(restart){
+      const key=`${pairId}:${seat}`;this.restarting.add(key);
+      try{this.engine.replaceParticipant(pairId,seat,await this.activation.relaunch(pairId,seat));}finally{this.restarting.delete(key);}
+    }
+    return {seat,internet:enabled,restarted:restart,pair:this.pairView(pairId)};
+  }
+  // Permissions take effect at the agent's next tool request (the gate reads them live). Codex's own mode follows at
+  // once when the agent is idle, else before its next request.
+  private async setPermissions(pairId:string,seat:Seat,level:'ask'|'bypass'){
+    this.store.setSlotPermissions(pairId,seat,level);
+    const participant=this.activation.get(pairId,seat),pair=this.store.pair(pairId);
+    const busy=this.direct.has(`${pairId}:${seat}`)||(pair.activeRunId?(this.engine.ownership(pair.activeRunId)?.active??0)>0:false);
+    if(participant&&!busy)await participant.setBuildAccess?.(!!this.activation.workspaceAccess?.(pairId,seat)).catch(()=>{});
+    return this.pairView(pairId);
+  }
+  private sendDirect(pairId:string,seat:Seat,text:string,tools=false){
+    const pair=this.store.pair(pairId),slot=pair.slots[seat],participant=this.activation.get(pairId,seat),n=seat==='cli1'?1:2,key=`${pairId}:${seat}`;
+    if(slot.state!=='ready'||!participant||!slot.sessionId)throw new AvAError('NOT_READY',`Agent ${n} isn't active. Activate it first.`);
+    if(this.direct.has(key))throw new AvAError('DIRECT_BUSY',`Agent ${n} is still answering your last direct message.`);
+    this.assertNotRestarting(pairId);
+    if(pair.activeRunId){
+      const run=this.store.run(pair.activeRunId);
+      if(run.status!=='paused'||(this.engine.ownership(run.id)?.active??0)>0)throw new AvAError('CONVERSATION_RUNNING','Pause or stop the shared conversation first: an agent can’t answer you directly while it is writing a shared reply.');
+    }
+    // A 1:1 line belongs to the thread both agents share, which exists once both are active.
+    const threadId=this.openThreadId(pair);
+    if(!threadId)throw new AvAError('NOT_READY','Activate both agents first: a 1:1 line belongs to the thread they share.');
+    const questionId=randomUUID(),abort=new AbortController();
+    // Tools only in a Build session: one with no prompt yet, or whose prompt was a build.
+    const runs=this.store.threads().find(t=>t.id===threadId)?.runs??[];
+    if(tools&&runs.length&&runs[0]!.config.mode!=='build')throw new AvAError('NOT_BUILD','Only a Build session’s 1:1 lines can run commands.');
+    this.store.addDirect({id:questionId,pairId,threadId,seat,sender:'user',text,state:'pending'});
+    const entry={threadId,abort,partial:'',steps:[] as string[],done:Promise.resolve()};this.direct.set(key,entry);
+    const prompt=[
+      `Private message from the operator to you (${seat}) only. Your partner in the shared conversation can't see this message or your reply, and neither appears in the shared room.`,
+      'Use it in the shared conversation as the operator intends, but don’t quote or mention this private exchange there unless the operator asks you to.',
+      slot.permissions==='bypass'?'You may use your tools, run commands and edit files to do what the operator asks. Reply to the operator directly, in plain text (no JSON).'
+        :tools?'You may run commands and create or edit files in your working folder (your current directory) to do what the operator asks, for example cloning a repository there. Keep everything inside it. Reply to the operator directly, in plain text (no JSON).'
+        :'Reply to the operator directly, in plain text (no JSON). Do not edit files or run commands.',
+      internetNote(slot.internet===true),
+      `Message:\n${text}`,
+    ].join('\n\n');
+    entry.done=(async()=>{
+      const timeout=setTimeout(()=>abort.abort(new AvAError('TIMEOUT',`No reply within ${tools?15:5} minutes.`)),tools?900_000:300_000);
+      try{
+        // Build access only for a Build session's 1:1 line (Codex back to read-only otherwise).
+        if(tools)this.directTools.add(key);
+        await participant.setBuildAccess?.(tools);
+        const result=await participant.request({id:questionId,text:prompt,signal:abort.signal,onStarted:()=>{},onEvent:e=>{if(e.type==='output')entry.partial+=e.text;else if(e.type==='tool'&&tools)entry.steps.push(e.text.replace(/\s+/g,' ').slice(0,160));}});
+        if(result.status!=='completed'){this.store.setDirectState(questionId,'cancelled',abort.signal.aborted?String((abort.signal.reason as Error)?.message??'Cancelled.'):'The agent cancelled the reply.');return;}
+        this.store.addDirect({id:randomUUID(),pairId,threadId,seat,sender:'agent',text:plainReply(result.text),state:'sent'});this.store.setDirectState(questionId,'answered');
+      }catch(error){this.store.setDirectState(questionId,'failed',error instanceof Error?error.message:String(error));}
+      finally{clearTimeout(timeout);this.directTools.delete(key);if(this.direct.get(key)===entry)this.direct.delete(key);}
+    })();
+    return {id:questionId,threadId};
+  }
+  // A message's attachments, refused up front if an image would go to an agent that can't read images.
+  private attachable(pairId:string,ids:string[]=[]){
+    const files=ids.map(a=>this.store.attachment(a));
+    if(files.some(f=>f.kind==='image'))for(const seat of SEATS){
+      if(this.activation.get(pairId,seat)?.imageInput===false){const provider=this.store.pair(pairId).slots[seat].config?.provider??'';throw new AvAError('IMAGES_UNSUPPORTED',`${LABELS[provider as Provider]??`Agent ${seat==='cli1'?1:2}`} (Agent ${seat==='cli1'?1:2}) can't read images. Remove the image, or attach the content as a text file.`);}
+    }
+    return files;
+  }
+  // One agent's folder for a Build run, in the workspace of the session generation that ran it.
+  private buildCopy(runId:string,seat:Seat){
+    const run=this.store.run(runId);
+    if(run.config.mode!=='build'||!run.config.build)throw new AvAError('NOT_BUILD','That prompt wasn’t a Build run.');
+    const workspace=participantWorkspace(this.dataRoot,{pairId:run.pairId,seat,generation:run.generations[seat]}),copy=join(workspace,run.config.build.folder);
+    if(!existsSync(copy))throw new AvAError('NO_COPY','This agent’s folder is no longer there.');
+    return {workspace,copy};
+  }
+  // The app an agent named in its build report.
+  private appOf(runId:string,seat:Seat){
+    const run=this.store.run(runId),text=this.store.messages(runId).filter(m=>m.sender===seat).at(-1)?.text;
+    return text?appTarget(text,participantWorkspace(this.dataRoot,{pairId:run.pairId,seat,generation:run.generations[seat]})):undefined;
+  }
+  // App servers kept running after a build (recorded as build_server events) are stopped with their session: at Clear
+  // Session or Clear history. A recorded PID only counts while its start time still matches.
+  private async stopKeptServers(pairId?:string){
+    const rows=this.store.db.prepare(`SELECT e.data FROM events e JOIN runs r ON r.id=e.run_id WHERE e.type='build_server'${pairId?' AND r.pair_id=?':''}`).all(...(pairId?[pairId]:[]));
+    const kept=rows.flatMap(r=>(JSON.parse(String(r.data)) as {processes:Array<{pid:number;started:number}>}).processes);
+    if(!kept.length)return;
+    const alive=new Map((await this.processes().catch(()=>[] as SystemProcess[])).map(p=>[p.pid,p]));
+    const live=kept.filter(k=>Math.abs((alive.get(k.pid)?.started??-1e15)-k.started)<2000),pids=new Set(live.map(k=>k.pid));
+    await this.stopProcesses(live.filter(k=>!pids.has(alive.get(k.pid)!.ppid)).map(k=>k.pid)).catch(()=>{});
+  }
+  // Clear history: stops kept app servers, gives this room's agents fresh sessions (so they forget too), deletes every
+  // saved thread, 1:1 message and attachment, and every agent workspace that no current session uses.
+  private async clearHistory(pairId?:string){
+    const pairs=()=>this.store.db.prepare('SELECT data FROM pairs').all().map(r=>JSON.parse(String(r.data)) as Pair);
+    if(pairs().some(p=>p.activeRunId))throw new AvAError('PAIR_BUSY','Stop the running prompt first (or release it if it needs attention), then clear history.');
+    if(this.direct.size)throw new AvAError('DIRECT_BUSY','Wait for the 1:1 replies, then clear history.');
+    if(this.restarting.size)throw new AvAError('AGENT_BUSY','An agent is restarting. Try again in a moment.');
+    this.clearing=true;
+    try{return await this.clearEverything(pairs,pairId);}finally{this.clearing=false;}
+  }
+  private async clearEverything(pairs:()=>Pair[],pairId?:string){
+    await this.stopKeptServers();
+    this.previews.closeAll();
+    const pair=pairId?this.store.pair(pairId):undefined;
+    if(pair&&SEATS.every(s=>pair.slots[s].config)){
+      for(const s of SEATS)await this.activation.configure(pair.id,s,pair.slots[s].config!);
+      for(const s of SEATS)await this.activation.activate(pair.id,s,pair.slots[s].config!);
+    }
+    const threads=this.threadList().filter(t=>!t.empty).length,counts=this.store.clearHistory();
+    // Agent folders: each session's workspace, and its saved session state (acpx/, which holds that session's messages).
+    // Every pair's current session folders stay: their agents may be running in them.
+    const live=pairs().flatMap(p=>SEATS.map(s=>[p.id,s,String(p.slots[s].generation)]));
+    const dirs=(path:string)=>existsSync(path)?readdirSync(path,{withFileTypes:true}).filter(e=>e.isDirectory()).map(e=>join(path,e.name)):[];
+    let removed=0,kept=0;
+    for(const base of ['workspaces','acpx']){
+      const root=join(this.dataRoot,base),current=new Set(live.map(parts=>join(root,...parts)));
+      for(const pairDir of dirs(root))for(const seatDir of dirs(pairDir))for(const dir of dirs(seatDir)){
+        if(current.has(dir))continue;
+        try{rmSync(dir,{recursive:true,force:true,maxRetries:3,retryDelay:200});if(base==='workspaces')removed++;}catch{if(base==='workspaces')kept++;}
+      }
+    }
+    return {threads,...counts,workspacesRemoved:removed,workspacesInUse:kept,pair:pair?this.pairView(pair.id):null};
+  }
+  // Build runs: what an agent started and left running (a file watcher, a test runner) is stopped once it is done:
+  // the processes in its own process tree that started during the run and are still alive (the agent itself started
+  // earlier). The exception is the app server it named in its report (APP: http://localhost:<port>/), which keeps
+  // running, with its parents and children, until Clear Session.
+  private async stopLeftovers(run:Run){
+    const since=Date.parse(run.createdAt??'');if(!Number.isFinite(since))return;
+    const note=(seat:Seat,text:string)=>this.store.event(run.id,'activity',{seat,turnId:'cleanup',type:'status',text,late:false});
+    try{
+      const ledger=Object.fromEntries(SEATS.map(seat=>[seat,this.store.seatProcesses(run.pairId,seat,run.generations[seat])]));
+      const apps=Object.fromEntries(SEATS.map(seat=>[seat,run.config.build?.kind==='build'?this.appOf(run.id,seat):undefined]));
+      if(SEATS.every(seat=>!ledger[seat]!.length&&apps[seat]?.kind!=='server'))return;
+      const all=await this.processes(),byPid=new Map(all.map(p=>[p.pid,p]));
+      const fresh=(pid:number)=>(byPid.get(pid)?.started??0)>=since;
+      // A CLI's own helpers, started during a turn (Codex's code-mode host and command runner, say), and their console
+      // hosts are part of the agent; what runs under them still counts.
+      const helper=(p:{name:string;parentPid:number})=>AGENT_HELPER.test(p.name)||/^conhost\.exe$/i.test(p.name)&&AGENT_HELPER.test(byPid.get(p.parentPid)?.name??'');
+      for(const seat of SEATS){
+        const recorded=ledger[seat]!,own=new Set(recorded.map(r=>r.pid)),app=apps[seat];
+        const left=survivors(recorded,all).filter(p=>!own.has(p.pid)&&fresh(p.pid)&&!helper(p)),leftPids=new Set(left.map(p=>p.pid)),keep=new Set<number>();
+        if(app?.kind==='server'){
+          const listening=(await this.listeners(app.port).catch(()=>[] as number[])).filter(fresh);
+          for(const pid of listening){
+            keep.add(pid);
+            for(let up=byPid.get(pid)?.ppid;up!==undefined&&leftPids.has(up)&&!keep.has(up);up=byPid.get(up)?.ppid)keep.add(up);
+          }
+          for(let grew=keep.size>0;grew;){grew=false;for(const p of all)if(!keep.has(p.pid)&&keep.has(p.ppid)&&fresh(p.pid)){keep.add(p.pid);grew=true;}}
+          if(listening.length){
+            this.store.event(run.id,'build_server',{seat,url:app.url,processes:[...keep].map(pid=>({pid,started:byPid.get(pid)!.started,name:byPid.get(pid)!.name}))});
+            note(seat,`Its app server keeps running at ${app.url} until Clear Session`);
+          }else note(seat,`Nothing is listening at ${app.url}, the address it named`);
+        }
+        const stop=left.filter(p=>!keep.has(p.pid));
+        if(!stop.length)continue;
+        // Only the topmost leftovers are stopped by PID; stopping a tree takes its descendants with it.
+        const pids=new Set(stop.map(p=>p.pid));
+        await this.stopProcesses(stop.filter(p=>!pids.has(p.parentPid)).map(p=>p.pid)).catch(()=>{});
+        this.store.event(run.id,'build_cleanup',{seat,stopped:stop.map(p=>({pid:p.pid,name:p.name}))});
+        note(seat,`Stopped ${stop.length===1?'a process':`${stop.length} processes`} it left running: ${[...new Set(stop.map(p=>p.name))].slice(0,6).join(', ')}`);
+      }
+    }catch{/* best effort: the run's result doesn't depend on it */}
+  }
+  pairView(pairId:string){
+    const pair=this.store.pair(pairId),active=pair.activeRunId?this.store.run(pair.activeRunId):undefined;
+    return {...pair,activeRun:active?{id:active.id,status:active.status,reason:active.reason}:null,connected:Object.fromEntries(SEATS.map(s=>[s,!!this.activation.get(pairId,s)&&this.activation.get(pairId,s)?.isConnected?.()!==false])),
+      images:Object.fromEntries(SEATS.map(s=>[s,this.activation.get(pairId,s)?.imageInput!==false])),usage:Object.fromEntries(SEATS.map(s=>[s,this.usageOf(pair,s)])),mode:this.mode};
+  }
+  // An active agent's latest usage report (null before it reports any), with the Gateway key's credit for a Gateway agent.
+  private usageOf(pair:Pair,seat:Seat):AgentUsage|null{
+    const slot=pair.slots[seat],live=this.activation.get(pair.id,seat);
+    if(slot.state!=='ready'||!live||live.sessionId!==slot.sessionId)return null;
+    const report=live.usage?.(),credit=slot.config?.provider==='vercel'?gatewayCredit(this.dataRoot):undefined;
+    return report||credit?{...report,...(credit?{credit}:{}),at:report?.at??Date.now()}:null;
+  }
+  async shutdown(){
+    for(const row of this.store.db.prepare('SELECT data FROM runs').all()){
+      const run=JSON.parse(String(row.data)) as {id:string;status:string};
+      if(['running','pausing','paused'].includes(run.status))this.engine.stop(run.id);
+    }
+    for(const entry of this.direct.values())entry.abort.abort(new AvAError('CANCELLED','The service is shutting down.'));
+    this.previews.closeAll();
+    await this.activation.closeAll();
+    // Let stopped runs record their terminal state before the caller closes the store; anything still unsettled is quarantined on restart.
+    const unsettled=()=>this.store.db.prepare('SELECT data FROM runs').all().some(row=>['running','pausing','stopping'].includes((JSON.parse(String(row.data)) as {status:string}).status));
+    for(const deadline=Date.now()+5000;unsettled()&&Date.now()<deadline;)await new Promise(resolve=>setTimeout(resolve,25));
+  }
+}

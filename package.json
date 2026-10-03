@@ -1,0 +1,47 @@
+{
+  "name": "agent-vs-agent",
+  "version": "0.1.0",
+  "description": "Two AI coding agents side by side: Codex, Claude Code, Grok Build, Antigravity and the Vercel AI Gateway in one controlled room.",
+  "license": "MIT",
+  "author": "Adam Zhang <adam.dadvibes@gmail.com> (https://x.com/dad__vibes)",
+  "homepage": "https://github.com/adamczhang/Agent-vs-Agent#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/adamczhang/Agent-vs-Agent.git"
+  },
+  "bugs": {
+    "url": "https://github.com/adamczhang/Agent-vs-Agent/issues"
+  },
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "pretest": "npm run build",
+    "test": "node --import tsx --test test/*.test.ts",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.ui.json",
+    "build": "tsc -p tsconfig.build.json && vite build",
+    "serve": "node dist/src/server.js --standalone",
+    "gateway-key": "node dist/src/gateway-key.js",
+    "dev:sim": "vite build && node --import tsx scripts/dev-sim.ts",
+    "package": "npm run build && node --import tsx scripts/package.ts"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.4",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "tsx": "4.23.15",
+    "typescript": "7.0.2",
+    "vite": "8.3.2"
+  },
+  "dependencies": {
+    "@agentclientprotocol/claude-agent-acp": "0.85.1",
+    "@agentclientprotocol/codex-acp": "2.1.1",
+    "@modelcontextprotocol/sdk": "1.31.0",
+    "acpx": "0.19.4",
+    "zod": "4.6.5"
+  }
+}

@@ -1,0 +1,5 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [{"hooks":[{"type":"command","command":"node \"${PLUGIN_ROOT}/hooks/route.mjs\"","commandWindows":"node -e \"import(require('url').pathToFileURL(process.env.PLUGIN_ROOT+'/hooks/route.mjs').href)\"","timeout":15}]}]
+  }
+}

@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.ava-data/
+.ava-sim/
+.ava-live/
+release/
+*.log
+*.sqlite*
+pilot-evidence/**/private/
+.env
+.ava-serve/
+test-results/

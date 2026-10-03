@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "ava": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/dist/src/server.js", "--mcp"],
+      "env": { "AVA_COMMAND_NAME": "/agent-vs-agent:ava" }
+    }
+  }
+}

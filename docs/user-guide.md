@@ -1,0 +1,145 @@
+# Agent vs Agent: user guide
+
+The room in detail. For an overview, see the [README](../README.md).
+
+## Opening the room and activating agents
+
+- **Codex:** type `/ava start`. **Claude Code:** type `/agent-vs-agent:ava start`. The room opens in your browser panel (or you get its link).
+- Above each agent's screen, **Activate** stands where the agent's name goes. Click it to open that agent's setup menu: the same text menu the hosts print for `/ava CLI1`, in a small window. Click a line, or type its number; **B** goes back and **X** closes.
+  - Choose the CLI (Claude Code, Codex CLI, Grok Build or Antigravity; the same CLI can take both seats), then its model, effort, speed, account route and permissions.
+  - **Activate and verify** sends one short request to check that the model answers.
+- **Vercel AI Gateway** is the fifth choice. Its 250+ tool-using models come from about 30 makers.
+  - **Model:** pick a maker, then a model (newest first, 20 per page), or type in the search box to search them all. **Effort** offers that model's own reasoning levels.
+  - **The agent:** Codex, pointed at the Gateway (as `vercel ai-gateway setup` configures Codex), set up for AvA's own process only. Your Codex and Claude Code settings are never changed.
+  - **The key:** the Gateway works only with an AI Gateway API key. Your Vercel login can't call it directly, but it can create a key.
+    - **Gateway key** in the menu creates one named `agent-vs-agent`, with a monthly budget, using your Vercel CLI login.
+    - Alternatively, from a checkout, run `npm run gateway-key -- set` and paste a key you already have (it isn't shown), or set `AI_GATEWAY_API_KEY`.
+    - AvA keeps its key in the data folder (`secrets/ai-gateway.json`) and never shows it. `npm run gateway-key -- status` says whether the Gateway accepts it.
+  - **Internet switch:** the Gateway agent has no built-in web search, so the switch only lets its commands reach the network.
+- Once an agent is active, click its name to change its settings. A new model, effort or CLI needs reactivating, which starts a fresh session for that agent. Permissions change at once.
+- The text menus still work in the hosts: `/ava CLI1`, `/ava CLI2` (Codex), `/agent-vs-agent:ava CLI1` (Claude Code), with choices like `/ava CLI1 2`.
+
+### Permissions
+
+Each agent's setup menu has a **Permissions** line.
+
+- **Ask** (the default):
+  - **Prompt and Debate:** agents can't use tools that need permission.
+  - **Build:** each agent may read, edit and run commands inside its own folder.
+  - Refusals show in the agent's screen.
+- **Bypass:** AvA approves every tool request the agent makes, in every mode, which is useful for benchmarks where the agents should run code. The pane shows a red **Bypass** tag.
+  - **Codex:** runs in its own full-access mode.
+  - **Claude Code, Grok Build and Antigravity:** AvA's gate approves each request. Each CLI's own name for this is shown: bypass permissions, full access, always allow, YOLO.
+  - Web tools still follow the internet switch whenever the agent asks for them. Codex's commands in full-access mode can reach the network regardless.
+
+Bypass trusts the agent with your machine. Use it for tasks you'd let that CLI run unattended.
+
+## The room
+
+A white, three-part window:
+- **Left:** threads, Search, and the mode switch.
+- **Top half:** each agent's own screen (thinking, tool use and output as its CLI exposes them). Drag the divider between the two agents to resize them.
+- **Bottom half:** the shared channel, with the text box along the bottom edge.
+
+There is no third model acting as a relay. One message of yours goes to both agents at once; after that they take turns.
+
+### Modes
+
+Switched under Search; each lists its own threads.
+
+- **Prompt:** one prompt goes to both agents at the same moment, exactly as you wrote it. Each answers once in plain text, shown with how long it took, and the run ends. **Stats** has the timing and speed. Tools follow each agent's permissions.
+- **Debate:** the agents talk to each other. Prime each one privately with its 1:1 line (say "you are a CEO" and "you are a college student"), then give the shared topic. **Options → First to speak** picks who opens: both at once (the default), or one agent, with the other replying.
+- **Build:** both agents build the same thing at the same moment, each in its own folder, and post a link to their app in the shared channel.
+  - **One prompt per session,** with no messages while it runs. **New build session** (or Clear Session) starts the next one.
+  - **Setting up first:** in a Build session, an agent's 1:1 line can also run commands and edit files in its working folder. Use it to have each agent clone a repository or install something before you send the build prompt.
+  - **Where they work:** from scratch, each agent starts with an empty folder. Type a project folder in the row above the text box to have each start from its own copy of it instead. In a git repository, the copy holds tracked files plus uncommitted work, without ignored output such as `node_modules`. Your original is never touched.
+  - **The app link:** each agent ends its report with `APP:` and the page to open, or the address of a server it left running. The room shows that as **Open app**:
+    - **A page:** AvA serves the agent's folder on a loopback port of its own, so the app can't reach the room or its token, and the link works only from the room.
+    - **A server** (an app with an API, say): it keeps running until Clear Session or Clear history. Anything else an agent leaves running, such as a file watcher, is stopped when its build ends, and its screen says so.
+  - **Results** (the window button, or **Side by side** under a report) shows both apps running, each under its own agent's screen and just as tall, with the prompt row below. **Apps / Changes** in that row switches to what each agent changed, file by file. The chat button brings the conversation back.
+  - **If an agent stops early,** the other still finishes, and the stopped agent's screen says why. (Grok Build, for example, ends its turn when a permission is refused.) If an agent's report is complete but a command it ran is stuck waiting for input, AvA takes the report as final after a minute of quiet.
+  - **Review:** switch the row above the text box to **Review** and give a project folder. Each agent reports its findings from its own copy.
+  - **Folder access:** under Ask, inside its working folder each agent may read, edit and run commands, all approved automatically. Paths outside it, and requests to leave the sandbox, are refused.
+    - Codex switches to its own `workspace-write` sandbox for the build, and back after.
+    - Shell commands themselves are approved, so a command could still reach outside the folder.
+  - **Limits:** 30 minutes by default, set in Options.
+
+### Threads
+
+A thread is one continuous session with both agents. In Prompt and Debate, send as many prompts as you like; the agents remember the whole thread. A Build session takes one.
+
+- **New thread** (the compose button at the top of the sidebar) opens a clean page in the current mode, with its own two agents to activate. Each thread with live agents runs two CLI processes on this computer. From the third, AvA asks before opening another and again before activating its agents; you can go ahead anyway.
+- **Clear Session** (**⋯ → Clear Session**) stops anything running and gives this page's two agents fresh sessions. That starts a new thread at the top of the list; the old one stays readable. Each new session makes one short access check per agent.
+- The list is the shared pool: threads from every chat, in Codex or Claude Code. Search covers every saved message.
+- **Renaming:** double-click a thread's title (in the header or the list), or use **⋯ → Rename**. An empty name goes back to the first prompt.
+
+### 1:1 lines
+
+Two chips above the text box (**Codex 1:1**, **Claude Code 1:1**) each open a private chat window with one agent. Use them to prime each agent with different context or instructions.
+- A 1:1 message goes into that agent's own session, in the same thread, so the agent carries it into the shared conversation. Nothing from it appears in the shared channel or reaches the other agent.
+- An agent can't answer two things at once. A 1:1 message therefore needs the shared conversation stopped or paused, and the conversation waits while a 1:1 reply is being written.
+
+### Internet switch
+
+Next to each 1:1 chip, the globe button turns that agent's internet access on or off (off by default). AvA enforces it, not just the agent:
+- **Claude Code and Antigravity:** instantly. Their web tools ask permission each time, and AvA allows them only while the switch is on.
+- **Codex and Grok Build:** their web search runs without asking, so AvA sets it when the agent starts. Switching restarts that agent in the same session (it keeps its memory). This takes a few seconds and needs the shared chat paused or stopped.
+- **Every prompt** also tells each agent its current setting. Each agent's screen shows the switch at work.
+
+### Attachments
+
+The paperclip (or paste, or drag and drop) attaches images (PNG, JPEG, GIF, WebP, up to 8 MB) and text or code files (up to 512 KB, inlined into the prompt). Other file types are refused rather than silently dropped. Grok Build declares no image input, so with Grok in either seat AvA refuses an image up front.
+
+### Controls, options and stats
+
+- **Controls** (while a conversation runs):
+  - **Pause** drains current replies and freezes the clock at a reply boundary.
+  - **Next reply** advances one agent while paused. A message sent while paused gets one reply from each agent, then pauses again.
+  - **Stop** cancels active work.
+- **Options** (the sliders beside the text box) apply to the next prompt: a private instruction and a stop condition per agent, how the conversation ends, minutes, request limit, pace, and saved presets. Timed prompts ("…for 15 minutes") use duration mode.
+- **Context and usage** (the small ring beside each agent's status, like Claude's usage ring) fills as that agent's context window does. It turns amber at 80% and red at 95%. Click it for the numbers:
+  - **Context window:** tokens in use of the model's window, e.g. 161.5k / 200k.
+  - **This session:** input, output and cached tokens, and the agent's cost estimate at API prices (a subscription isn't billed per request), when the agent reports them.
+  - **Plan usage:** the CLIs don't pass their 5-hour and weekly limits to AvA, so this says where to see them (`/status` in Codex, `/usage` in Claude Code). A Vercel Gateway agent shows the key's credit instead.
+  - Codex and Claude Code report after each reply; Grok Build and Antigravity don't report their context.
+- **Stats** (the chart button) covers the whole thread: conversation time, time to first token, reply time, estimated tokens per second, a per-agent table, and a timeline. Its token figures are estimates (characters ÷ 4), comparable across all CLIs; the context ring shows what Codex and Claude Code report themselves.
+- **⋯** also has Replay and Export (JSON or Markdown, including the 1:1 lines).
+- **⋯ → Clear history** permanently deletes every saved thread in the shared data folder after a confirmation. That covers prompts, replies, 1:1 messages, attachments, and the agents' working folders with everything they built. It also stops app servers they left running and gives this page's agents fresh sessions.
+
+The two agents are isolated from each other. Each sees only the shared topic, your shared messages, and the other's final replies: never the other's 1:1 messages, private instructions, thinking, or tool activity. Closing the room leaves a running conversation running; reopening it sends no model prompts.
+
+## Hosts
+
+### Codex
+
+Typed `/ava …` commands are routed by the plugin's prompt hook to its `ava_command` tool.
+- A fresh installation needs its hook reviewed in Codex's Plugins settings or `/hooks`; installation alone doesn't approve a hook.
+- Ordinary messages stay with Codex.
+
+### Claude Code
+
+`/agent-vs-agent:ava …` (Claude Code namespaces plugin commands).
+- A slash command replaces the prompt hook, so there is no hook to review.
+- The command pre-approves only `ava_command`, only while it runs, and Claude can't run it by itself.
+- Each Claude Code session gets its own room.
+
+Both plugins drive the same background service and share one conversation pool.
+
+## Providers and data
+
+- **Locked versions:** ACPX 0.19.4, the Codex ACP adapter 2.1.1, and the Claude ACP adapter 0.85.1. Every agent runs your installed CLI: Codex 0.159.1 or newer (also used for the Vercel AI Gateway) and Claude Code 2.1.286 or newer. AvA says which to update if one is older.
+- **Accounts:** the four coding CLIs use their own sign-in (provider-login); AvA never asks for their API keys. The Vercel AI Gateway is API-key only: AvA keeps its key in the data folder's `secrets/` and passes it only to Gateway agents. Model and option lists come from the running provider.
+- **API keys:** conflicting API credential environment variables block the provider-login route rather than silently switching accounts.
+- **Data folder:** all state lives in one folder that both hosts share: `%USERPROFILE%\AgentVsAgent` by default. Set `AVA_DATA_DIR`, or `"config": {"dataDir": …}` in `package.json` before `npm run package`, to use another one. (Not AppData: the Claude desktop app redirects AppData into private storage, which would split the history.)
+  - It is outside AppData on purpose: the Claude desktop app is a packaged Windows app, and Windows would redirect its AppData writes.
+  - SQLite holds runs, messages, activity and settings. Each agent session has its own working folder under `workspaces/`.
+  - Existing history can be copied in with `node --import tsx scripts/import-data.ts --from <old folder>`.
+- **Codex participants:** these run with plugins, apps and hooks disabled, so a child agent can't start AvA recursively. That doesn't change your Codex configuration.
+
+## Safety
+
+- **Loopback only:** the service binds only to 127.0.0.1, checks Host and Origin, and requires a random bearer token.
+  - The room receives the token in the URL fragment and removes it from the address bar. Don't share the room link or `server.json` in the data folder.
+- **Interrupted work:** on a service interruption or an uncertain cancellation, AvA quarantines the run and never resends work whose outcome is unknown.
+  - **Release** (or `/ava reconcile`) frees the pair once no provider process from it is running.
+- **Separate origins:** app previews run on separate loopback origins behind a cookie that only the room's link sets.

@@ -1,0 +1,7 @@
+{
+  "name": "buggy-shop",
+  "private": true,
+  "type": "module",
+  "description": "A tiny project with known bugs, used to check Agent vs Agent's Build mode (Review) against real agents.",
+  "scripts": { "test": "node --test" }
+}
