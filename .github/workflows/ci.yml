@@ -18,9 +18,11 @@ jobs:
   windows:
     runs-on: windows-latest
     timeout-minutes: 20
-    env:
-      AVA_DATA_DIR: ${{ runner.temp }}\ava-ci-data
     steps:
+      - name: Isolate AvA data
+        shell: pwsh
+        run: |
+          "AVA_DATA_DIR=$(Join-Path $env:RUNNER_TEMP 'ava-ci-data')" >> $env:GITHUB_ENV
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
