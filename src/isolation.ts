@@ -22,8 +22,12 @@ export async function codexMcpNames(cli: Pick<InstalledCli, 'command' | 'args'>,
 }
 
 export function disabledMcpNames(discovered: string[]) {
-  const names = new Set(discovered);
-  // These are Codex's server identifiers. Refuse unexpected names instead of generating shell/config syntax from them.
-  if ([...names].some(name => !/^[\w-]+$/.test(name))) throw new AvAError('MCP_ISOLATION', 'Unsupported MCP server name; agent startup was refused.');
-  return [...names].sort();
+  return [...new Set(discovered)].sort();
+}
+
+export function codexIsolationArgs(names:string[]) {
+  // CLI dotted paths split at dots even inside quoted segments. A TOML inline table preserves literal names
+  // and merges enabled:false into each existing transport without including any transport credentials.
+  const servers=names.map(name=>`${JSON.stringify(name)}={enabled=false}`).join(',');
+  return [...CODEX_ISOLATION_FLAGS,...(names.length?['-c',`mcp_servers={${servers}}`]:[])];
 }

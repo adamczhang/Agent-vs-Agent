@@ -23,13 +23,94 @@
   color-scheme: light;
 }
 * { box-sizing: border-box; scrollbar-width: thin; scrollbar-color: rgba(0, 0, 0, .16) transparent; }
+.library-open { display: flex; align-items: center; gap: 9px; margin: 5px 12px 7px; padding: 9px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); text-align: left; font-size: 13px; font-weight: 550; }
+.library-open:hover { background: var(--hover); }
+.prompt-manager { width: min(1040px, calc(100vw - 40px)); height: min(840px, calc(100dvh - 40px)); max-width: none; max-height: none; padding: 0; border: 1px solid var(--line); border-radius: 16px; color: var(--text); background: var(--bg); box-shadow: 0 24px 80px #0003; overflow: hidden; }
+.prompt-manager[open] { display: flex; flex-direction: column; }
+.prompt-manager::backdrop { background: #0004; backdrop-filter: blur(3px); }
+.library-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 20px 24px 16px; border-bottom: 1px solid var(--line); }
+.library-heading h2 { display: flex; align-items: center; gap: 9px; margin: 0; font-size: 19px; letter-spacing: -.025em; }
+.library-heading p { margin: 5px 0 0; color: var(--text-2); font-size: 12.5px; }
+.library-layout { flex: 1; display: grid; grid-template-columns: 290px minmax(0, 1fr); min-height: 0; }
+.library-browser { display: flex; flex-direction: column; min-height: 0; min-width: 0; background: var(--sidebar); border-right: 1px solid var(--line); }
+.library-tools { display: flex; flex-wrap: wrap; gap: 6px; padding: 16px 14px 12px; }
+.library-tools .button { padding: 0 10px; font-size: 12px; }
+.library-search { display: flex; align-items: center; gap: 7px; padding: 7px 9px; margin: 0 14px 10px; border-radius: 8px; background: var(--field); }
+.library-search input { width: 100%; min-width: 0; background: transparent; border: 0; outline: 0; font-size: 12px; }
+.library-filter { display: flex; align-items: center; gap: 8px; margin: 0 14px 8px; font-size: 12px; color: var(--text-2); }
+.library-filter select { flex: 1; min-width: 0; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); padding: 4px; }
+.library-list { flex: 1; min-height: 0; overflow: auto; padding: 0 8px 10px; }
+.library-list > button { display: flex; flex-direction: column; gap: 4px; width: 100%; padding: 12px; border: 0; border-radius: 9px; text-align: left; background: transparent; }
+.library-list > button:hover { background: var(--hover); }
+.library-list > button[aria-current] { background: var(--selected); }
+.library-list strong { font-size: 13px; overflow-wrap: anywhere; }
+.library-list span { font-size: 11px; color: var(--text-2); }
+.library-list p { margin: 2px 0 0; font-size: 12px; color: var(--text-3); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+.library-empty { padding: 16px; font-size: 13px; color: var(--text-2); }
+.library-location { display: flex; flex-direction: column; gap: 5px; border-top: 1px solid var(--line); padding: 12px 16px; font-size: 11px; color: var(--text-2); }
+.library-location code { font: 10.5px/1.5 var(--mono); overflow-wrap: anywhere; }
+.library-location .link { align-self: flex-start; font-size: 11px; }
+.library-editor { overflow-y: auto; padding: 16px 24px 20px; min-width: 0; }
+.library-editor-tools { display: flex; justify-content: space-between; gap: 8px; margin-bottom: 15px; font-size: 11px; color: var(--text-2); }
+.library-editor-tools .link { font-size: 11px; }
+.library-field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 13px; }
+.library-field > span { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12px; font-weight: 550; }
+.library-field small { font-size: 10.5px; font-weight: 400; color: var(--text-3); }
+.library-field input, .library-field select, .library-field textarea { width: 100%; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; background: var(--bg); font-size: 13px; }
+.library-field textarea { min-height: 175px; height: 23vh; max-height: 400px; resize: vertical; font: 12.5px/1.6 var(--mono); }
+.library-mode { display: flex; gap: 12px; }
+.library-mode .library-field { flex: 1; }
+.library-files { border-top: 1px solid var(--line); padding-top: 12px; }
+.library-files > header { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
+.library-files h3 { margin: 0; font-size: 12px; }
+.library-files h3 small { margin-left: 5px; font-weight: 400; color: var(--text-3); }
+.library-files .button { display: inline-flex; align-items: center; gap: 5px; }
+.library-files > p { font-size: 12px; color: var(--text-3); padding: 13px; margin: 0; border: 1px dashed var(--line); border-radius: 8px; }
+.library-file { display: flex; align-items: center; gap: 6px; margin: 5px 0; padding: 5px 7px; background: var(--field); border-radius: 8px; }
+.library-file > svg { flex: none; color: var(--text-2); }
+.library-file input { flex: 1; min-width: 0; border: 0; background: transparent; font-size: 12px; padding: 3px; }
+.library-file small { flex: none; font-size: 10px; color: var(--text-3); }
+.library-file .icon-btn { width: 26px; height: 26px; }
+.library-preview { margin-top: 10px; padding: 10px; border: 1px solid var(--line); border-radius: 8px; }
+.library-preview header { display: flex; justify-content: space-between; align-items: center; gap: 10px; font-size: 12px; }
+.library-preview strong { overflow-wrap: anywhere; }
+.library-preview pre { max-height: 200px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: 11px/1.5 var(--mono); }
+.library-preview img { display: block; max-width: 100%; max-height: 220px; margin: auto; object-fit: contain; }
+.library-secondary { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 16px; }
+.library-secondary .link { font-size: 11.5px; }
+.library-secondary .destructive { margin-left: auto; color: var(--danger); }
+.library-footer { flex: none; padding: 12px 24px 16px; border-top: 1px solid var(--line); background: var(--bg); }
+.library-footer > p { margin: 0 0 10px; font-size: 12px; color: var(--text-2); }
+.library-footer .library-error { color: var(--danger); }
+.library-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.library-actions .button { display: inline-flex; align-items: center; justify-content: center; gap: 5px; }
+.library-confirm { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.library-confirm span { flex: 1; }
+.library-warnings { font-size: 12px; margin-bottom: 10px; color: var(--warn); }
+@media (max-width: 700px) {
+  .prompt-manager { width: calc(100vw - 16px); height: calc(100dvh - 16px); border-radius: 10px; }
+  .library-heading { padding: 14px; }
+  .library-layout { display: flex; flex-direction: column; overflow-y: auto; }
+  .library-browser { flex: none; max-height: 240px; border-right: 0; border-bottom: 1px solid var(--line); }
+  .library-list { min-height: 64px; }
+  .library-list p, .library-location { display: none; }
+  .library-tools { padding-top: 10px; }
+  .library-editor { flex: none; overflow: visible; padding: 14px; }
+  .library-field textarea { min-height: 150px; }
+  .library-footer { padding: 12px; }
+  .library-actions, .library-confirm { flex-wrap: wrap; }
+  .library-actions .button { flex: 1; padding: 0 8px; font-size: 12px; }
+  .library-file { gap: 3px; }
+}
 html, body, #root { height: 100%; }
 body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 var(--font); -webkit-font-smoothing: antialiased; overflow: hidden; }
 button, input, select, textarea { font: inherit; color: inherit; }
 button { cursor: pointer; }
 :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 body.resizing { user-select: none; cursor: col-resize; }
+body.resizing.resizing-rows { cursor: row-resize; }
 body.resizing * { cursor: inherit !important; }
+body.resizing iframe { pointer-events: none; }
 mark { background: #fff0a3; color: inherit; border-radius: 2px; padding: 0 1px; }
 kbd { font: 12px var(--mono); background: var(--field); border-radius: 5px; padding: 1px 5px; white-space: nowrap; }
 
@@ -82,9 +163,9 @@ kbd { font: 12px var(--mono); background: var(--field); border-radius: 5px; padd
 .link.destructive { color: var(--danger); }
 
 /* Workspace: the two agent screens above the shared channel. */
-/* The agent panes always take the top half and the shared chat the bottom half. */
-.workspace { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) minmax(0, 1fr); min-width: 0; min-height: 0; }
-.agents { display: grid; grid-template-columns: minmax(0, var(--split-a, 1fr)) 0 minmax(0, var(--split-b, 1fr)); min-width: 0; min-height: 0; border-bottom: 1px solid var(--line); }
+/* Activity above, conversation below, with a draggable horizontal divider. */
+.workspace { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, var(--split-top, 1fr)) 0 minmax(0, var(--split-bottom, 1fr)); min-width: 0; min-height: 0; }
+.agents { display: grid; grid-template-columns: minmax(0, var(--split-a, 1fr)) 0 minmax(0, var(--split-b, 1fr)); min-width: 0; min-height: 0; }
 .agent { position: relative; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 /* Activation lives where the agent's name goes: Activate before, the name (opening the same menu) after. */
 .agent-name { display: inline-flex; align-items: center; gap: 3px; margin: -3px -6px; padding: 3px 6px; border: 0; border-radius: 7px; background: none; color: var(--text); }
@@ -135,11 +216,15 @@ kbd { font: 12px var(--mono); background: var(--field); border-radius: 5px; padd
 .line.thought pre { font: 12.5px/1.5 var(--font); color: var(--text-2); }
 .line.tool pre { padding: 6px 8px; border-radius: 6px; background: var(--field); }
 .pane-empty { margin: 2px 0; font-size: 12.5px; color: var(--text-3); }
-.split-handle { position: relative; z-index: 2; cursor: col-resize; }
+.split-handle, .row-handle { position: relative; z-index: 2; touch-action: none; }
+.split-handle { cursor: col-resize; }
 .split-handle::before { content: ""; position: absolute; inset: 0 -5px; }
 .split-handle::after { content: ""; position: absolute; top: 0; bottom: 0; left: 0; width: 1px; background: var(--line); transition: background .15s; }
-.split-handle:hover::after, .split-handle:focus-visible::after { background: rgba(0, 0, 0, .22); }
-.split-handle:focus-visible { outline: none; }
+.row-handle { grid-row: 2; cursor: row-resize; }
+.row-handle::before { content: ""; position: absolute; inset: -5px 0; }
+.row-handle::after { content: ""; position: absolute; top: 0; left: 0; right: 0; height: 1px; background: var(--line); transition: background .15s; }
+.split-handle:hover::after, .split-handle:focus-visible::after, .row-handle:hover::after, .row-handle:focus-visible::after { background: rgba(0, 0, 0, .35); }
+.split-handle:focus-visible, .row-handle:focus-visible { outline: none; }
 
 /* Channel. */
 .channel { position: relative; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
@@ -206,12 +291,11 @@ kbd { font: 12px var(--mono); background: var(--field); border-radius: 5px; padd
 .app-missing { font-size: 12.5px; color: var(--text-3); }
 .msg-actions .link { font-size: 12.5px; color: var(--text-2); }
 .readonly-bar .button { margin-left: auto; flex: none; }
-/* Results: the bottom half holds both agents' apps (or changes), each under its own agent's screen, at the same height
-   and split; the prompt row moves below them. The channel's parts become rows of the workspace grid. */
-.workspace.results-mode { grid-template-rows: minmax(0, 1fr) minmax(0, 1fr) auto; }
+/* Results keep the adjustable height and column splits; the prompt row moves below the apps. */
+.workspace.results-mode { grid-template-rows: minmax(0, var(--split-top, 1fr)) 0 minmax(0, var(--split-bottom, 1fr)) auto; }
 .workspace.results-mode > .channel { display: contents; }
-.workspace.results-mode .results-grid { grid-row: 2; }
-.workspace.results-mode .channel-head { grid-row: 3; padding-top: 10px; padding-bottom: 10px; border-top: 1px solid var(--line); }
+.workspace.results-mode .results-grid { grid-row: 3; }
+.workspace.results-mode .channel-head { grid-row: 4; padding-top: 10px; padding-bottom: 10px; border-top: 1px solid var(--line); }
 /* Notices take the rows after that, one each (auto-placed, so two at once don't overlap). */
 .workspace.results-mode .channel > .notice { margin-top: 8px; }
 .results-tabs { display: flex; align-items: center; gap: 8px; }

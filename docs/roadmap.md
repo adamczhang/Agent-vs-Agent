@@ -139,8 +139,9 @@ rubric: optional text for a model-graded score, saved separately, never part of 
 | B3 | Runner in the room and from the command line | offline + live | todo |
 | B4 | Saved results and a scoreboard | offline | todo |
 | B5 | A starter suite of about 20 validated tasks | offline + live | todo |
-| B6 | Importers for the standard formats | offline | todo |
+| B6 | Prompt library and file manager in Prompt, Debate and Build | offline | done |
 | B7 | Optional model-graded rubric score | offline + live | todo |
+| B8 | Importers for the standard benchmark formats | offline | todo |
 
 - **B1 Task format.** A schema for `task.yaml`, a loader, and `npm run bench -- validate <suite>`. The validator runs the reference solution, which must pass, and an empty attempt, which must fail. A task that doesn't validate can't be run. *Done when* invalid tasks are refused, with the reason.
 - **B2 Checks.**
@@ -160,8 +161,10 @@ rubric: optional text for a model-graded score, saved separately, never part of 
   - Prompt: exact-answer reasoning and extraction;
   - Build: small apps with hidden tests;
   - Review: planted bugs with an answer key, starting from the existing `buggy-shop` fixture.
-- **B6 Importers.** HumanEval/MBPP-style (prompt plus tests), Exercism/Aider-style (instructions plus a test folder), and Terminal-Bench-style (instruction plus tests; needs F1 for container tasks). SWE-bench-style later: a repository at `base_commit` with fail-to-pass and pass-to-pass tests.
+- **B6 Prompt library and file manager.** Prioritized by the owner ahead of B1 on 2026-10-03. A shared library available in all three room modes: Prompt, Debate and Build (including Review). Save and edit prompts, preload starter prompts, import/export Markdown or text, and manage each prompt's reference files in the app. Keep each saved prompt and its files together under `<data>/prompts/`, outside conversation history. Load into the composer or run with the room's existing agents and options. *Done when* prompts survive a restart and Clear history, files stay with their prompt, and both agents receive the saved prompt and files in all three modes. This is a reusable prompt library; deterministic benchmark scoring still belongs to B1–B5. The original dataset-import scope is retained as B8.
+  - **Done locally 2026-10-03:** shared file-backed library, six starter prompts, editor and file controls, Markdown/text import, Markdown export, save-draft, load and run. Typecheck/build and 169 offline tests passed, including component interactions and both-agent attachment delivery in every mode. Both staged package smoke checks passed (16 Codex / 19 Claude). No real model requests or profile installations. Browser tools were unavailable, so visual layout and installed-host acceptance remain unverified. Evidence: `pilot-evidence/stage-d/b6-prompt-library-*.json`.
 - **B7 Rubric score.** An optional model-graded score from a third agent (say a Gateway model), stored as a separate number with the judge's identity. It never changes pass or fail.
+- **B8 Importers.** HumanEval/MBPP-style (prompt plus tests), Exercism/Aider-style (instructions plus a test folder), and Terminal-Bench-style (instruction plus tests; needs F1 for container tasks). SWE-bench-style later: a repository at `base_commit` with fail-to-pass and pass-to-pass tests.
 
 ## Phase 3 — recommended major features (0.3 and later)
 

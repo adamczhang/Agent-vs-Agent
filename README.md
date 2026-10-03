@@ -86,6 +86,8 @@ The menu lists the Gateway's models by maker, with a search box.
 
 ## Good to know
 
+- **Prompt library.** Save prompts and attached files for reuse in Prompt, Debate and Build. Import or export Markdown, or start with one of six included prompts.
+- **Adjustable panes.** Drag the vertical or horizontal divider to change the agents' widths or give more space to the lower pane. Sizes are remembered; double-click a divider to reset it.
 - **Isolated agents.** Each agent sees the shared prompt and the other's final replies, never the other's private messages, thinking or tool use.
 - **Permissions per agent.** **Ask** (the default) allows no tools in Prompt and Debate, and in Build only inside the agent's own folder. **Bypass** approves every tool request, for benchmarks where the agents should run code.
 - **Internet per agent.** Off by default, and enforced by AvA, not just requested.
@@ -93,7 +95,7 @@ The menu lists the Gateway's models by maker, with a search box.
 - **Local only.** The room runs on 127.0.0.1 behind a random token. Don't share its link.
 - **Your data** lives in `%USERPROFILE%\AgentVsAgent`, shared by both hosts.
   - To use another folder, set `AVA_DATA_DIR`, or `config.dataDir` in `package.json` before packaging.
-  - **⋯ → Clear history** deletes it.
+  - **⋯ → Clear history** deletes conversations and their working files. Saved prompts and their attachments stay in the Prompt library.
 - **Resources.** Each thread with live agents runs two CLI processes; AvA warns from the third.
 
 Known limits are listed in [the architecture notes](docs/architecture.md#known-limits). The biggest: in Build mode an agent's commands run in its own folder but aren't sandboxed (except Codex's).
@@ -104,8 +106,8 @@ Known limits are listed in [the architecture notes](docs/architecture.md#known-l
 - [Contributing](CONTRIBUTING.md): setup, validation and release workflow. [Security](SECURITY.md): local access, Bypass and vulnerability reporting.
 - [Architecture](docs/architecture.md): how it's built, and its known limits.
 - [Roadmap](docs/roadmap.md): what's next, including validated benchmarks with saved pass/fail.
-- [Releases](https://github.com/adamczhang/Agent-vs-Agent/releases): [0.1.2](https://github.com/adamczhang/Agent-vs-Agent/releases/tag/v0.1.2) · [0.1.1](https://github.com/adamczhang/Agent-vs-Agent/releases/tag/v0.1.1) · [0.1.0](https://github.com/adamczhang/Agent-vs-Agent/releases/tag/v0.1.0)
-- [Changelog](CHANGELOG.md) · [Release notes for 0.1.2](docs/release-v0.1.2.md) · [0.1.0](docs/release-v0.1.0.md)
+- [Releases](https://github.com/adamczhang/Agent-vs-Agent/releases): [0.1.3](https://github.com/adamczhang/Agent-vs-Agent/releases/tag/v0.1.3) · [0.1.2](https://github.com/adamczhang/Agent-vs-Agent/releases/tag/v0.1.2) · [0.1.1](https://github.com/adamczhang/Agent-vs-Agent/releases/tag/v0.1.1) · [0.1.0](https://github.com/adamczhang/Agent-vs-Agent/releases/tag/v0.1.0)
+- [Changelog](CHANGELOG.md) · [Release notes for 0.1.3](docs/release-v0.1.3.md) · [0.1.2](docs/release-v0.1.2.md) · [0.1.0](docs/release-v0.1.0.md)
 
 ## Development
 

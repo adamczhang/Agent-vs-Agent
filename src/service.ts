@@ -6,6 +6,8 @@ import { basename,dirname,join,relative } from 'node:path';
 import { z } from 'zod';
 import { SCHEMA_VERSION,Store,threadKey } from './store.js';
 import { packageVersion } from './paths.js';
+import { attachmentKind } from './attachment-files.js';
+import { PromptLibrary,promptKeySchema,promptSaveSchema } from './prompt-library.js';
 import { ConversationController,internetNote } from './controller.js';
 import { ActivationManager,type ParticipantFactory } from './activation.js';
 import { NativeFactory,loadProviderSetups,type Catalog } from './providers.js';
@@ -27,19 +29,6 @@ const providerConfig=z.object({provider,model:z.string().min(1).max(300),effort:
 const presetData=z.object({instructions:z.object({cli1:z.string().max(8000),cli2:z.string().max(8000)}).strict(),stopWhen:z.object({cli1:z.string().max(4000),cli2:z.string().max(4000)}).strict(),completion:z.enum(['auto','duration','either','both']),minutes:z.string().max(20),requests:z.string().max(20),pace:z.string().max(20)}).strict();
 const runOptions=z.object({instructions:z.object({cli1:z.string().max(8000),cli2:z.string().max(8000)}).optional(),stopWhen:z.object({cli1:z.string().max(4000),cli2:z.string().max(4000)}).optional(),completion:z.enum(['duration','either','both']).optional(),durationMs:z.number().positive().max(86400000).optional(),maxRequests:z.number().int().min(2).max(10000).optional(),perTurnMs:z.number().positive().max(3600000).optional(),paceMs:z.number().min(0).max(60000).optional(),lead:seat.optional(),mode:z.enum(['conversation','benchmark','build']).optional(),opening:z.enum(['both','cli1','cli2']).optional()}).strict();
 
-// Attachments the agents can take: images (as image content) and text files (inlined). Anything else is refused up
-// front, so nothing is silently dropped.
-const IMAGE_TYPES=new Set(['image/png','image/jpeg','image/gif','image/webp']);
-const TEXT_NAME=/\.(txt|md|markdown|json|jsonl|csv|tsv|ya?ml|toml|ini|xml|html?|css|scss|js|mjs|cjs|jsx|ts|tsx|py|rb|go|rs|java|kt|swift|c|cc|cpp|h|hpp|cs|php|sh|bash|ps1|sql|log|diff|patch|cfg|conf)$/i;
-function attachmentKind(name:string,mediaType:string,data:Buffer):'image'|'text'{
-  if(IMAGE_TYPES.has(mediaType)){if(data.length>8*1024*1024)throw new AvAError('FILE_TOO_LARGE',`${name} is larger than 8 MB.`);return 'image';}
-  if(mediaType.startsWith('text/')||/^application\/(json|xml|javascript|x-yaml|yaml|toml|x-sh)$/.test(mediaType)||TEXT_NAME.test(name)){
-    if(data.length>512*1024)throw new AvAError('FILE_TOO_LARGE',`${name} is larger than 512 KB. Text files are inlined into the prompt, so keep them small.`);
-    if(data.includes(0))throw new AvAError('UNSUPPORTED_FILE',`${name} isn't a text file.`);
-    return 'text';
-  }
-  throw new AvAError('UNSUPPORTED_FILE',`${name}: attach images (PNG, JPEG, GIF, WebP) or text files. Other files can't be sent to the agents.`);
-}
 // A direct reply is plain text; if the agent answers in the room's JSON envelope out of habit, show just its message.
 function plainReply(text:string){
   try{const parsed=JSON.parse(text) as {message?:unknown};if(parsed&&typeof parsed.message==='string')return parsed.message.slice(0,32000);}catch{/* plain text */}
@@ -49,7 +38,7 @@ function plainReply(text:string){
 // codex-command-runner-<version>.exe), never treated as something an agent left running.
 const AGENT_HELPER=/^(codex|claude|grok|agy|antigravity)([-_.][\w.-]*)?\.exe$/i;
 // Calls that start or change runs, agents or history (refused while Clear history runs).
-const CHANGING=new Set(['run.start','run.broadcast','run.control','run.reconcile','direct.send','pair.clear','pair.reset','slot.configure','slot.activate','slot.cancel','slot.internet','slot.permissions','menu.choose','room.new','history.clear']);
+const CHANGING=new Set(['run.start','run.broadcast','run.control','run.reconcile','direct.send','pair.clear','pair.reset','slot.configure','slot.activate','slot.cancel','slot.internet','slot.permissions','menu.choose','room.new','history.clear','prompt.save','prompt.delete','prompt.prepare','attachment.add']);
 // Stops each process with its whole tree (Windows: taskkill /T; it fails for any that already exited, which is fine).
 function stopTrees(pids:number[]){
   if(!pids.length)return Promise.resolve();
@@ -77,12 +66,14 @@ export interface ServiceFactory extends ParticipantFactory {
 }
 export class AvAService {
   readonly store:Store;
+  readonly prompts:PromptLibrary;
   readonly activation:ActivationManager;
   readonly engine:ConversationController;
   readonly menus:Menus;
   private catalogs=new Map<string,{value:Catalog;at:number}>();
   private tickets=new Map<string,{pairId:string;generations:number[];expires:number}>();
   private operations=new Map<string,Promise<unknown>>();
+  private pendingStarts=new Map<string,{input:string;task:Promise<Run>}>();
   private preparing=new Set<string>();
   private preparationDone=new Set<Promise<void>>();
   private shuttingDown=false;
@@ -96,6 +87,7 @@ export class AvAService {
     // Upgrade the existing key's permissions as well as protecting newly written secrets.
     for(const path of [join(dataRoot,'secrets'),join(dataRoot,'secrets','ai-gateway.json')])if(existsSync(path))protectPrivatePath(path);
     this.store=new Store(join(dataRoot,'ava.sqlite'));this.store.interruptUnfinished();
+    this.prompts=new PromptLibrary(dataRoot,this.store);
     this.factory.ledger??=this.store;this.census=options.census??systemCensus;
     this.processes=options.processes??listProcesses;this.stopProcesses=options.stopProcesses??stopTrees;this.listeners=options.listeners??listeningOn;
     // Persisted receipts describe the old native processes, not this new owner.
@@ -127,7 +119,7 @@ export class AvAService {
   async call(method:string,input:unknown):Promise<unknown>{
     if(this.shuttingDown&&CHANGING.has(method))throw new AvAError('SHUTTING_DOWN','The service is shutting down.');
     const changingPair=input&&typeof input==='object'?(input as {pairId?:string}).pairId:undefined;
-    if(CHANGING.has(method)&&(method==='history.clear'?this.preparing.size>0:changingPair&&this.preparing.has(changingPair)))throw new AvAError('BUILD_PREPARING','A project is being prepared. Wait for it to finish, then try again.');
+    if(method!=='run.start'&&CHANGING.has(method)&&(method==='history.clear'?this.preparing.size>0:changingPair&&this.preparing.has(changingPair)))throw new AvAError('BUILD_PREPARING','A project is being prepared. Wait for it to finish, then try again.');
     // While history is being cleared nothing may start or change: the clear deletes runs and agents' folders.
     if(this.clearing&&CHANGING.has(method))throw new AvAError('CLEARING','History is being cleared. Try again in a moment.');
     switch(method){
@@ -207,6 +199,11 @@ export class AvAService {
       case 'run.start':{
         const p=z.object({pairId:id,text:z.string().min(1).max(16000),requestId:id,options:runOptions.optional(),attachments:z.array(id).max(8).optional(),
           build:z.object({kind:z.enum(['review','build']),path:z.string().max(1000).optional()}).strict().optional()}).parse(input);
+        const startInput=JSON.stringify(p),pending=this.pendingStarts.get(p.requestId);
+        if(pending){
+          if(pending.input!==startInput)throw new AvAError('IDEMPOTENCY_CONFLICT','This request ID was already used with different input.');
+          return pending.task;
+        }
         const config=conversationConfig(p.text,p.options);
         // Build: the copy's folder name comes from the request ID, so a retried start finds the same run. Building may
         // start from an empty folder; a review needs a project.
@@ -217,6 +214,7 @@ export class AvAService {
         }
         const previous=this.store.previousStart(p.pairId,config,p.requestId);
         if(previous)return previous;
+        if(this.preparing.has(p.pairId))throw new AvAError('BUILD_PREPARING','A project is being prepared. Wait for it to finish, then try again.');
         this.assertNotRestarting(p.pairId);
         // A Build session holds one prompt: its agents' folders and apps belong to that build.
         const openThread=this.openThreadId(this.store.pair(p.pairId)),earlier=openThread?this.store.threads().find(t=>t.id===openThread)?.runs??[]:[];
@@ -229,24 +227,28 @@ export class AvAService {
         this.preparing.add(p.pairId);
         let preparationFinished!:()=>void;
         const preparation=new Promise<void>(resolve=>{preparationFinished=resolve;});this.preparationDone.add(preparation);
-        try{
-          if(config.build){
-            // Each agent gets its own copy (or empty folder), inside its own workspace; then Codex may edit and run commands there.
-            const pair=this.store.pair(p.pairId);
-            for(const seat of SEATS){
-              const target=join(participantWorkspace(this.dataRoot,{pairId:p.pairId,seat,generation:pair.slots[seat].generation}),config.build.folder);
-              copied=await prepareProject(config.build.source,target);made.push(target);
+        // Register before yielding to copy/setup work, so retries from another connection share its outcome.
+        const task=Promise.resolve().then(async()=>{
+          try{
+            if(config.build){
+              // Each agent gets its own copy (or empty folder), inside its own workspace; then Codex may edit and run commands there.
+              const pair=this.store.pair(p.pairId);
+              for(const seat of SEATS){
+                const target=join(participantWorkspace(this.dataRoot,{pairId:p.pairId,seat,generation:pair.slots[seat].generation}),config.build.folder);
+                copied=await prepareProject(config.build.source,target);made.push(target);
+              }
             }
-          }
-          // (Codex's sandbox is set again before each request; this spares its first one the switch.)
-          for(const seat of SEATS)await participants[seat].setBuildAccess?.(!!config.build);
-          if(this.shuttingDown)throw new AvAError('SHUTTING_DOWN','The service is shutting down.');
-          const run=this.engine.start(p.pairId,config,p.requestId,participants,attachments);
-          if(copied)this.store.event(run.id,'build_copied',{files:copied.files,bytes:copied.bytes,gitSource:copied.gitSource,baseline:copied.baseline});
-          return run;
-        // A start that fails takes its copies with it, so a retry with the same request starts clean.
-        }catch(error){for(const dir of made)await rm(dir,{recursive:true,force:true});throw error;}
-        finally{this.preparing.delete(p.pairId);this.preparationDone.delete(preparation);preparationFinished();}
+            // (Codex's sandbox is set again before each request; this spares its first one the switch.)
+            for(const seat of SEATS)await participants[seat].setBuildAccess?.(!!config.build);
+            if(this.shuttingDown)throw new AvAError('SHUTTING_DOWN','The service is shutting down.');
+            const run=this.engine.start(p.pairId,config,p.requestId,participants,attachments);
+            if(copied)this.store.event(run.id,'build_copied',{files:copied.files,bytes:copied.bytes,gitSource:copied.gitSource,baseline:copied.baseline});
+            return run;
+          // A start that fails takes its copies with it, so a retry with the same request starts clean.
+          }catch(error){for(const dir of made)await rm(dir,{recursive:true,force:true});throw error;}
+          finally{this.pendingStarts.delete(p.requestId);this.preparing.delete(p.pairId);this.preparationDone.delete(preparation);preparationFinished();}
+        });
+        this.pendingStarts.set(p.requestId,{input:startInput,task});return task;
       }
       // Build results: what each agent changed in its copy, and a preview of it served on its own origin.
       case 'build.changes':{const p=z.object({runId:id,seat}).parse(input);return projectChanges(this.buildCopy(p.runId,p.seat).copy);}
@@ -269,6 +271,21 @@ export class AvAService {
         return this.store.saveAttachment(p.name,p.mediaType||'application/octet-stream',attachmentKind(p.name,p.mediaType,bytes),bytes);
       }
       case 'attachment.get':{const p=z.object({id}).parse(input);return {...this.store.attachment(p.id),data:this.store.attachmentData(p.id).toString('base64')};}
+      case 'prompt.list':return this.prompts.list();
+      case 'prompt.get':{const p=z.object({id:promptKeySchema}).strict().parse(input);return this.prompts.get(p.id);}
+      case 'prompt.file':{const p=z.object({id:promptKeySchema,fileId:promptKeySchema}).strict().parse(input);return this.prompts.file(p.id,p.fileId);}
+      case 'prompt.save':{
+        const {requestId,...p}=promptSaveSchema.extend({requestId:id}).parse(input);
+        return this.once('prompt-save',requestId,p,async()=>this.prompts.save(p));
+      }
+      case 'prompt.delete':{
+        const {requestId,...p}=z.object({id:promptKeySchema,revision:z.string().min(1).max(100),requestId:id}).strict().parse(input);
+        return this.once('prompt-delete',requestId,p,async()=>this.prompts.delete(p.id,p.revision));
+      }
+      case 'prompt.prepare':{
+        const {requestId,...p}=z.object({id:promptKeySchema,revision:z.string().min(1).max(100),requestId:id}).strict().parse(input);
+        return this.once('prompt-prepare',requestId,p,async()=>this.prompts.prepare(p.id,p.revision));
+      }
       case 'slot.permissions':{const p=z.object({pairId:id,seat,level:z.enum(['ask','bypass'])}).parse(input);await this.setPermissions(p.pairId,p.seat,p.level);return this.pairView(p.pairId);}
       case 'thread.rename':{
         const p=z.object({threadId:id,title:z.string().trim().max(120)}).parse(input),thread=this.findThread(p.threadId);

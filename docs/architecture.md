@@ -56,6 +56,14 @@ Every host therefore resolves the same folder. `ensureService` finds or starts t
 
 **Thread names** (`thread_titles`, `thread.rename`) override the default name (the first prompt); an empty name clears it.
 
+## Saved prompt library
+
+`prompt-library.ts` stores shared prompts in `<data>/prompts/<id>/`: `prompt.md`, `prompt.json`, and `files/` with original filenames. The library is independent of the history database and its attachments. Six starter prompts are seeded once; edits and deletions survive restarts. Both host wrappers use the same library because they share the data root.
+
+Authenticated room RPCs expose `prompt.list`, `prompt.get`, `prompt.file`, `prompt.save`, `prompt.delete`, and `prompt.prepare`. Save, delete and prepare use the service's durable command receipts. Loading creates separate history attachments before using the existing run-start path. Library edits or deletion cannot modify an already prepared message. Clear history deletes the history copies, not the library.
+
+Complete saves are staged in a sibling directory before replacing the active directory. A `.previous-<id>` directory bridges the two renames and is recovered on startup after a crash. Content revisions detect stale editors, including external text edits. Plain filenames, unique file names/IDs, byte limits, and refusal of linked paths keep file operations within the library. Imported Markdown is plain prompt text, never executable metadata. `ui/prompt-manager.tsx` supplies the common editor in all three modes, including Build's Review task.
+
 ## Build mode
 
 `RunConfig.mode='build'` with `build={kind:'build'|'review',source,folder}`. It runs like Prompt: one paired phase, raw-text answers, and the controller halts with `build_done`. A Build session holds one prompt: `run.start` refuses a second run in a thread whose first run was a build (`ONE_BUILD`), and `run.broadcast` refuses any Prompt or Build run (`ONE_PROMPT`).
@@ -70,7 +78,7 @@ Every host therefore resolves the same folder. `ensureService` finds or starts t
 **Folders (`src/workspace.ts`).**
 - `checkProject` accepts only an absolute, existing folder that is not a drive root and not AvA's data. A review needs one; a build may start without (`source=''`).
 - `prepareProject` runs enumeration, copying and baseline git commands in a worker, keeping the service responsive and refusing conflicting pair/history changes until it finishes. `copyProject` copies the working tree into `<workspace>/<folder>` for each seat. A git source contributes `git ls-files -co --exclude-standard` (uncommitted work in, ignored output out); otherwise everything except generated folders, capped at 20,000 files and 500 MB. `startProject` makes an empty folder instead. Either way the folder gets a baseline commit.
-- `folder` is derived from the request ID, so a retried start finds the same run (`previousStart`) and copies nothing twice. The file count is recorded in a `build_copied` event, outside the config.
+- `folder` is derived from the request ID. Identical in-flight starts share their preparation promise; conflicting inputs or a different start on the same pair are refused. Once started, retries find the persisted run (`previousStart`) and copy nothing twice. The file count is recorded in a `build_copied` event, outside the config.
 - The workspace is the agent's session folder (`participantWorkspace`, also used by `NativeFactory.open`), so the folder is right there for the agent with no new session. Anything a Build session's 1:1 lines set up (a cloned repository) sits beside it.
 
 **Access (policy: auto-approve everything in the agent's workspace).**
@@ -126,7 +134,7 @@ AvA drives the user's own installed CLIs for every provider. Grok Build and Anti
 
 - **Finding them:** `findOnPath` looks for `codex` or `claude` on PATH. `launchOf` starts a native executable directly. An npm shim (`.cmd`, `.ps1` or a script) is resolved to the package's own entry file, which runs with Node, because a `.cmd` can't start without a shell.
 - **Versions:** `installedCli` reads `--version` once per file and requires each adapter's own minimum: Codex 0.159.1 (codex-acp depends on `@openai/codex ^0.159.1`) and Claude Code 2.1.286 (the Agent SDK's `claudeCodeVersion`). `test/clis.test.ts` keeps `MINIMUM` equal to those package fields. A missing CLI is `MISSING_PROVIDER` and an old one is `PROVIDER_TOO_OLD`, each with the install or update command.
-- **Codex** (and the Gateway, which runs on it): the generated launcher (`<data>/wrappers/codex-child-<signature>.cmd`, `CODEX_PATH`) starts the installed Codex with `--disable plugins --disable apps --disable remote_plugin --disable hooks`. MCP discovery uses those same switches; every remaining disk server is disabled with a leaf config override at process startup, and session MCP overrides are removed. Discovery failure refuses startup. Without an installed Codex, `participantEnvironment` refuses rather than let the adapter fall back to a copy.
+- **Codex** (and the Gateway, which runs on it): the generated launcher (`<data>/wrappers/codex-child-<signature>.cmd`, `CODEX_PATH`) delegates to a Node launcher that starts the installed CLI with `--disable plugins --disable apps --disable remote_plugin --disable hooks`. MCP discovery uses those same switches; a TOML table overlay disables every remaining disk server by its literal name, and session MCP overrides are removed. Arguments are passed as data to the CLI, so names with dots or shell punctuation cannot change the command. Discovery failure refuses startup. Without an installed Codex, `participantEnvironment` refuses rather than let the adapter fall back to a copy.
 - **Claude Code:** `CLAUDE_CODE_EXECUTABLE` names a child `.mjs` launcher that runs the installed CLI with `--strict-mcp-config`. Only the adapter-supplied MCP configuration is loaded; the host profile is unchanged.
 - **Packaging:** `scripts/package.ts` removes the adapters' platform packages (`@openai/codex-<platform>`, `@anthropic-ai/claude-agent-sdk-<platform>`) wherever npm placed them, and `package-smoke.ts` checks none ship. The plugin is about 76 MB. `npm run package -- --out <dir>` builds a staging copy, because the Claude desktop app runs the plugin straight from `release/marketplace`.
 - **Activation evidence** names the CLI and version used (`Installed codex 0.159.3.`).

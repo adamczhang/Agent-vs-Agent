@@ -42,17 +42,17 @@ export function combineStats(threadId: string, runs: RunStats[]): ThreadStats {
     const rows = runs.map(r => r.seats.find(s => s.seat === seat)!).filter(Boolean), chars = rows.reduce((n, s) => n + s.outputChars, 0);
     const secs = rows.reduce((n, s) => n + (s.charsPerSec && s.outputChars ? s.outputChars / s.charsPerSec : 0), 0), cps = secs > 0 ? chars / secs : null;
     const avg = (pick: (s: SeatStat) => number | null, weight: (s: SeatStat) => number) => { const ok = rows.filter(s => pick(s) !== null && weight(s) > 0), w = ok.reduce((n, s) => n + weight(s), 0); return w ? ok.reduce((n, s) => n + pick(s)! * weight(s), 0) / w : null; };
-    const who = [...rows].reverse().find(s => s.provider) ?? rows[0], tokens = combineTokens(rows);
+    const who = [...rows].reverse().find(s => s.provider) ?? rows[0], tokens = combineTokens(rows.filter(s => s.requests > 0));
     return { seat, provider: who?.provider ?? null, model: who?.model ?? null, requests: rows.reduce((n, s) => n + s.requests, 0), completed: rows.reduce((n, s) => n + s.completed, 0), unsuccessful: rows.reduce((n, s) => n + s.unsuccessful, 0),
       avgFirstActivityMs: avg(s => s.avgFirstActivityMs, s => s.requests), avgDurationMs: avg(s => s.avgDurationMs, s => s.completed), outputChars: chars, ...tokens, estimatedTokens: tokens.tokenSource === 'estimated' ? tokens.outputTokens : null, charsPerSec: cps, estimatedTokensPerSec: tokens.tokenSource === 'estimated' ? tokens.tokensPerSec : null } satisfies SeatStat;
   });
-  const allChars = seats.reduce((n, s) => n + s.outputChars, 0), allSecs = seats.reduce((n, s) => n + (s.charsPerSec && s.outputChars ? s.outputChars / s.charsPerSec : 0), 0);
+  const allChars = seats.reduce((n, s) => n + s.outputChars, 0), allSecs = seats.reduce((n, s) => n + (s.charsPerSec && s.outputChars ? s.outputChars / s.charsPerSec : 0), 0), activeSeats = seats.filter(s => s.requests > 0);
   return { threadId, prompts: runs.length, runIds: runs.map(r => r.runId), topic: first?.topic ?? '', status: latest?.status ?? 'empty', reason: latest?.reason ?? null, createdAt: first?.createdAt ?? null,
     activeMs: sum(r => r.activeMs), wallMs: runs.length ? sum(r => r.wallMs ?? r.activeMs) : null, requests: sum(r => r.requests), replies: sum(r => r.replies), agents: 2, maxParallel: Math.max(0, ...runs.map(r => r.maxParallel)),
     // Every run in a thread uses the same sessions, so each one reports the same recorded processes: don't add them up.
     pairedPhases: sum(r => r.pairedPhases), singlePhases: sum(r => r.singlePhases), processesSpawned: Math.max(0, ...runs.map(r => r.processesSpawned)),
     avgFirstActivityMs: weighted(r => r.avgFirstActivityMs, r => r.turns.filter(t => t.firstActivityMs !== null).length), avgDurationMs: weighted(r => r.avgDurationMs, r => r.turns.filter(t => t.status === 'completed' && t.durationMs !== null).length),
-    estimatedTokensPerSec: seats.every(s => s.tokenSource === 'estimated') && allSecs > 0 ? allChars / allSecs / CHARS_PER_TOKEN : null, seats, turns, tokensEstimated: seats.some(s => s.tokenSource === 'estimated' || s.tokenSource === 'mixed'), tokensPerSec: combineTokens(seats).tokensPerSec, interrupted: runs.some(r => r.interrupted) };
+    estimatedTokensPerSec: activeSeats.every(s => s.tokenSource === 'estimated') && allSecs > 0 ? allChars / allSecs / CHARS_PER_TOKEN : null, seats, turns, tokensEstimated: seats.some(s => s.tokenSource === 'estimated' || s.tokenSource === 'mixed'), tokensPerSec: combineTokens(activeSeats).tokensPerSec, interrupted: runs.some(r => r.interrupted) };
 }
 const average = (values: number[]) => values.length ? values.reduce((a, b) => a + b, 0) / values.length : null;
 export function computeStats(run: Run, turns: TurnRow[], events: EventRow[], replies: number, processesSpawned: number): RunStats {
@@ -93,7 +93,7 @@ export function computeStats(run: Run, turns: TurnRow[], events: EventRow[], rep
       unsuccessful: rows.filter(t => t.status !== 'completed').length, avgFirstActivityMs: average(rows.flatMap(t => t.firstActivityMs ?? [])), avgDurationMs: average(rows.flatMap(t => t.status === 'completed' && t.durationMs !== null ? [t.durationMs] : [])),
       outputChars: chars, ...tokens, estimatedTokens: tokens.tokenSource === 'estimated' ? tokens.outputTokens : null, charsPerSec: cps, estimatedTokensPerSec: tokens.tokenSource === 'estimated' ? tokens.tokensPerSec : null };
   });
-  const allSpeed = speed(turnStats);
+  const allSpeed = speed(turnStats), activeSeats = seats.filter(s => s.requests > 0);
   // A run cut off by a service restart only "ends" when the next service starts (and may be released later still), so
   // time it to its last recorded work. The event log keeps the original interruption even after a release.
   const WORK = new Set(['run_started', 'phase_admitted', 'prompt_started', 'activity', 'turn_ended', 'room_committed', 'room_queued', 'paused', 'duration_changed', 'phase_completed']);
@@ -104,5 +104,5 @@ export function computeStats(run: Run, turns: TurnRow[], events: EventRow[], rep
     pairedPhases: new Set(turns.filter(t => t.phaseKind === 'paired').map(t => t.phaseId)).size,
     singlePhases: new Set(turns.filter(t => t.phaseKind === 'single').map(t => t.phaseId)).size, processesSpawned,
     avgFirstActivityMs: average(turnStats.flatMap(t => t.firstActivityMs ?? [])), avgDurationMs: average(turnStats.flatMap(t => t.status === 'completed' && t.durationMs !== null ? [t.durationMs] : [])),
-    estimatedTokensPerSec: seats.every(s => s.tokenSource === 'estimated') && allSpeed !== null ? allSpeed / CHARS_PER_TOKEN : null, seats, turns: turnStats, tokensEstimated: seats.some(s => s.tokenSource === 'estimated' || s.tokenSource === 'mixed'), tokensPerSec: combineTokens(seats).tokensPerSec, interrupted };
+    estimatedTokensPerSec: activeSeats.every(s => s.tokenSource === 'estimated') && allSpeed !== null ? allSpeed / CHARS_PER_TOKEN : null, seats, turns: turnStats, tokensEstimated: seats.some(s => s.tokenSource === 'estimated' || s.tokenSource === 'mixed'), tokensPerSec: combineTokens(activeSeats).tokensPerSec, interrupted };
 }

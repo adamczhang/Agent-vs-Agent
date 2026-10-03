@@ -3,9 +3,52 @@ import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { AvAService } from '../src/service.js';
 import { combineStats, computeStats, type RunStats } from '../src/stats.js';
-import { conversationConfig, type Pair, type Run } from '../src/types.js';
+import { conversationConfig, type Pair, type Run, type Seat } from '../src/types.js';
 import { TestFactory, flush } from './fakes.js';
 import { tempDir } from './temp.js';
+
+function reportedRun(id:string,seats:Seat[],reported=true,outputTokens=20,provider:'codex'|'grok-build'='codex'){
+  const run={id,status:'completed',reason:'agents_done',requests:seats.length,elapsedMs:1200,config:conversationConfig('topic'),
+    participants:{cli1:{provider,model:'m1',auth:'provider-login'},cli2:{provider:'claude',model:'m2',auth:'provider-login'}}} as Run;
+  const turns=seats.map(seat=>({id:id+seat,seat,status:'completed',phaseId:id,phaseKind:'paired'}));
+  const ev=(ms:number,type:string,data:Record<string,unknown>={})=>({type,time:new Date(1700000000000+ms).toISOString(),data});
+  const events=[ev(0,'run_started'),...turns.flatMap(t=>[
+    ev(10,'prompt_started',{turnId:t.id}),ev(100,'activity',{turnId:t.id,type:'output',text:'Hello'}),
+    ...(reported?[ev(1090,'usage_reported',{turnId:t.id,tokens:{input:100,output:outputTokens}})]:[]),ev(1100,'turn_ended',{turnId:t.id}),
+  ]),ev(1200,'run_ended')];
+  return computeStats(run,turns,events,seats.length,2);
+}
+
+test('one-sided runs do not hide reported thread totals or output speed',()=>{
+  const solo=reportedRun('solo',['cli1']),paired=reportedRun('paired',['cli1','cli2']);
+  assert.equal(solo.seats[1]!.requests,0);assert.equal(solo.tokensPerSec,20,'the unused seat contributes no generating time');
+  for(const runs of [[solo,paired],[paired,solo]]){
+    const thread=combineStats('same-sessions',runs);
+    assert.deepEqual(thread.seats.map(s=>({requests:s.requests,input:s.inputTokens,output:s.outputTokens,source:s.tokenSource,speed:s.tokensPerSec})),[
+      {requests:2,input:200,output:40,source:'reported',speed:20},
+      {requests:1,input:100,output:20,source:'reported',speed:20},
+    ]);
+    assert.equal(thread.tokensPerSec,20);assert.equal(thread.tokensEstimated,false);
+  }
+});
+
+test('real requests with missing reports stay unknown, while reported zero usage still counts',()=>{
+  const known=reportedRun('known',['cli1','cli2']),missing=reportedRun('missing',['cli1'],false);
+  const incomplete=combineStats('same-sessions',[missing,known]);
+  assert.equal(incomplete.seats[0]!.outputTokens,null);assert.equal(incomplete.seats[0]!.tokenSource,'unavailable');
+  assert.equal(incomplete.tokensPerSec,null,'missing usage from an actual request cannot be replaced with zero');
+  assert.equal(incomplete.seats[1]!.outputTokens,20,'the other seat had no request in the missing-report run');
+  const zero=combineStats('same-sessions',[reportedRun('zero',['cli1'],true,0),known]);
+  assert.equal(zero.seats[0]!.outputTokens,20);assert.equal(zero.seats[0]!.tokensPerSec,10,'zero-token requests still contribute their generating time');
+});
+
+test('one-sided estimated usage retains its totals and both speed fields',()=>{
+  const solo=reportedRun('estimated',['cli1'],false,20,'grok-build'),thread=combineStats('same-sessions',[solo]);
+  for(const stats of [solo,thread]){
+    assert.equal(stats.seats[0]!.tokenSource,'estimated');assert.equal(stats.tokensEstimated,true);
+    assert.ok(stats.tokensPerSec!>0);assert.ok(stats.estimatedTokensPerSec!>0);
+  }
+});
 
 test('stats derive first-activity time, reply time, output speed, and parallelism from recorded events', () => {
   const at = (ms: number) => new Date(Date.parse('2026-10-02T16:00:00Z') + ms).toISOString();

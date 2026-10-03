@@ -2,6 +2,16 @@
 
 All notable changes to Agent vs Agent. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+## [0.1.3](https://github.com/adamczhang/Agent-vs-Agent/releases/tag/v0.1.3) - 2026-10-03
+
+- Restored the draggable horizontal divider between the CLI screens and the lower pane, including Stats and Results, with remembered sizing, keyboard adjustment and double-click reset.
+- A shared Prompt library in Prompt, Debate and Build, with six starter prompts, Markdown/text import, Markdown export, a prompt editor, and attached-file add/rename/preview/download/remove controls. Save a composer draft, load a saved prompt, or run it with the current agents. Prompt folders persist outside conversation history; stale edits and unsafe file paths are refused.
+- Retrying the same start while Build preparation is in progress shares the original result, preserving the browser's saved request identity. Conflicting starts remain blocked.
+- Codex and Gateway agents accept literal MCP names containing dots, spaces and other punctuation while keeping every inherited server disabled; names are passed without shell interpretation.
+- A seat that made no requests no longer hides token totals or speed from other runs in the same thread. Missing reports for actual requests still remain unavailable.
+
 ## [0.1.2](https://github.com/adamczhang/Agent-vs-Agent/releases/tag/v0.1.2) - 2026-10-02
 
 - Refreshed banner and plugin artwork, with the same new logo used in the listing and composer, plus clearer README wording.

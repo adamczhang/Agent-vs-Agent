@@ -6,7 +6,7 @@ import { isInside, participantWorkspace } from './workspace.js';
 import { GATEWAY, gatewayKey, gatewayModels } from './gateway.js';
 import { installedCli, type InstalledCli } from './clis.js';
 import { createHash, randomUUID } from 'node:crypto';
-import { CODEX_ISOLATION_FLAGS, codexMcpNames, disabledMcpNames } from './isolation.js';
+import { codexIsolationArgs, codexMcpNames, disabledMcpNames } from './isolation.js';
 import { doctor,cliWarnings } from './doctor.js';
 import { AvAError, PROVIDERS, type AgentRequest, type AgentResult, type AgentUsage, type Provider, type ProviderConfig, type Seat } from './types.js';
 import type { ConfiguredParticipant, ParticipantFactory } from './activation.js';
@@ -135,10 +135,9 @@ export function participantEnvironment(provider:Provider,configured:Record<strin
   if(CODEX_HARNESS.has(provider)){
     const inherited=JSON.parse(configured.CODEX_CONFIG??process.env.CODEX_CONFIG??'{}') as Record<string,unknown>;
     const names=disabledMcpNames(discoveredMcp);
-    // Drop session-supplied servers, then disable disk servers with leaf overrides. A new table containing only
-    // enabled:false lacks a transport and is invalid, even when disabled (especially for plugin-owned servers).
+    // Drop session-supplied servers. Preserve literal disk server names in a table overlay, just as at startup.
     for(const key of Object.keys(inherited))if(key==='mcp_servers'||key.startsWith('mcp_servers.'))delete inherited[key];
-    for(const name of names)inherited[`mcp_servers.${name}.enabled`]=false;
+    if(names.length)inherited.mcp_servers=Object.fromEntries(names.map(name=>[name,{enabled:false}]));
     // Codex's web search runs inside Codex with no per-call approval, so it is set when the process starts:
     // "live" with the agent's internet switch on, "disabled" with it off. Commands in a Build session (workspace-write)
     // may reach the network on the same switch, to clone a repository or install packages.
@@ -154,12 +153,15 @@ export function participantEnvironment(provider:Provider,configured:Record<strin
       // the child process itself so it cannot boot the parent plugin first.
       if(!cli)throw new AvAError('MISSING_PROVIDER','Codex isn’t installed.');
       const dir=join(dataRoot,'wrappers');mkdirSync(dir,{recursive:true});
-      const signature=createHash('sha256').update(JSON.stringify([cli,names])).digest('hex').slice(0,16);
+      const signature=createHash('sha256').update(JSON.stringify([cli,names,'argv-launcher'])).digest('hex').slice(0,16);
       const wrapper=join(dir,`codex-child-${signature}.${process.platform==='win32'?'cmd':'sh'}`);
-      const flags=CODEX_ISOLATION_FLAGS.join(' ')+names.map(name=>` -c mcp_servers.${name}.enabled=false`).join('');
+      const launcher=join(dir,`codex-child-${signature}.mjs`);
+      // MCP names are data in an argv array, never shell syntax (spaces, quotes, percent signs and ampersands included).
+      const launchSource=`import {spawn} from 'node:child_process';\nconst child=spawn(${JSON.stringify(cli.command)},[...${JSON.stringify([...cli.args,...codexIsolationArgs(names)])},...process.argv.slice(2)],{stdio:'inherit',windowsHide:true});\nchild.on('error',()=>{process.stderr.write('Codex failed to start.\\n');process.exitCode=1;});\nchild.on('exit',(code)=>{process.exitCode=code??1;});\nfor(const signal of ['SIGINT','SIGTERM'])process.on(signal,()=>child.kill(signal));\n`;
+      if(!existsSync(launcher)||readFileSync(launcher,'utf8')!==launchSource)writeFileSync(launcher,launchSource,{mode:0o700});
       const quote=(s:string)=>'"'+s.replaceAll('%','%%')+'"';
       const shellQuote=(s:string)=>"'"+s.replaceAll("'","'\\''")+"'";
-      const source=process.platform==='win32'?`@echo off\r\nsetlocal DisableDelayedExpansion\r\n${[cli.command,...cli.args].map(quote).join(' ')} ${flags} %*\r\n`:`#!/bin/sh\nexec ${[cli.command,...cli.args].map(shellQuote).join(' ')} ${flags} "$@"\n`;
+      const source=process.platform==='win32'?`@echo off\r\nsetlocal DisableDelayedExpansion\r\n${[process.execPath,launcher].map(quote).join(' ')} %*\r\n`:`#!/bin/sh\nexec ${[process.execPath,launcher].map(shellQuote).join(' ')} "$@"\n`;
       if(!existsSync(wrapper)||readFileSync(wrapper,'utf8')!==source)writeFileSync(wrapper,source,{mode:0o700});
       env.CODEX_PATH=wrapper;
     }

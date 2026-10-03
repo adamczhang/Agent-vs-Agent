@@ -1,4 +1,4 @@
-import type { AgentUsage, Pair, ProviderConfig, RoomMessage, Seat } from '../src/types';
+import type { AgentUsage, Pair, ProviderConfig, RoomMessage, Seat } from '../src/types.js';
 
 // Shapes returned by the service's thread calls (src/service.ts threads.list / thread.get).
 export type Mode = 'conversation' | 'benchmark' | 'build';

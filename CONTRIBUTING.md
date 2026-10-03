@@ -68,6 +68,6 @@ The maintainer-only `scripts/export-release.ts` exports product files from **com
 3. Run `node --import tsx scripts/export-release.ts` in the maintainer checkout. Inspect the exported diff and validate a clean checkout of `public`, including both package smoke tests.
 4. With the owner's explicit authorization, push **only** `git push origin public:main` and the new version tag to the public repository, then verify the GitHub CI run and create the release page.
 
-Never push private `main`. The exporter replaces the tip when re-exporting the same version: do not use that to rewrite an already published release or move its tag. P2's first hosted CI pass remains pending until an authorized export/push; source tests are not a substitute for that result. Installation into real host profiles is a separate owner-approved action, and changes to the Codex hook require the owner's trust review.
+Never push private `main`. The exporter replaces the tip when re-exporting the same version: do not use that to rewrite an already published release or move its tag. Check hosted CI on the newly pushed commit; local tests are not a substitute for that result. Installation into real host profiles is a separate owner-approved action, and changes to the Codex hook require the owner's trust review.
 
 The banner and icon are excluded from the MIT license. The owner confirmed permission to retain them on 2026-10-02; that confirmation does not grant additional reuse rights to contributors.

@@ -51,8 +51,8 @@ test('the installed CLI is found on PATH and must meet the adapter’s minimum v
 
 test('Codex agents start the installed CLI with integrations disabled; Claude agents are given the installed CLI', () => {
   const data = tempDir('ava-cli-env-'), cli = { command: process.execPath, args: ['C:\\tools\\codex\\bin\\codex.js'], path: 'C:\\tools\\codex\\bin\\codex.js' };
-  const env = participantEnvironment('codex', {}, data, false, undefined, cli), wrapper = readFileSync(env.CODEX_PATH!, 'utf8');
-  assert.ok(wrapper.includes(cli.args[0]!) && wrapper.includes('--disable plugins --disable apps --disable remote_plugin --disable hooks'), wrapper);
+  const env = participantEnvironment('codex', {}, data, false, undefined, cli), launcher = readFileSync(env.CODEX_PATH!.replace(/\.(cmd|sh)$/, '.mjs'), 'utf8');
+  assert.ok(launcher.includes(JSON.stringify(cli.args[0]!)) && launcher.includes('"--disable","plugins","--disable","apps","--disable","remote_plugin","--disable","hooks"'), launcher);
   assert.throws(() => participantEnvironment('codex', {}, data, false), /Codex isn’t installed/, 'never the adapter’s fallback copy');
   const claude=participantEnvironment('claude', {}, data, false, undefined, { command: 'C:\\x\\claude.exe', args: [], path: 'C:\\x\\claude.exe' });
   assert.match(readFileSync(claude.CLAUDE_CODE_EXECUTABLE!, 'utf8'), /--strict-mcp-config/);

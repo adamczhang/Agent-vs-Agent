@@ -38,12 +38,27 @@ Each agent's setup menu has a **Permissions** line.
 
 Bypass trusts the agent with your machine. Use it for tasks you'd let that CLI run unattended.
 
+## Saved prompts and their files
+
+**Prompt library** in the sidebar opens the same saved library in Prompt, Debate and Build, including Build's Review task. The library is shared by the Codex and Claude Code hosts. It includes six starter prompts that you can edit or delete.
+
+- **New prompt** creates a saved prompt. Give it a name, select a mode (or **Any mode**), and write its instructions in Markdown. **Import .md / .txt** brings an existing prompt into the editor; **Export Markdown** downloads its text.
+- The folder button beside the composer saves the current draft and its attached files. **Use current draft** does the same from inside the library.
+- **Files** keeps up to eight reference images or text files with each prompt. Add or drop files, edit their names, preview them, download them, or remove them before saving. The room's usual limits apply: 8 MB per image and 512 KB per text file. Removing a file in the editor takes effect when you save.
+- **Save prompt** keeps the prompt and its files. **Load into composer** brings them into the current room and selects the saved mode. You can adjust the draft before sending. Loading alone sends no model request.
+- **Run now** saves and sends the prompt to both active agents in the current mode, using the room's current options and project folder. It waits for a ready session; a finished Build still needs a new session. A Review needs a project folder. Saving a prompt never changes provider, model, permissions or internet settings.
+- Search by name, prompt text or attached filename, and filter by mode. **Delete prompt** removes its library copy after confirmation; earlier runs retain independent attachment copies. Unsaved edits require a discard confirmation before leaving.
+
+The library shows its storage folder and lets you copy the path. Saved prompts live under `prompts/` in the configured data folder; `AVA_DATA_DIR` overrides the folder set by `config.dataDir`. Each prompt has its own ID-named folder containing `prompt.md`, `prompt.json` (name, mode and file metadata), and `files/` with original filenames. These files persist across plugin upgrades and **Clear history**. **Reload saved version** picks up an externally edited `prompt.md`; conflicting edits from another window are refused until you reload. Import standalone Markdown through the library instead of creating an incomplete prompt folder manually.
+
+Saved prompts do not yet have benchmark pass/fail scoring; that is separate roadmap work.
+
 ## The room
 
 A white, three-part window:
 - **Left:** threads, Search, and the mode switch.
-- **Top half:** each agent's own screen (thinking, tool use and output as its CLI exposes them). Drag the divider between the two agents to resize them.
-- **Bottom half:** the shared channel, with the text box along the bottom edge.
+- **Upper panes:** each agent's own screen (thinking, tool use and output as its CLI exposes them). Drag the divider between the two agents to change their widths.
+- **Lower pane:** the shared channel, with the text box along the bottom edge. Drag the horizontal line above it up or down to give more space to the CLI screens or the lower pane. This also works in Stats and Results. Double-click a divider (or focus it and press Enter) to reset that split; arrow keys adjust it, with Shift for larger steps. Both proportions are remembered in this browser.
 
 There is no third model acting as a relay. One message of yours goes to both agents at once; after that they take turns.
 
@@ -60,7 +75,7 @@ Switched under Search; each lists its own threads.
   - **The app link:** each agent ends its report with `APP:` and the page to open, or the address of a server it left running. The room shows that as **Open app**:
     - **A page:** AvA serves the agent's folder on a loopback port of its own, so the app can't reach the room or its token, and the link works only from the room.
     - **A server** (an app with an API, say): it keeps running until Clear Session or Clear history. Anything else an agent leaves running, such as a file watcher, is stopped when its build ends, and its screen says so.
-  - **Results** (the window button, or **Side by side** under a report) shows both apps running, each under its own agent's screen and just as tall, with the prompt row below. **Apps / Changes** in that row switches to what each agent changed, file by file. The chat button brings the conversation back.
+  - **Results** (the window button, or **Side by side** under a report) shows both apps running, each under its own agent's screen, with the prompt row below. Drag the horizontal divider to change the height of the previews. **Apps / Changes** in the prompt row switches to what each agent changed, file by file. The chat button brings the conversation back.
   - **If an agent stops early,** the other still finishes, and the stopped agent's screen says why. (Grok Build, for example, ends its turn when a permission is refused.) If an agent's report is complete but a command it ran is stuck waiting for input, AvA takes the report as final after a minute of quiet.
   - **Review:** switch the row above the text box to **Review** and give a project folder. Each agent reports its findings from its own copy.
   - **Folder access:** under Ask, inside its working folder each agent may read, edit and run commands, all approved automatically. Paths outside it, and requests to leave the sandbox, are refused.

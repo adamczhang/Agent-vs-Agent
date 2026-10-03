@@ -10,6 +10,8 @@ import { StatsView } from './stats-view';
 import { ResultsTabs,ResultsView,openApp,type AppLink,type ResultsTab } from './results-view';
 import { AgentSetup } from './agent-setup';
 import { UsageRing } from './usage-ring';
+import { PromptManager,type PreparedPrompt } from './prompt-manager';
+import type { PromptMode } from '../src/prompt-types';
 import { Icon } from './icons';
 import { IMAGE_TYPES,TERMINAL,TEXT_NAME,bytes,clock,dayLabel,delivery,directStates,duration,fullDate,initials,internetEnforcement,names,plural,reasonText,seats,shortTime,statusNames,
   type AttachmentRef,type DirectMessage,type Mode,type PairView,type Preset,type PresetData,type SearchHit,type ThreadMessage,type ThreadSummary,type ThreadView } from './model';
@@ -55,17 +57,27 @@ function AttachmentImage({file,onOpen}:{file:AttachmentRef;onOpen:(src:string)=>
   return <button className="attachment-image" title={file.name} aria-label={`Open ${file.name}`} onClick={()=>src&&onOpen(src)}>{src?<img src={src} alt={file.name}/>:<span>{file.name}</span>}</button>;
 }
 
-// The split between the two agent panes is a per-viewer convenience: remembered in this browser only. The agent panes
-// always take the top half of the window and the shared chat the bottom half.
-const LAYOUT_KEY='ava-layout-v2',DEFAULT_LAYOUT={split:.5};
+// Pane proportions are a per-viewer convenience, remembered in this browser only.
+const LAYOUT_KEY='ava-layout-v2',DEFAULT_LAYOUT={split:.5,height:.5};
 const clamp=(v:number,lo:number,hi:number)=>Math.min(hi,Math.max(lo,v));
 function loadLayout(){
-  try{const v=JSON.parse(localStorage.getItem(LAYOUT_KEY)||'null');if(v&&typeof v.split==='number')return {split:clamp(v.split,.2,.8)};}catch{/* storage unavailable */}
+  const ratio=(v:unknown)=>typeof v==='number'&&Number.isFinite(v)?clamp(v,.2,.8):.5;
+  try{const v=JSON.parse(localStorage.getItem(LAYOUT_KEY)||'null');if(v)return {split:ratio(v.split),height:ratio(v.height)};}catch{/* storage unavailable */}
   return DEFAULT_LAYOUT;
 }
-function drag(onMove:(ev:PointerEvent)=>void){
-  const up=()=>{window.removeEventListener('pointermove',onMove);window.removeEventListener('pointerup',up);document.body.classList.remove('resizing');};
-  window.addEventListener('pointermove',onMove);window.addEventListener('pointerup',up);document.body.classList.add('resizing');
+function drag(e:ReactPointerEvent,onMove:(ev:PointerEvent)=>void,rows=false){
+  if(e.button!==0||!e.isPrimary)return;
+  e.preventDefault();const handle=e.currentTarget;
+  handle.setPointerCapture(e.pointerId);
+  const move=(ev:PointerEvent)=>{if(ev.pointerId===e.pointerId)onMove(ev);};
+  const up=(ev:globalThis.Event)=>{
+    if('pointerId' in ev&&ev.pointerId!==e.pointerId)return;
+    window.removeEventListener('pointermove',move);window.removeEventListener('pointerup',up);window.removeEventListener('pointercancel',up);window.removeEventListener('blur',up);handle.removeEventListener('lostpointercapture',up);
+    if(handle.hasPointerCapture(e.pointerId))handle.releasePointerCapture(e.pointerId);
+    document.body.classList.remove('resizing','resizing-rows');
+  };
+  window.addEventListener('pointermove',move);window.addEventListener('pointerup',up);window.addEventListener('pointercancel',up);window.addEventListener('blur',up);handle.addEventListener('lostpointercapture',up);
+  document.body.classList.add('resizing');document.body.classList.toggle('resizing-rows',rows);
 }
 function Highlight({text,query}:{text:string;query:string}){
   const at=query?text.toLowerCase().indexOf(query.toLowerCase()):-1;
@@ -143,6 +155,7 @@ function App(){
   // Build results: which run and view the Results panel shows, and each agent's app link per run (runId:seat).
   const [results,setResults]=useState<{runId:string;tab:ResultsTab}|null>(null),[apps,setApps]=useState<Record<string,AppLink>>({}),appRequested=useRef(new Set<string>());
   const [optionsOpen,setOptionsOpen]=useState(false),[dialog,setDialog]=useState<DialogSpec|null>(null);
+  const [library,setLibrary]=useState<'browse'|'draft'|null>(null);
   const [settings,setSettings]=useState<PresetData>(DEFAULT_SETTINGS),[presets,setPresets]=useState<Preset[]>([]),[presetId,setPresetId]=useState(''),[presetName,setPresetName]=useState<string|null>(null);
   const [query,setQuery]=useState(''),[hits,setHits]=useState<{query:string;results:SearchHit[]}|null>(null),[focusedId,setFocusedId]=useState('');
   const [replay,setReplay]=useState<{threadId:string;offsets:Record<string,number>;total:number;speed:number;clock:number;tickAt:number}|null>(null);
@@ -157,7 +170,7 @@ function App(){
   const pairShown=useRef(''),threadsShown=useRef(''),lost=useRef(false);
   const polling=useRef(false),selectedRef=useRef(''),shownRef=useRef(''),threadsRef=useRef<ThreadSummary[]>([]),threadsAt=useRef(0),viewAt=useRef(0),liveRef=useRef(false);
   const cursors=useRef(new Map<string,number>()),finished=useRef(new Set<string>()),rawEvents=useRef(new Map<string,Event[]>()),openTurns=useRef(new Map<string,{seat:Seat;runId:string}>());
-  const commandBusy=useRef(false),pendingFocus=useRef(''),agentsRef=useRef<HTMLElement>(null),composerRef=useRef<HTMLTextAreaElement>(null);
+  const commandBusy=useRef(false),pendingFocus=useRef(''),agentsRef=useRef<HTMLElement>(null),workspaceRef=useRef<HTMLElement>(null),channelRef=useRef<HTMLElement>(null),composerRef=useRef<HTMLTextAreaElement>(null);
 
   useEffect(()=>{try{localStorage.setItem(LAYOUT_KEY,JSON.stringify(layout));}catch{/* storage unavailable */}},[layout]);
   // A file dropped anywhere else on the page would otherwise open in its place and leave the room.
@@ -166,11 +179,16 @@ function App(){
     window.addEventListener('dragover',stop);window.addEventListener('drop',stop);
     return()=>{window.removeEventListener('dragover',stop);window.removeEventListener('drop',stop);};
   },[]);
-  function dragSplit(e:ReactPointerEvent){e.preventDefault();const box=agentsRef.current!.getBoundingClientRect();drag(ev=>setLayout(l=>({...l,split:clamp((ev.clientX-box.left)/box.width,.2,.8)})));}
-  function nudge(e:KeyboardEvent){
-    if(e.key==='Enter'){e.preventDefault();setLayout(DEFAULT_LAYOUT);return;}
-    const dir=({ArrowLeft:-1,ArrowRight:1} as Record<string,number>)[e.key];if(!dir)return;e.preventDefault();
-    setLayout(l=>({...l,split:clamp(l.split+dir*(e.shiftKey?.1:.05),.2,.8)}));
+  function dragSplit(e:ReactPointerEvent){const box=agentsRef.current!.getBoundingClientRect();drag(e,ev=>setLayout(l=>({...l,split:clamp((ev.clientX-box.left)/box.width,.2,.8)})));}
+  function dragHeight(e:ReactPointerEvent){
+    const top=agentsRef.current!.getBoundingClientRect(),bottom=(workspaceRef.current!.querySelector<HTMLElement>('.results-grid')??channelRef.current!).getBoundingClientRect();
+    const height=top.height+bottom.height;
+    if(height>0)drag(e,ev=>setLayout(l=>({...l,height:clamp((ev.clientY-top.top)/height,.2,.8)})),true);
+  }
+  function nudge(e:KeyboardEvent,axis:'split'|'height'){
+    if(e.key==='Enter'){e.preventDefault();setLayout(l=>({...l,[axis]:DEFAULT_LAYOUT[axis]}));return;}
+    const dir=(axis==='split'?{ArrowLeft:-1,ArrowRight:1}:{ArrowUp:-1,ArrowDown:1})[e.key as 'ArrowLeft'|'ArrowRight'|'ArrowUp'|'ArrowDown'];if(!dir)return;e.preventDefault();
+    setLayout(l=>({...l,[axis]:clamp(l[axis]+dir*(e.shiftKey?.1:.05),.2,.8)}));
   }
   const roomThreadOf=(list:ThreadSummary[],pairId?:string)=>list.find(t=>t.pairId===pairId&&t.current)?.id??'';
   function resetThreadState(){
@@ -297,16 +315,17 @@ function App(){
   const canClear=!!pair&&seats.every(s=>!!pair.slots[s].config)&&pair.activeRun?.status!=='needs_attention';
   const runById=new Map((shown?.runs??[]).map(r=>[r.id,r]));
 
-  async function send(){
-    const text=draft.trim();if(!pair||!text||!canSend||busy||uploading)return;
-    const attachments=files.filter(f=>f.status==='ready'&&f.ref).map(f=>f.ref!.id);
+  async function send(saved?:{text:string;attachments:string[];buildKind:'build'|'review'}){
+    const text=(saved?.text??draft).trim();if(!pair||!text||!canSend||busy||uploading)return;
+    const attachments=saved?.attachments??files.filter(f=>f.status==='ready'&&f.ref).map(f=>f.ref!.id);
+    const kind=saved?.buildKind??buildKind;
     await action(live?'Sending':'Starting',async()=>{
       if(live&&pair.activeRunId){
         await commands.execute(JSON.stringify(['send',pair.id,text,attachments]),'run.broadcast',{runId:pair.activeRunId,text,attachments},rpc);
       }else if(building){
         // Build: each agent gets its own copy of the project (or an empty folder); the time limit is the only option.
-        const path=project.trim(),options:Partial<RunConfig>={mode:'build',...(settings.minutes?{durationMs:Number(settings.minutes)*60000}:{})},build={kind:buildKind,...(path?{path}:{})};
-        await commands.execute(JSON.stringify(['send',pair.id,text,attachments,'build',buildKind,path]),'run.start',{pairId:pair.id,text,options,attachments,build},rpc);
+        const path=project.trim(),options:Partial<RunConfig>={mode:'build',...(settings.minutes?{durationMs:Number(settings.minutes)*60000}:{})},build={kind,...(path?{path}:{})};
+        await commands.execute(JSON.stringify(['send',pair.id,text,attachments,'build',kind,path]),'run.start',{pairId:pair.id,text,options,attachments,build},rpc);
       }else if(benchmark){
         // Prompt: it goes to both agents at once, as written; only a time limit applies.
         const options:Partial<RunConfig>={mode:'benchmark',...(settings.minutes?{durationMs:Number(settings.minutes)*60000}:{})};
@@ -320,6 +339,23 @@ function App(){
       }
       setDraft('');setFiles([]);setOptionsOpen(false);liveRef.current=true;
     });
+  }
+  function promptRunBlocked(savedMode:PromptMode,kind:'build'|'review'){
+    if(commands.hasPending)return 'Resolve the pending send from the composer before running another prompt.';
+    if(busy||uploading)return 'Wait for the current operation to finish.';
+    if(!ready)return 'Activate both agents to run a prompt. You can still save or load one.';
+    if(live)return 'Wait for the current run to finish, or load this prompt for later.';
+    if(savedMode!=='all'&&savedMode!==mode)return `Load this prompt to switch to ${MODE_NAMES[savedMode]} mode first.`;
+    if(building&&kind==='review'&&!project.trim())return 'Enter a project folder in Build mode before running a review.';
+    if(!canSend)return 'Open a ready session in this mode, or load the prompt for later. A finished Build needs a new session.';
+    return '';
+  }
+  async function useSavedPrompt({prompt,attachments}:PreparedPrompt,run:boolean){
+    if(commands.hasPending)throw new Error('A send has an unknown outcome. Resolve it from the composer before loading another prompt.');
+    if(run){const blocked=promptRunBlocked(prompt.mode,prompt.buildKind);if(blocked)throw new Error(blocked);}
+    setDraft(prompt.text);setFiles(attachments.map(ref=>({key:ref.id,name:ref.name,size:ref.size,status:'ready',ref})));setBuildKind(prompt.buildKind);
+    if(run)await send({text:prompt.text,attachments:attachments.map(f=>f.id),buildKind:prompt.buildKind});
+    else{if(prompt.mode!=='all')switchMode(prompt.mode);select('');setPanel('chat');setOptionsOpen(false);setTimeout(()=>composerRef.current?.focus(),0);}
   }
   // Direct (1:1) lines. A send waits while the agent is busy in the shared conversation (the service enforces it too).
   const replyCount=(seat:Seat)=>direct.messages.filter(m=>m.seat===seat&&m.sender==='agent').length;
@@ -403,8 +439,8 @@ function App(){
   // working folders; this room's agents start fresh sessions.
   function clearHistory(){
     if(!pair)return;setOptionsOpen(false);
-    setDialog({title:'Clear all history?',confirm:'Delete everything',destructive:true,
-      body:'This permanently deletes every saved thread, from every chat that shares this data folder: prompts, replies, 1:1 messages, attachments, and the agents’ working folders with everything they built. App servers they left running stop, and both agents here start fresh sessions. This can’t be undone.',
+    setDialog({title:'Clear all history?',confirm:'Delete history',destructive:true,
+      body:'This permanently deletes every saved thread, from every chat that shares this data folder: conversation prompts, replies, 1:1 messages, attachments, and the agents’ working folders with everything they built. App servers they left running stop, and both agents here start fresh sessions. The saved prompt library stays. Deleting history can’t be undone.',
       run:()=>void action('Clearing history',async()=>{
         await rpc('history.clear',{pairId:pair.id,requestId:crypto.randomUUID()});
         selectedRef.current='';setSelected('');setPanel('chat');setResults(null);setApps({});appRequested.current.clear();threadsAt.current=0;
@@ -592,6 +628,7 @@ function App(){
           ['build','Build',<Icon.build key="i"/>,'Both agents build the same app, each in its own folder, then compare them side by side. Or have both review a project']] as const).map(([value,label,icon,tip])=>
           <button key={value} role="radio" aria-checked={mode===value} title={tip} onClick={()=>switchMode(value)}>{icon}<span>{label}</span></button>)}
       </div>
+      <button className="library-open" onClick={()=>setLibrary('browse')}><Icon.folder/><span>Prompt library</span></button>
       <nav className="threads" aria-label={hits?'Search results':`${MODE_NAMES[mode]} threads`}>
         {hits?(hits.results.length?hits.results.map(hit=><button key={hit.messageId} className="hit" onClick={()=>openHit(hit)}>
           <span className="hit-who">{hit.sender==='user'?'You':names[hit.participants?.[hit.sender as Seat]?.provider??'']??hit.sender}</span>
@@ -606,8 +643,8 @@ function App(){
       </nav>
     </aside>
 
-    {/* Results: the apps take the bottom half, each under its agent's screen and as tall; the prompt row goes below them. */}
-    <main className={`workspace${resultsRun?' results-mode':''}`} style={{'--split-a':`${layout.split}fr`,'--split-b':`${1-layout.split}fr`} as CSSProperties}>
+    {/* Results use the same resizable upper/lower split; their prompt row stays below the apps. */}
+    <main ref={workspaceRef} className={`workspace${resultsRun?' results-mode':''}`} style={{'--split-a':`${layout.split}fr`,'--split-b':`${1-layout.split}fr`,'--split-top':`${layout.height}fr`,'--split-bottom':`${1-layout.height}fr`} as CSSProperties}>
       <section ref={agentsRef} className="agents" aria-label="Agent activity">
         {seats.flatMap((seat,i)=>{const who=identity(seat),state=paneStatus(seat),own=lines(seat),slot=pair?.slots[seat];const pane=<article key={seat} className={`agent ${seat}`} aria-label={`Agent ${i+1} activity`}>
           <header><span className="seat-dot"/>
@@ -623,10 +660,11 @@ function App(){
           {roomView&&pair&&setup[seat]&&<AgentSetup pairId={pair.id} seat={seat} onClose={()=>setSetup(s=>({...s,[seat]:false}))} onError={setError} confirmActivate={confirmActivate}/>}
           <Scroller className="activity" label={`Agent ${i+1} activity`}>{own.length?own.map(line=><div key={line.key} className={`line ${line.type}`}><span className="line-type">{LINE_LABEL[line.type]??line.type}{line.late?' · late':''}</span><pre>{line.type==='output'?readableOutput(line.text):line.text}</pre></div>)
             :<p className="pane-empty">{isRoomThread?'Thinking and tool use appear here as they happen.':'No recorded activity.'}</p>}</Scroller>
-        </article>;return i?[pane]:[pane,<div key="split" className="split-handle" role="separator" aria-orientation="vertical" aria-label="Resize the agent panes" aria-valuemin={20} aria-valuemax={80} aria-valuenow={Math.round(layout.split*100)} tabIndex={0} title="Drag to resize · double-click to reset" onPointerDown={dragSplit} onKeyDown={nudge} onDoubleClick={()=>setLayout(DEFAULT_LAYOUT)}/>];})}
+        </article>;return i?[pane]:[pane,<div key="split" className="split-handle" role="separator" aria-orientation="vertical" aria-label="Resize the agent panes" aria-valuemin={20} aria-valuemax={80} aria-valuenow={Math.round(layout.split*100)} tabIndex={0} title="Drag to resize · double-click to reset" onPointerDown={dragSplit} onKeyDown={e=>nudge(e,'split')} onDoubleClick={()=>setLayout(l=>({...l,split:DEFAULT_LAYOUT.split}))}/>];})}
       </section>
+      <div className="row-handle" role="separator" aria-orientation="horizontal" aria-label="Resize the CLI and lower panes" aria-valuemin={20} aria-valuemax={80} aria-valuenow={Math.round(layout.height*100)} aria-valuetext={`${Math.round(layout.height*100)}% CLI panes`} tabIndex={0} title="Drag up or down to resize · double-click to reset" onPointerDown={dragHeight} onKeyDown={e=>nudge(e,'height')} onDoubleClick={()=>setLayout(l=>({...l,height:DEFAULT_LAYOUT.height}))}/>
 
-      <section className={`channel${dropping?' dropping':''}`} aria-label="Conversation"
+      <section ref={channelRef} className={`channel${dropping?' dropping':''}`} aria-label="Conversation"
         onDragOver={e=>{if(canSend&&e.dataTransfer.types.includes('Files')){e.preventDefault();setDropping(true);}}} onDragLeave={e=>{if(!e.currentTarget.contains(e.relatedTarget as Node))setDropping(false);}}
         onDrop={e=>{if(!e.dataTransfer.files.length)return;e.preventDefault();setDropping(false);if(canSend)void addFiles(e.dataTransfer.files);}}>
         <header className="channel-head">
@@ -707,6 +745,7 @@ function App(){
           <div className="composer-row">
             <button ref={optionsButton} type="button" className={`icon-btn${optionsOpen?' pressed':''}`} aria-label="Options for the next prompt" title="Options for the next prompt" aria-expanded={optionsOpen} disabled={mismatch} onClick={()=>{setOptionsOpen(o=>!o);void loadPresets();}}><Icon.sliders/>{customized||opening!=='both'&&!benchmark?<span className="badge"/>:null}</button>
             <button type="button" className="icon-btn" aria-label="Attach files or images" title={seats.some(s=>pair?.images?.[s]===false)?`Attach text files (${seats.filter(s=>pair?.images?.[s]===false).map(agentName).join(' and ')} can’t read images)`:'Attach images or text files (or paste or drop them here)'} disabled={!canSend||files.length>=8} onClick={()=>fileInput.current?.click()}><Icon.attach/></button>
+            <button type="button" className="icon-btn" aria-label="Save draft to prompt library" title="Save this prompt and its files" disabled={!draft.trim()||!!busy||uploading||files.some(f=>f.status==='error')} onClick={()=>setLibrary('draft')}><Icon.folder/></button>
             <input ref={fileInput} type="file" multiple hidden accept="image/png,image/jpeg,image/gif,image/webp,text/*,.md,.json,.jsonl,.csv,.yaml,.yml,.toml,.xml,.html,.css,.js,.mjs,.jsx,.ts,.tsx,.py,.rb,.go,.rs,.java,.kt,.swift,.c,.cpp,.h,.cs,.php,.sh,.ps1,.sql,.log,.diff,.patch" onChange={e=>{if(e.target.files)void addFiles(e.target.files);e.target.value='';}}/>
             <textarea ref={composerRef} rows={1} aria-label={benchmark?'Prompt for both agents':'Message both agents'} placeholder={busy?`${busy}…`:mismatch?`Clear Session to start ${MODE_NAMES[mode].toLowerCase()}`:placeholder} value={draft} maxLength={16000} disabled={!isRoomThread||!ready||mismatch}
               onChange={e=>setDraft(e.target.value)} onPaste={e=>{const pasted=[...e.clipboardData.files];if(pasted.length&&canSend){e.preventDefault();void addFiles(pasted);}}}
@@ -757,6 +796,7 @@ function App(){
         </div>
       </section>
     </main>
+    {library&&<PromptManager mode={mode} buildKind={buildKind} draft={draft} draftFiles={files.flatMap(f=>f.status==='ready'&&f.ref?[f.ref]:[])} draftBlocked={files.some(f=>f.status!=='ready')} startWithDraft={library==='draft'} runBlocked={promptRunBlocked} onUse={useSavedPrompt} onClose={()=>setLibrary(null)}/>}
     {lightbox&&<div className="backdrop lightbox" role="dialog" aria-label="Image" onMouseDown={()=>setLightbox('')} onKeyDown={e=>{if(e.key==='Escape')setLightbox('');}}><img src={lightbox} alt=""/><button className="icon-btn" autoFocus aria-label="Close image" onClick={()=>setLightbox('')}><Icon.close/></button></div>}
     {dialog&&<Dialog spec={dialog} onClose={()=>setDialog(null)}/>}
     {error&&<div className="toast" role="alert"><span>{error}</span><button className="icon-btn" aria-label="Dismiss" onClick={()=>setError('')}><Icon.close/></button></div>}
