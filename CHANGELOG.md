@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.3.2](https://github.com/adamczhang/Agent-vs-Agent/releases/tag/v0.3.2) - 2026-10-03
+
+### Fixed
+
+- **The service starts when AvA runs as an administrator** on a data folder where your account holds only Modify rights, such as one on a second drive.
+  - **Cause:** an elevated process's new files belong to the Administrators group. Replacing that owner and the permissions in one step needed a right the account lacks there.
+  - **Fix:** AvA now restricts the permissions first, then takes ownership.
+  - Found by the Windows CI run of v0.3.1.
+
 ## [0.3.1](https://github.com/adamczhang/Agent-vs-Agent/releases/tag/v0.3.1) - 2026-10-03
 
 ### Fixed

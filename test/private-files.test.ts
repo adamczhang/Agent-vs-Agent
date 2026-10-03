@@ -25,7 +25,8 @@ test('secret writes and rewrites leave only the current account with access',()=
 });
 
 // A data folder on a second drive: the account owns what it creates but holds only Modify, not WRITE_OWNER (the default
-// NTFS rights below a drive root). Securing a secret must not need to take ownership it already has.
+// NTFS rights below a drive root). Securing a secret must not need to take ownership it already has. Run elevated (as
+// in CI), new files belong to the Administrators group instead, and the account takes ownership once it holds the DACL.
 test('secrets are secured in a folder where the owner has only Modify rights',{skip:process.platform!=='win32'&&'Windows ACLs'},()=>{
   const root=tempDir('ava-private-modify-'),file=join(root,'secrets','key.json');
   powershell(`$ErrorActionPreference='Stop'
