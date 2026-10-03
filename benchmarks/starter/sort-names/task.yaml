@@ -1,0 +1,11 @@
+id: sort-names
+version: 1
+title: Sort names by last name
+mode: prompt
+time_limit_minutes: 2
+prompt: |
+  Sort these people by last name, and by first name when last names match:
+  Mia Chen, Omar Diaz, Lena Chen, Ravi Patel, Ana Diaz
+  Reply with the names in order, written exactly as given (first name, then last name), separated by a comma and a space, with nothing else.
+checks:
+  - equals: "Lena Chen, Mia Chen, Ana Diaz, Omar Diaz, Ravi Patel"

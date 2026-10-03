@@ -1,6 +1,6 @@
 # Agent vs Agent: user guide
 
-The v0.2.0 room in detail. For installation and an overview, see the [README](../README.md).
+The v0.3.1 room in detail. For installation and an overview, see the [README](../README.md).
 
 **Host** means the Codex or Claude Code app where the plugin is installed and `/ava` commands are entered. **Agent** means a separate CLI process in one of the room's two seats. Either host can use any supported pair of agents; using Codex as the host does not require using Codex as an agent. Vercel AI Gateway is an additional model route through the Codex adapter, not a separate CLI.
 
@@ -79,7 +79,7 @@ Switched under Search; each lists its own threads.
     - **A server** (an app with an API, say): it keeps running until Clear Session or Clear history. Anything else an agent leaves running, such as a file watcher, is stopped when its build ends, and its screen says so.
   - **Results** (the window button, or **Side by side** under a report) shows both apps running, each under its own agent's screen, with the prompt row below. Drag the horizontal divider to change the height of the previews. **Apps / Changes** in the prompt row switches to what each agent changed, file by file. The chat button brings the conversation back.
   - **If an agent stops early,** the other still finishes, and the stopped agent's screen says why. (Grok Build, for example, ends its turn when a permission is refused.) If an agent's report is complete but a command it ran is stuck waiting for input, AvA takes the report as final after a minute of quiet.
-  - **Review:** switch the row above the text box to **Review** and give a project folder. Each agent reports its findings from its own copy.
+  - **Review:** switch the row above the text box to **Review** and give a project folder. Each agent reports its findings from its own copy. A small project (up to 40 files and 64 KB of text) also comes with the prompt, numbered by line. That way an agent that reads files only through commands, such as Codex under Ask, can still review it.
   - **Folder access:** under Ask, scoped file operations are approved inside the working folder. Commands, unknown tools, paths outside it, links, and requests to leave the sandbox are refused.
     - Codex switches to its own `workspace-write` sandbox for the build, and back after.
     - A command that mentions the working folder is still refused: its effects are not confined by that path. Builds that need execution must wait for execution isolation or use an explicitly chosen Bypass mode.
@@ -139,13 +139,19 @@ The two agents are isolated from each other. Each sees only the shared topic, yo
 
 ## Running benchmarks
 
-Open **More > Benchmarks** in a room. Choose tasks and repetitions, then **Validate selected** to check that each reference solution passes and an empty attempt fails. Validation runs trusted local verifier scripts, not models. Only use task bundles whose scripts you trust until execution sandboxing is available.
+Open **More > Benchmarks** in a room. Choose tasks and repetitions, then **Validate selected** to check that each reference solution passes and an empty attempt fails. Validation runs the tasks' local verifier scripts, not models, under the verifier guard. Validating a task is your decision to run its scripts on this machine, so use only task bundles you wrote or trust.
 
 **Run selected** uses the two configured models in fresh, separate sessions for each task/repetition. It shows the request ceiling first: two access checks and two task answers per task/repetition. The room's existing conversations keep their sessions. Two agent slots must be available within the Resources limit. Cancel a job from its progress panel, or use Resources > Stop all. Restarted or uncertain jobs are recorded as interrupted and never automatically retried.
 
-The CLI uses the same runner: `npm run bench -- run benchmarks/starter --agents codex:MODEL,claude:MODEL --repeat 3 --data <isolated-data-folder>`. Commands `validate <suite>`, `jobs`, `status <job-id>` and `cancel <job-id>` share that data folder. Save the printed request ID; `--request-id` can recover the original start after a lost acknowledgement. Browsing, validation, status and cancellation do not generate replies. `scripts/bench-acceptance.ts` without `--live` exercises all three starter tasks with mocks in temporary storage.
+The CLI uses the same runner: `npm run bench -- run benchmarks/starter --agents codex:MODEL,claude:MODEL --repeat 3 --data <isolated-data-folder>`. Commands `validate <suite>`, `jobs`, `status <job-id>` and `cancel <job-id>` share that data folder. Save the printed request ID; `--request-id` can recover the original start after a lost acknowledgement. Browsing, validation, status and cancellation do not generate replies. `scripts/bench-acceptance.ts` without `--live` exercises the three original starter tasks with mocks in temporary storage; `--tasks` picks others.
 
-Live tasks that run a program verifier are currently refused before agent activation. A trusted test may execute generated candidate code, so these tasks need the F1 execution sandbox. Mock tests can still exercise their full runner and scoring flow. Ask-mode file tools also refuse shell execution; no real Build acceptance should resume until the requested offline fixes and appropriate isolation are in place.
+A Build task's hidden tests run the code the agent wrote, so they run under the [verifier guard](benchmarks.md#the-verifier-guard).
+- **Allowed:** reading that attempt's files, and writing a throwaway temp folder.
+- **Refused:** anything else, including starting processes, using the network or writing into the attempt. The refusal is recorded as the check's reason.
+
+The guard needs a Node that can block network access. Node 26 can; without it, live tasks with program verifiers are refused before any agent starts. Ask-mode file tools still refuse shell commands, so agents build with file tools only.
+
+When a job finishes, **Report (HTML)** and **Report (Markdown)** in its progress area save a report you can share: each agent's scores and pass@k, each task's result, and every check's evidence, with no room link or token. See [Reports](benchmarks.md#reports).
 
 ### Saved results and scoreboard
 

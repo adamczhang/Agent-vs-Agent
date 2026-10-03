@@ -1,0 +1,15 @@
+id: todo-list
+version: 1
+title: Write a small todo list class
+mode: build
+time_limit_minutes: 8
+prompt: |
+  Create todos.js exporting a class TodoList as an ES module.
+  - add(title) trims the title, throws a TypeError for an empty or non-string title, and returns the new item {id, title, done: false}. Ids are 1, 2, 3 and so on, never reused.
+  - complete(id) marks the item done and returns it; remove(id) deletes it and returns true. Both throw a RangeError for an unknown id.
+  - list(filter) returns copies of the items in the order they were added. filter is 'all' (the default), 'open' or 'done'; anything else throws a RangeError.
+  Use no dependencies.
+checks:
+  - file_exists: todos.js
+  - run: node tests/verify.mjs
+    timeout_ms: 10000

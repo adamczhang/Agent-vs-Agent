@@ -1,0 +1,15 @@
+import assert from 'node:assert/strict';
+import {TodoList} from '../todos.js';
+const list=new TodoList();
+assert.deepEqual(list.add('  buy milk '),{id:1,title:'buy milk',done:false});
+list.add('write tests');list.add('ship');
+assert.deepEqual(list.complete(2),{id:2,title:'write tests',done:true});
+assert.deepEqual(list.list('open').map(i=>i.id),[1,3]);
+assert.deepEqual(list.list('done').map(i=>i.id),[2]);
+assert.deepEqual(list.list().map(i=>i.id),[1,2,3]);
+assert.equal(list.remove(1),true);assert.deepEqual(list.list().map(i=>i.id),[2,3]);
+assert.equal(list.add('later').id,4,'ids are never reused');
+const copy=list.list()[0];copy.title='changed';assert.equal(list.list()[0].title,'write tests','list returns copies');
+for(const bad of ['','   ',null])assert.throws(()=>list.add(bad),TypeError);
+assert.throws(()=>list.complete(99),RangeError);assert.throws(()=>list.remove(1),RangeError);assert.throws(()=>list.list('later'),RangeError);
+console.log('todo list passed');

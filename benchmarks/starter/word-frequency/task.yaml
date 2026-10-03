@@ -1,0 +1,14 @@
+id: word-frequency
+version: 1
+title: Count the most frequent words
+mode: build
+time_limit_minutes: 8
+prompt: |
+  Create words.js exporting topWords(text, n) as an ES module.
+  Words are runs of the letters a-z, compared in lowercase; an apostrophe between letters stays inside a word (don't).
+  Return the n most frequent words as [word, count] pairs, sorted by count from highest to lowest, then alphabetically.
+  Throw a RangeError unless n is a positive integer. Use no dependencies.
+checks:
+  - file_exists: words.js
+  - run: node tests/verify.mjs
+    timeout_ms: 10000

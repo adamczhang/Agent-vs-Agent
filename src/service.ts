@@ -13,11 +13,13 @@ import { ActivationManager,type ParticipantFactory } from './activation.js';
 import { NativeFactory,loadProviderSetups,type Catalog } from './providers.js';
 import { LABELS,Menus } from './menus.js';
 import { listProcesses,survivors,systemCensus,type Census,type ProcessLedger,type SystemProcess } from './census.js';
+import { JobHost,type AgentJobs } from './jobs.js';
 import { combineStats,computeStats } from './stats.js';
-import { checkProject,copyFolder,copyProject,participantWorkspace,projectChanges } from './workspace.js';
+import { checkProject,copyFolder,copyProject,inlineProject,participantWorkspace,projectChanges } from './workspace.js';
 import { prepareProject } from './prepare-project.js';
 import { Resources } from './resources.js';
 import { BenchmarkRunner } from './bench-runner.js';
+import { suiteReport } from './bench-report.js';
 import { BenchmarkResults } from './bench-results.js';
 import { protectPrivatePath } from './private-files.js';
 import type { DoctorReport } from './doctor.js';
@@ -91,13 +93,17 @@ export class AvAService {
   private stopProcesses:(pids:number[])=>Promise<void>;
   private listeners:(port:number)=>Promise<number[]>;
   readonly previews=new Previews();
+  // Windows job objects for agents (src/jobs.ts): real agents get them by default; tests can pass their own.
+  readonly jobs?:AgentJobs;
   constructor(readonly dataRoot:string,readonly factory:ServiceFactory=new NativeFactory(dataRoot,loadProviderSetups(dataRoot)),readonly mode:'live'|'simulation'='live',
-    options:{census?:Census;processes?:()=>Promise<SystemProcess[]>;stopProcesses?:(pids:number[])=>Promise<void>;listeners?:(port:number)=>Promise<number[]>}={}){
+    options:{census?:Census;processes?:()=>Promise<SystemProcess[]>;stopProcesses?:(pids:number[])=>Promise<void>;listeners?:(port:number)=>Promise<number[]>;jobs?:AgentJobs}={}){
     // Upgrade the existing key's permissions as well as protecting newly written secrets.
     for(const path of [join(dataRoot,'secrets'),join(dataRoot,'secrets','ai-gateway.json')])if(existsSync(path))protectPrivatePath(path);
     this.store=new Store(join(dataRoot,'ava.sqlite'));this.store.interruptUnfinished();
     this.prompts=new PromptLibrary(dataRoot,this.store);
     this.factory.ledger??=this.store;this.census=options.census??systemCensus;
+    this.jobs=options.jobs??(this.factory instanceof NativeFactory?new JobHost(dataRoot):undefined);
+    if(this.factory instanceof NativeFactory)this.factory.jobs??=this.jobs;
     this.processes=options.processes??listProcesses;this.stopProcesses=options.stopProcesses??stopTrees;this.listeners=options.listeners??listeningOn;
     // Persisted receipts describe the old native processes, not this new owner.
     for(const row of this.store.db.prepare('SELECT data FROM pairs').all()){
@@ -117,6 +123,8 @@ export class AvAService {
       return participantWorkspace(this.dataRoot,{pairId,seat,generation:pair.slots[seat].generation});
     };
     this.engine.cleanup=run=>this.stopLeftovers(run);
+    this.activation.keptProcesses=(pairId,seat)=>this.keptServerProcesses(pairId,seat);
+    this.engine.reviewFiles=(run,seat)=>run.config.build?inlineProject(join(participantWorkspace(this.dataRoot,{pairId:run.pairId,seat,generation:run.generations[seat]}),run.config.build.folder)):'';
     this.activation.directBusy=(pairId,seat)=>this.direct.has(`${pairId}:${seat}`);
     this.menus=new Menus(this.store,this.activation,(p,m,a)=>this.catalog(p,m,a),(pairId,seat,level)=>this.setPermissions(pairId,seat,level),{
       models:()=>this.factory.gatewayModels?.()??gatewayModels(this.dataRoot),keyStatus:()=>gatewayKeyStatus(this.dataRoot),
@@ -138,16 +146,16 @@ export class AvAService {
     // While history is being cleared nothing may start or change: the clear deletes runs and agents' folders.
     if(this.clearing&&CHANGING.has(method))throw new AvAError('CLEARING','History is being cleared. Try again in a moment.');
     switch(method){
-      case 'health': return {mode:this.mode,pid:process.pid,version:packageVersion,schemaVersion:1,databaseVersion:SCHEMA_VERSION,capabilities:{benchmarks:true,benchmarkResults:true}};
+      case 'health': return {mode:this.mode,pid:process.pid,version:packageVersion,schemaVersion:1,databaseVersion:SCHEMA_VERSION,capabilities:{benchmarks:true,benchmarkResults:true,benchmarkReports:true}};
       case 'bench.catalog':{const p=z.object({suite:z.string().max(1000).optional()}).parse(input);return {tasks:this.benchmarks.catalog(p.suite)};}
       case 'bench.validate':{const p=z.object({taskIds:z.array(id).min(1).max(20),suite:z.string().max(1000).optional()}).parse(input);return {validations:await this.benchmarks.validate(p.taskIds,p.suite)};}
       case 'bench.start':{
-        const p=z.object({taskIds:z.array(id).min(1).max(20),suite:z.string().max(1000).optional(),repeats:z.number().int().min(1).max(10).default(1),stopOnFailure:z.boolean().default(false),pairId:id.optional(),agents:z.object({cli1:providerConfig,cli2:providerConfig}).strict().optional(),requestId:id}).refine(p=>!!p.pairId!==!!p.agents,'Choose a room pair or two explicit agent configurations.').parse(input);
+        const p=z.object({taskIds:z.array(id).min(1).max(20),suite:z.string().max(1000).optional(),repeats:z.number().int().min(1).max(10).default(1),stopOnFailure:z.boolean().default(false),pairId:id.optional(),agents:z.object({cli1:providerConfig,cli2:providerConfig}).strict().optional(),judge:providerConfig.optional(),requestId:id}).refine(p=>!!p.pairId!==!!p.agents,'Choose a room pair or two explicit agent configurations.').parse(input);
         return this.once('bench-start',p.requestId,{...p,requestId:undefined},async()=>{
           const pair=p.pairId?this.store.pair(p.pairId):undefined;
           const agents=p.agents??{cli1:pair!.slots.cli1.config!,cli2:pair!.slots.cli2.config!};
           if(!agents.cli1||!agents.cli2)throw new AvAError('NOT_READY','Choose both agent models in the room first.');
-          return this.benchmarks.start({taskIds:p.taskIds,suite:p.suite,repeats:p.repeats,stopOnFailure:p.stopOnFailure,agents});
+          return this.benchmarks.start({taskIds:p.taskIds,suite:p.suite,repeats:p.repeats,stopOnFailure:p.stopOnFailure,agents,...(p.judge?{judge:p.judge}:{})});
         });
       }
       case 'bench.jobs':return {jobs:this.benchmarks.jobs()};
@@ -155,6 +163,7 @@ export class AvAService {
       case 'bench.export':{const p=z.object({filters:resultFilters.optional(),format:z.enum(['json','csv'])}).strict().parse(input);return this.benchmarkResults.export(p.filters??{},p.format);}
       case 'bench.get':{const p=z.object({jobId:id}).parse(input);return this.benchmarks.get(p.jobId);}
       case 'bench.attempt':{const p=z.object({attemptId:id}).parse(input);return this.benchmarks.attempt(p.attemptId);}
+      case 'bench.report':{const p=z.object({jobId:id,format:z.enum(['html','md'])}).strict().parse(input);return suiteReport(this.benchmarks.get(p.jobId),this.benchmarks.attemptsOf(p.jobId),p.format,this.dataRoot);}
       case 'bench.cancel':{const p=z.object({jobId:id,requestId:id}).parse(input);return this.once('bench-cancel',p.requestId,{jobId:p.jobId},async()=>this.benchmarks.cancel(p.jobId));}
       case 'pair.create': {const p=z.object({thread:id}).parse(input);return this.store.createPair(p.thread);}
       case 'providers.list':return this.factory.list();
@@ -576,6 +585,11 @@ export class AvAService {
     const run=this.store.run(runId),text=this.store.messages(runId).filter(m=>m.sender===seat).at(-1)?.text;
     return text?appTarget(text,participantWorkspace(this.dataRoot,{pairId:run.pairId,seat,generation:run.generations[seat]})):undefined;
   }
+  // The processes of the app servers an agent's Build runs kept, which its close leaves running.
+  private keptServerProcesses(pairId:string,seat:Seat){
+    return this.store.db.prepare("SELECT e.data FROM events e JOIN runs r ON r.id=e.run_id WHERE e.type='build_server' AND r.pair_id=?").all(pairId)
+      .map(r=>JSON.parse(String(r.data)) as {seat:Seat;processes:Array<{pid:number}>}).filter(e=>e.seat===seat).flatMap(e=>e.processes.map(p=>p.pid));
+  }
   // App servers kept running after a build (recorded as build_server events) are stopped with their session: at Clear
   // Session or Clear history. A recorded PID only counts while its start time still matches.
   private async stopKeptServers(pairId?:string){
@@ -620,9 +634,10 @@ export class AvAService {
     return {threads,...counts,workspacesRemoved:removed,workspacesInUse:kept,pair:pair?this.pairView(pair.id):null};
   }
   // Build runs: what an agent started and left running (a file watcher, a test runner) is stopped once it is done:
-  // the processes in its own process tree that started during the run and are still alive (the agent itself started
-  // earlier). The exception is the app server it named in its report (APP: http://localhost:<port>/), which keeps
-  // running, with its parents and children, until Clear Session.
+  // the processes in its own process tree, or in its job object, that started during the run and are still alive (the
+  // agent itself started earlier). The job also holds processes whose parent has exited, which the tree can't reach.
+  // The exception is the app server it named in its report (APP: http://localhost:<port>/), which keeps running, with
+  // its parents and children, until Clear Session.
   private async stopLeftovers(run:Run){
     const since=Date.parse(run.createdAt??'');if(!Number.isFinite(since))return;
     const note=(seat:Seat,text:string)=>this.store.event(run.id,'activity',{seat,turnId:'cleanup',type:'status',text,late:false});
@@ -637,7 +652,9 @@ export class AvAService {
       const helper=(p:{name:string;parentPid:number})=>AGENT_HELPER.test(p.name)||/^conhost\.exe$/i.test(p.name)&&AGENT_HELPER.test(byPid.get(p.parentPid)?.name??'');
       for(const seat of SEATS){
         const recorded=ledger[seat]!,own=new Set(recorded.map(r=>r.pid)),app=apps[seat];
-        const left=survivors(recorded,all).filter(p=>!own.has(p.pid)&&fresh(p.pid)&&!helper(p)),leftPids=new Set(left.map(p=>p.pid)),keep=new Set<number>();
+        const tree=survivors(recorded,all),members=new Set(await this.jobs?.scopeMembers(`${run.pairId}/${seat}/${run.generations[seat]}/`).catch(()=>[] as number[])??[]);
+        const found=[...tree,...all.filter(p=>members.has(p.pid)&&!tree.some(t=>t.pid===p.pid)).map(p=>({pid:p.pid,parentPid:p.ppid,name:p.name}))];
+        const left=found.filter(p=>!own.has(p.pid)&&fresh(p.pid)&&!helper(p)),leftPids=new Set(left.map(p=>p.pid)),keep=new Set<number>();
         if(app?.kind==='server'){
           const listening=(await this.listeners(app.port).catch(()=>[] as number[])).filter(fresh);
           for(const pid of listening){
@@ -736,5 +753,7 @@ export class AvAService {
     // Let stopped runs record their terminal state before the caller closes the store; anything still unsettled is quarantined on restart.
     const unsettled=()=>this.store.db.prepare('SELECT data FROM runs').all().some(row=>['running','pausing','stopping'].includes((JSON.parse(String(row.data)) as {status:string}).status));
     for(const deadline=Date.now()+5000;unsettled()&&Date.now()<deadline;)await new Promise(resolve=>setTimeout(resolve,25));
+    // The agents have closed (their jobs retired); the job helper ends with the service.
+    this.jobs?.dispose();
   }
 }

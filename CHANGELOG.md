@@ -1,5 +1,108 @@
 # Changelog
 
+## [0.3.1](https://github.com/adamczhang/Agent-vs-Agent/releases/tag/v0.3.1) - 2026-10-03
+
+### Fixed
+
+- **The host connects to AvA faster.** The MCP server answers the host without loading the engine, which now loads only in the background service.
+  - Before, the MCP server read about 550 files before answering, so a freshly installed copy could take seconds to connect. On a busy machine it could exceed the host's 30-second limit.
+  - It now reads about 250.
+
+## 0.3.0 - 2026-10-03
+
+### Added
+
+- **Rubric scores for benchmarks:** a task can carry a `rubric`, and a job can name a judge: `--judge provider:model` in the CLI, or `judge` in `bench.start`.
+  - **Scoring:** the judge, a third agent, scores each attempt at a rubric task from 0 to 10, with a reason.
+  - **Separate from the verdict:** the score is saved apart from the checks with the judge's identity, and it never changes pass or fail. Reports show it beside the verdict.
+  - **Starter tasks:** seven have rubrics, the five Review tasks and the two pages.
+
+### Fixed
+
+- **Codex can review projects under Ask.** Codex reads files only through commands, which Ask refuses, so it failed every starter Review task.
+  - A small project's files (up to 40 files and 64 KB of text) now come with the Review prompt, numbered by line.
+  - In a live rerun, Codex and Claude Code each passed all 5 Review tasks.
+## 0.2.9 - 2026-10-03
+
+### Added
+
+- **Import benchmark tasks:** `npm run bench -- import <source> --format exercism|jsonl --out <suite>`.
+  - **Exercism JavaScript exercises:** one or a folder of them. Their Jest-style tests run through a small built-in shim.
+  - **JSON Lines, "prompt plus tests":** one task per line.
+  - **Container only:** imported tasks are marked for container isolation, so their tests run only in Docker.
+
+## 0.2.8 - 2026-10-03
+
+### Added
+
+- **Benchmark reports you can share.** A finished job saves as a standalone HTML page or as Markdown, from the Benchmarks panel or with `npm run bench -- report <job-id> --format html|md --out <file>`.
+  - **Contents:** each agent's pass rate and pass@k, time and tokens; each task's result per agent; and every check's evidence.
+  - **Safe to share:** no room link or token, and local paths are replaced.
+
+## 0.2.7 - 2026-10-03
+
+### Added
+
+- **20 validated starter benchmark tasks,** up from 3. Each reference solution passes and an empty attempt fails.
+  - **Prompt (8):** exact-answer reasoning and extraction.
+  - **Build (7):** small modules and a page, graded by hidden tests that cover edge cases and invalid input.
+  - **Review (5):** two planted bugs each, one of them a path-traversal security bug.
+  - The full list is in the [benchmark guide](docs/benchmarks.md).
+
+## 0.2.6 - 2026-10-03
+
+### Added
+
+- **Container isolation for benchmark tasks you don't trust.** A task with `isolation: container`, or every task with `AVA_VERIFIER_BACKEND=container`, runs its hidden tests in Docker, never on the host.
+  - **The container:** no network, a read-only root with a small writable `/tmp`, no capabilities or privilege escalation, limits on processes, memory and CPU, a non-root user, and the attempt mounted read-only.
+  - **The image:** `node:24-alpine`, pinned by digest. AvA never downloads it.
+  - **Records:** results and validation receipts name the backend and the image.
+  - **Without Docker's Linux engine or the image:** such tasks are refused before any agent starts, with what's missing.
+
+## 0.2.5 - 2026-10-03
+
+### Added
+
+- **Agents run in Windows job objects.** Each agent, and everything it starts, is held from its first instruction. A launcher waits until AvA has placed it in the agent's job before it starts the agent.
+  - **Lineage:** AvA also follows what Windows starts outside the job. Seen live with Codex: it runs commands in PowerShell 7 from the Microsoft Store, whose processes Windows keeps out of other jobs.
+  - **Build cleanup** stops background processes an agent left running, even after their parent has exited.
+  - **Closing an agent** stops everything left in its job, except the app servers its Build runs kept.
+  - **Activation** says whether the agent is contained.
+  - **Off switch:** `AVA_JOB_OBJECTS=off`. If the job helper can't start, agents start uncontained, with a note.
+
+## 0.2.4 - 2026-10-03
+
+### Added
+
+- **Live Build benchmarks, with a verifier guard.** Tasks whose hidden tests run the agent's code now run live, on a Node that can deny network access (Node 26 can).
+  - **What runs under it:** the tests, and the code they import.
+  - **Allowed:** reading the attempt's files, and writing a throwaway temp folder.
+  - **Refused:** processes, worker threads, add-ons and network access; writing outside the temp folder; and reading outside the attempt.
+  - **Recorded:** each refusal as the check's reason, and whether each check ran guarded.
+  - **Not a sandbox:** it guards against accidents, not hostile code, so validate only task bundles you trust.
+  - **Off switch:** `AVA_VERIFIER_GUARD=off` turns it off, which blocks live program verifiers again.
+- **Validate again:** existing validations are from the previous checker version, so validate tasks again before running them.
+
+## 0.2.3 - 2026-10-03
+
+### Changed
+
+- **MCP SDK 1.32.0** (from 1.31.0). Its changes affect web-based transports and add options that stay off unless set; AvA uses the local stdio transport.
+- **Development:** jsdom 30 for the tests (development needs Node 24.15 or newer), and `scripts/upkeep.ts`, a monthly dependency and CLI check with an optional live activation per provider.
+
+## 0.2.2 - 2026-10-03
+
+### Changed
+
+- **A service that can't start says why, in seconds.** The plugin now answers the host's startup handshake straight away and starts AvA's background service on its own. If the service fails, the next `/ava` command reports its reason, for example which file couldn't be secured, as soon as the service exits. Before, the host waited and then reported a 30-second timeout with no reason. Once the cause is fixed, the next command starts the service; the host needn't be restarted.
+- **`/ava doctor` checks the data folder:** that it takes writes, and that secrets written there can be restricted to your account. When the service can't start, `/ava doctor` still answers with the reason and that check.
+
+## 0.2.1 - 2026-10-03
+
+### Fixed
+
+- **The service starts with a data folder on a second drive.** Securing `server.json` and the Gateway key no longer tries to take ownership the account already has. Below a drive root other than the system drive, Windows gives the owner Modify rights without the right to change ownership, so every start failed with "Could not restrict the private file to your Windows account" and `/ava` timed out in both hosts. The error now also names the file and Windows' reason.
+
 ## [0.2.0](https://github.com/adamczhang/Agent-vs-Agent/releases/tag/v0.2.0) - 2026-10-03
 
 The first stable release and the starting point for future releases. Earlier 0.1.x tags are development history.

@@ -1,13 +1,39 @@
-# Agent vs Agent
+<img src="docs/images/banner.jpg" alt="Agent vs Agent" width="100%">
 
 [![Windows CI](https://github.com/adamczhang/Agent-vs-Agent/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/adamczhang/Agent-vs-Agent/actions/workflows/ci.yml) [![Release](https://img.shields.io/github/v/release/adamczhang/Agent-vs-Agent)](https://github.com/adamczhang/Agent-vs-Agent/releases/latest) [![MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
+## Welcome to Agent vs Agent
+
+**Agent vs Agent (AvA)** is a platform for testing AI coding agents one on one. It puts two agents side by side in a single room on your own machine, gives them the same task, and shows you how they differ: in their answers, in a debate with each other, in the apps they build, and in their scores on repeatable benchmarks. Each agent runs as its real CLI with your own sign-in, and no third model relays or rewrites their turns, so what you compare is what each agent actually does.
+
+AvA installs as a plugin for Codex or Claude Code. Type `/ava start` in either one and the room opens in your browser. Either host can run any pairing, including the same agent twice with different models or settings. Choose each agent's model from its CLI's own lineup, or from 250+ more through the Vercel AI Gateway.
+
+| **Host** | Plugin for Codex or Claude Code |
+| --- | --- |
+| **Agents** | Codex, Claude Code, Grok Build or Antigravity CLI agents, with any model |
+
+![Full desktop layout of AvA showing two Grok Build agents debating how to keep a Mars greenhouse running without internet](docs/images/room.png)
+
+*Recorded live test: two Grok Build agents discuss a Mars greenhouse, then respond to an added offline-operation constraint.*
+
+**Highlights**
+
+- **Prompt:** both agents answer the same prompt and attachments at the same moment, independently. Compare their answers, timing and speed.
+- **Debate:** the agents take turns after an opener you choose. Pause, add a constraint, and resume.
+- **Build and Review:** each agent works in its own copy of a project. Open the two apps side by side, compare their changes, or rank their code-review findings.
+- **Benchmarks:** validated tasks with deterministic checks, so every attempt is saved with an explicit pass or fail. Repeat runs, a scoreboard, exports, and shareable HTML or Markdown reports, with 20 starter tasks. Add optional rubric scores from a judge agent, or import Exercism and JSON Lines tasks.
+- **Prompt library:** saved Markdown prompts and reference files, with six editable starters, in every mode.
+- **In the room:** private 1:1 lines to brief each agent on its own, a context ring per agent, searchable history, replay and usage statistics.
+- **Control:** permissions and internet access per agent, and a Resources view of running agents and their memory, with an activation limit and Stop all. Everything runs locally, behind a random token.
+
+The [user guide](docs/user-guide.md) and [benchmark guide](docs/benchmarks.md) cover each feature in detail.
 
 ## Quick install
 
 Requires **Windows**, **Node.js 24+**, **Git**, and **Codex or Claude Code** as the plugin host. Install and sign in to the CLI agents you want to use; see [supported agents](#supported-agents).
 
 ```powershell
-git clone --branch v0.2.0 --depth 1 https://github.com/adamczhang/Agent-vs-Agent.git
+git clone --branch v0.3.1 --depth 1 https://github.com/adamczhang/Agent-vs-Agent.git
 cd Agent-vs-Agent
 npm ci
 npm run package
@@ -33,37 +59,6 @@ claude plugin install agent-vs-agent@ava
 
 Type **`/ava start`** in your host, click **Activate** above each agent pane, choose the agents and models, and send a prompt. Each activation makes one short model request. Use **`/ava doctor`** to check setup without model requests.
 
-## Welcome to Agent vs Agent
-
-<img src="docs/images/banner.jpg" alt="Agent vs Agent" width="100%">
-
-**Two agents, one prompt, your machine.** Compare independent answers, let agents challenge each other's ideas, or watch them build and review the same project. Save useful prompts and files, then reuse them across models and modes.
-
-| Role | What it means | Choices |
-| --- | --- | --- |
-| **Host app** | Where you install the AvA plugin and type `/ava` commands. It opens the room in a browser. | Codex or Claude Code |
-| **CLI agent** | A separate CLI process doing the work in one of the room's two seats. | Codex CLI, Claude Code, Grok Build or Antigravity |
-| **Gateway agent** | A model reached through Vercel AI Gateway, using the Codex CLI adapter. | Models listed by the Gateway |
-
-Codex and Claude Code can serve either role. **Your host does not determine your agents**: either host can run any two supported agents, including the same CLI twice. Both hosts share your local conversation pool and prompt library.
-
-![Full desktop layout of AvA showing two Grok Build agents debating how to keep a Mars greenhouse running without internet](docs/images/room.png)
-
-*Recorded live test: two Grok Build agents discuss a Mars greenhouse, then respond to an added offline-operation constraint.*
-
-## Modes and tools
-
-| Feature | What it does |
-| --- | --- |
-| **Prompt** | Sends the same prompt and attachments to both agents for independent answers. |
-| **Debate** | Alternates replies after a selected opener. Pause, add a constraint, and resume. |
-| **Build** | Gives each agent its own project copy. Compare app previews, changes or code-review findings. |
-| **Prompt library** | Saves Markdown prompts and attached files; includes six editable starters. Available in every mode. |
-| **Benchmarks** | Validates tasks, runs repeated attempts, and saves deterministic checks, a scoreboard and JSON/CSV exports. Includes three starter tasks. |
-| **Resources** | Shows active agents and memory, sets an activation limit, and stops all AvA agents. |
-
-The room also includes private 1:1 messages, resizable panes, searchable history, replay and usage statistics. See the [user guide](docs/user-guide.md) and [benchmark guide](docs/benchmarks.md).
-
 ## Supported agents
 
 | Agent | Requirement |
@@ -80,7 +75,7 @@ The four CLIs use their own subscription logins. For the Gateway, use **Gateway 
 
 - **Ask** is the default. Build permits recognized file operations inside each agent's workspace; shell commands and process control are refused. **Bypass** trusts tool execution with your account's permissions. Provider-side permissions remain a separate boundary; AvA is not an operating-system sandbox.
 - **Internet** is off by default. Supported web tools follow the switch; it is not a network firewall for unrestricted commands.
-- **Live benchmarks with program verifiers are blocked** until execution isolation is available. Answer and file checks remain usable. See [benchmark limits](docs/user-guide.md#running-benchmarks).
+- **Benchmark verifiers run under a guard.** A Build task's hidden tests, and the code they test, may read only that attempt's files. They can't start processes or use the network. It's a guard against accidents, not a sandbox, so validate only task bundles you trust. Imported or untrusted tasks run their tests in a Docker container instead. See [the verifier guard](docs/benchmarks.md#the-verifier-guard).
 - **Local data:** `%USERPROFILE%\AgentVsAgent`, shared by both hosts. Override with `AVA_DATA_DIR`. Saved prompts and files live together under `prompts/`; clearing conversation history preserves the prompt library and benchmark results.
 - **Local access:** the room uses authenticated loopback. Its link is a credential; do not share it. Interrupted work is never automatically resent.
 
@@ -88,7 +83,7 @@ Read the [security policy](SECURITY.md) and [known limits](docs/architecture.md#
 
 ## Documentation and development
 
-[User guide](docs/user-guide.md) · [Benchmarks](docs/benchmarks.md) · [Architecture](docs/architecture.md) · [Roadmap](docs/roadmap.md) · [Contributing](CONTRIBUTING.md) · [Changelog](CHANGELOG.md) · [v0.2.0 release notes](docs/release-v0.2.0.md)
+[User guide](docs/user-guide.md) · [Benchmarks](docs/benchmarks.md) · [Architecture](docs/architecture.md) · [Roadmap](docs/roadmap.md) · [Contributing](CONTRIBUTING.md) · [Changelog](CHANGELOG.md) · [v0.3.1 release notes](docs/release-v0.3.1.md)
 
 ```powershell
 npm run typecheck

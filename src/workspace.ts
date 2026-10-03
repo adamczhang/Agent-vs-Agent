@@ -12,6 +12,30 @@ export const COPY_LIMITS = { files: 20_000, bytes: 500 * 1024 * 1024 };
 const SKIP = new Set(['node_modules', '.git', 'dist', 'build', 'out', '.next', '.venv', 'venv', '__pycache__', '.pytest_cache', 'target', 'bin', 'obj', '.idea', '.vs']);
 
 // The agent's workspace (its session's working folder); providers.ts opens each session there.
+// A small project's text files, numbered by line, for a Review prompt. Agents that read files only through commands
+// (Codex, whose commands Ask refuses) can then still review it. '' when the project is too big (over 40 files or 64 KB
+// of text) or has nothing to show; git data, dependencies, links and binary files are left out.
+export function inlineProject(dir: string, maxFiles = 40, maxBytes = 64_000) {
+  const files: string[] = [];
+  const walk = (rel: string) => {
+    for (const entry of readdirSync(join(dir, rel), { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+      const path = rel ? `${rel}/${entry.name}` : entry.name;
+      if (entry.isSymbolicLink() || ['.git', 'node_modules'].includes(entry.name)) continue;
+      if (entry.isDirectory()) walk(path); else if (entry.isFile()) files.push(path);
+      if (files.length > maxFiles) return;
+    }
+  };
+  try { walk(''); } catch { return ''; }
+  if (!files.length || files.length > maxFiles) return '';
+  let total = 0; const parts: string[] = [];
+  for (const path of files) {
+    const bytes = readFileSync(join(dir, path));
+    if (bytes.includes(0)) continue;
+    total += bytes.length; if (total > maxBytes) return '';
+    parts.push(`--- ${path} ---\n${bytes.toString('utf8').replace(/\r\n/g, '\n').split('\n').map((line, i) => `${String(i + 1).padStart(4)} | ${line}`).join('\n')}`);
+  }
+  return parts.join('\n\n');
+}
 export function participantWorkspace(dataRoot: string, scope: { pairId: string; seat: string; generation: number }) {
   return join(dataRoot, 'workspaces', scope.pairId, scope.seat, String(scope.generation));
 }

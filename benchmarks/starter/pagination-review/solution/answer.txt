@@ -1,0 +1,2 @@
+src/paginate.js:4 skips the first page: the start index must be (page - 1) * pageSize.
+src/paginate.js:9 drops a final partial page: use Math.ceil(total / pageSize).

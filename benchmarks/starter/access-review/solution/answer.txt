@@ -1,0 +1,2 @@
+src/access.js:2 lets anyone edit a locked document and lets owners edit locked ones: use user.role === 'admin' || (user.id === doc.ownerId && !doc.locked).
+src/access.js:6 is reversed, reporting live sessions as expired: return now >= session.expiresAt.

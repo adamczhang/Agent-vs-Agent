@@ -13,6 +13,7 @@ import { doctor,cliWarnings } from './doctor.js';
 import { AvAError, PROVIDERS, type AgentRequest, type AgentResult, type AgentUsage, type Provider, type ProviderConfig, type Seat } from './types.js';
 import type { ConfiguredParticipant, ParticipantFactory } from './activation.js';
 import type { ProcessLedger } from './census.js';
+import type { AgentJobs } from './jobs.js';
 
 export interface ConfigOption { id: string; name: string; currentValue: string; options: Array<{ value: string; name: string }> }
 export interface Catalog { provider: Provider; currentModel: string; models: Array<{ id: string; name: string }>; controls: ConfigOption[] }
@@ -36,6 +37,8 @@ function controls(value:unknown):ConfigOption[]{
 }
 export class NativeFactory implements ParticipantFactory {
   ledger?:ProcessLedger;
+  // Windows job objects for agent processes (src/jobs.ts), set by the service.
+  jobs?:AgentJobs;
   constructor(readonly dataRoot:string,private setups:Partial<Record<Provider,ProviderSetup>>={}){}
   inspect(provider:Provider){
     const setup=this.setups[provider];
@@ -83,12 +86,21 @@ export class NativeFactory implements ParticipantFactory {
     // A spawn that cannot be recorded must not run unrecorded (recovery would miss it): the error propagates and ACPX
     // stops the child. A failed exit record is harmless (the census then checks a process that is already gone).
     const record=(write:()=>void)=>{try{write();}catch{}};
-    const runtime=createAcpRuntime({cwd,sessionStore:createFileSessionStore({stateDir}),agentRegistry:createAgentRegistry({overrides:{[config.provider]:argv}}),
+    // Job containment: ACPX starts the launcher, which waits until onSpawned has assigned it to this agent's job.
+    const jobs=this.jobs,jobName=`${scope.pairId}/${scope.seat}/${scope.generation}/${randomUUID()}`;
+    const launch=jobs?await jobs.launch(argv):{argv,contained:false,note:''};
+    let uncontained=false;
+    const retire=async()=>{if(launch.contained)await jobs!.retire(jobName,options.keep?.()??[]).catch(()=>{});};
+    const runtime=createAcpRuntime({cwd,sessionStore:createFileSessionStore({stateDir}),agentRegistry:createAgentRegistry({overrides:{[config.provider]:launch.argv}}),
       permissionMode:'deny-all',nonInteractivePermissions:'deny',fs:false,terminal:false,timeoutMs:60_000,
       agentProcessEnv:participantEnvironment(config.provider,this.setups[config.provider]?.env,this.dataRoot,launchedWithInternet,
         config.provider==='vercel'?{model:config.model,effort:config.effort?.value,key:gatewayKey(this.dataRoot)!.key,...(listed?.context?{context:listed.context}:{})}:undefined,cli,mcpNames),
-      processLifecycle:{onBeforeSpawn(){signal.throwIfAborted();},onSpawned(event){processes.add(event.pid);ledger?.spawned({pid:event.pid,...scope});signal.throwIfAborted();},onExit(event){processes.delete(event.pid);record(()=>ledger?.exited(event.pid));}},
+      processLifecycle:{
+        async onBeforeSpawn(){signal.throwIfAborted();if(launch.contained)await jobs!.create(jobName).catch(()=>{/* release() then reports it uncontained */});},
+        async onSpawned(event){processes.add(event.pid);ledger?.spawned({pid:event.pid,...scope});if(launch.contained&&!await jobs!.release(jobName,event.pid))uncontained=true;signal.throwIfAborted();},
+        onExit(event){processes.delete(event.pid);record(()=>ledger?.exited(event.pid));}},
     });
+    const containment=()=>!jobs?'':!launch.contained?` ${launch.note}`:uncontained?' Process containment failed for this agent; its processes are found by process tree.':` ${launch.note}`;
     let handle:AcpRuntimeHandle|undefined;
     const cancel=()=>{void runtime.shutdown().catch(()=>{});};signal.addEventListener('abort',cancel,{once:true});
     try{
@@ -116,11 +128,11 @@ export class NativeFactory implements ParticipantFactory {
       signal.throwIfAborted();
       // Images: what the agent declared, or for a Gateway model whether the model itself takes images.
       const images=fixedAtLaunch?listed?.tags.includes('vision')===true:imageInput(stateDir,sessionKey);
-      const participant=new NativeParticipant(runtime,handle,{...config,model},cli?`${evidence} Installed ${cli.name} ${cli.version}.`:evidence,()=>processes.size>0,internet,LAUNCH_TIME_WEB.has(config.provider)?launchedWithInternet:undefined,
-        images,options.workspace??(()=>undefined),cwd,options.bypass??(()=>false));
+      const participant=new NativeParticipant(runtime,handle,{...config,model},(cli?`${evidence} Installed ${cli.name} ${cli.version}.`:evidence)+containment(),()=>processes.size>0,internet,LAUNCH_TIME_WEB.has(config.provider)?launchedWithInternet:undefined,
+        images,options.workspace??(()=>undefined),cwd,options.bypass??(()=>false),retire);
       participant.noteSessionUsage(status.usage);
       signal.removeEventListener('abort',cancel);return participant;
-    }catch(error){signal.removeEventListener('abort',cancel);await runtime.shutdown().catch(()=>{});throw error;}
+    }catch(error){signal.removeEventListener('abort',cancel);await runtime.shutdown().catch(()=>{});await retire();throw error;}
   }
   async discover(provider:Provider,signal:AbortSignal,model='',auth:ProviderConfig['auth']='provider-login'):Promise<Catalog>{
     // The Gateway's models come from its public list; nothing needs to start.
@@ -186,7 +198,8 @@ export function participantEnvironment(provider:Provider,configured:Record<strin
 }
 // workspace: while a Build run is active for this agent, the folder it may work in (its workspace, which holds its copy).
 // bypass: the agent's permissions are set to bypass, so every tool request is approved (web tools still follow internet).
-export interface ParticipantOptions {internet?:()=>boolean;resumeSessionId?:string;workspace?:()=>string|undefined;bypass?:()=>boolean}
+// keep: processes to leave running when the agent closes (the app servers it was asked to keep, until Clear Session).
+export interface ParticipantOptions {internet?:()=>boolean;resumeSessionId?:string;workspace?:()=>string|undefined;bypass?:()=>boolean;keep?:()=>number[]}
 // Claude Code also obeys the user's own permission settings: allow rules or a permissive default mode approve a tool
 // before AvA's gate is asked, and ACPX offers no way to switch those settings off for one session. The agent's screen
 // says so once, rather than the gate appearing to be in charge.
@@ -247,7 +260,7 @@ export class NativeParticipant implements ConfiguredParticipant {
   private closed=false;
   constructor(readonly runtime:AcpxRuntime,readonly handle:AcpRuntimeHandle,readonly accepted:ProviderConfig,readonly evidence:string,private alive:()=>boolean=()=>true,
     private internet:()=>boolean=()=>false,readonly launchedWithInternet?:boolean,readonly imageInput=false,private workspace:()=>string|undefined=()=>undefined,readonly cwd?:string,
-    private bypass:()=>boolean=()=>false){
+    private bypass:()=>boolean=()=>false,private retireJob:()=>Promise<void>=async()=>{}){
     this.sessionId=handle.agentSessionId??handle.backendSessionId??handle.acpxRecordId??'';
     if(!this.sessionId)throw new AvAError('NO_SESSION_ID','No native session identity was returned.');
   }
@@ -344,7 +357,9 @@ export class NativeParticipant implements ConfiguredParticipant {
   async close(){
     if(this.closeAttempt)return this.closeAttempt.catch(()=>{});
     this.closed=true;
-    this.closeAttempt=(async()=>{try{await this.runtime.close({handle:this.handle,reason:'ava-close'});}finally{await this.runtime.shutdown();}})();
+    // After ACPX has stopped the agent and the descendants it saw, its job stops whatever is left (except kept app
+    // servers), including processes whose parent had already exited.
+    this.closeAttempt=(async()=>{try{await this.runtime.close({handle:this.handle,reason:'ava-close'});}finally{try{await this.runtime.shutdown();}finally{await this.retireJob();}}})();
     return this.closeAttempt;
   }
 }

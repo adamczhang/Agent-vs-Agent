@@ -1,0 +1,13 @@
+id: stats-review
+version: 1
+title: Find two statistics bugs
+mode: review
+time_limit_minutes: 3
+prompt: |
+  Review src/stats.js for functional and security bugs. Do not edit the project.
+  Requirements: average(values) returns the mean of a non-empty array of numbers. median(values) returns the median of a non-empty array of numbers, without changing the caller's array.
+  For each bug, begin the finding with the exact location src/stats.js:<line>, then explain the incorrect behavior and the correction. Do not report style issues.
+checks:
+  - contains: "src/stats.js:3"
+  - contains: "src/stats.js:8"
+rubric: "Score how well each finding explains why the line is wrong and gives a correct fix (10 = both bugs explained precisely with correct fixes, 0 = no useful explanation). Ignore formatting."

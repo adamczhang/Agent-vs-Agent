@@ -1,0 +1,13 @@
+id: slugify
+version: 1
+title: Write a slugify function
+mode: build
+time_limit_minutes: 8
+prompt: |
+  Create slugify.js exporting slugify(text) as an ES module.
+  It lowercases the text, removes accents (é becomes e), turns every run of characters other than a-z and 0-9 into a single hyphen, and trims hyphens from both ends.
+  Text with no letters or digits gives an empty string. Throw a TypeError when text isn't a string. Use no dependencies.
+checks:
+  - file_exists: slugify.js
+  - run: node tests/verify.mjs
+    timeout_ms: 10000

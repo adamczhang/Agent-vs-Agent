@@ -13,3 +13,4 @@ prompt: |
 checks:
   - contains: "src/cart.js:4"
   - contains: "src/cart.js:8"
+rubric: "Score how well each finding explains why the line is wrong and gives a correct fix (10 = both bugs explained precisely with correct fixes, 0 = no useful explanation). Ignore formatting."

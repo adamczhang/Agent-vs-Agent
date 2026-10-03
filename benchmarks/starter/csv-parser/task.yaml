@@ -1,0 +1,13 @@
+id: csv-parser
+version: 1
+title: Parse CSV with quoted fields
+mode: build
+time_limit_minutes: 8
+prompt: |
+  Create csv.js exporting parseCsv(text) as an ES module. It returns an array of rows, each an array of string fields.
+  Fields are separated by commas, and rows by \n or \r\n. A field may be wrapped in double quotes; inside quotes, commas and line breaks are literal, and a doubled quote ("") stands for one quote character.
+  A trailing line break doesn't add an empty row, and an empty string gives an empty array. Use no dependencies.
+checks:
+  - file_exists: csv.js
+  - run: node tests/verify.mjs
+    timeout_ms: 10000

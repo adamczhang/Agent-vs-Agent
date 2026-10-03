@@ -1,0 +1,10 @@
+id: flour-grams
+version: 1
+title: Convert cups of flour to grams
+mode: prompt
+time_limit_minutes: 2
+prompt: |
+  A recipe needs 2.5 cups of flour, and one cup of this flour weighs 120 grams.
+  How many grams of flour does the recipe need? Reply with the number only: no units, words or punctuation.
+checks:
+  - number: { value: 300, tolerance: 0 }

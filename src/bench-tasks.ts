@@ -15,7 +15,9 @@ const checkSchema=z.union([
   z.object({run:z.string().regex(/^node tests\/[A-Za-z0-9_./-]+\.m?js$/),timeout_ms:z.number().int().min(100).max(60000).optional()}).strict(),
 ]);
 const schema=z.object({id:z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).max(80),version:z.number().int().positive(),mode:z.enum(['prompt','build','review']),
-  title:z.string().min(1).max(160).optional(),prompt:z.string().min(1).max(16000),time_limit_minutes:z.number().positive().max(60).default(5),checks:z.array(checkSchema).min(1).max(30),rubric:z.string().max(4000).optional()}).strict();
+  title:z.string().min(1).max(160).optional(),prompt:z.string().min(1).max(16000),time_limit_minutes:z.number().positive().max(60).default(5),checks:z.array(checkSchema).min(1).max(30),rubric:z.string().max(4000).optional(),
+  // container: run this task's verifiers in Docker (src/containers.ts), for bundles that aren't trusted on the host.
+  isolation:z.enum(['container']).optional()}).strict();
 export type BenchCheck=z.infer<typeof checkSchema>;
 export type TaskSpec=z.infer<typeof schema>;
 export interface TaskFile {path:string;bytes:Buffer}

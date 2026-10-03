@@ -24,6 +24,8 @@ Codex participants start with plugins, apps and hooks disabled and inherited MCP
 
 Each agent receives shared room messages and its own private instructions and 1:1 messages. The other agent's private text and activity are not forwarded. The operator can see both agents. Build copies are separate; previews use separate loopback origins and an access cookie.
 
-After an uncertain outcome, work is not automatically retried. A quarantined pair stays leased until the operator requests release and a process census finds no recorded survivor. Census tracks process trees and start times; a process that escapes its tree can evade that check. See the [known limits](docs/architecture.md#known-limits) before using Bypass or running unfamiliar code.
+After an uncertain outcome, work is not automatically retried. A quarantined pair stays leased until the operator requests release and a process census finds no recorded survivor. Census tracks process trees and start times.
+- **While the service runs on Windows:** each agent's job object and its lineage also find processes that left the tree.
+- **After a crash:** the census is the check, and a process that escaped its tree can evade it. See the [known limits](docs/architecture.md#known-limits) before using Bypass or running unfamiliar code.
 
 Use a current release and review the release notes before upgrading. No independent security audit or guarantee of containment is claimed.

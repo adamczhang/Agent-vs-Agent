@@ -1,0 +1,11 @@
+import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
+import {cToF,fToC} from '../convert.js';
+assert.equal(cToF(100),212);assert.equal(cToF(37),98.6);assert.equal(cToF(-40),-40);
+assert.equal(fToC(32),0);assert.equal(fToC(98.6),37);assert.equal(fToC(0),-17.8);
+for(const bad of [NaN,Infinity,'12',undefined])for(const fn of [cToF,fToC])assert.throws(()=>fn(bad),TypeError);
+const page=readFileSync('index.html','utf8');
+assert.match(page,/<input\b[^>]*type=["']?number/i,'the page needs a number input');
+assert.match(page,/<select\b/i,'the page needs a unit selector');
+assert.match(page,/<output\b|id=["']?(result|output)\b/i,'the page needs an output element');
+console.log('temperature converter passed');

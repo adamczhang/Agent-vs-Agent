@@ -12,6 +12,12 @@ Windows documents [process-group management, nested jobs and cleanup on handle c
 
 ## Production decision
 
+**Superseded on 2026-10-03 (roadmap X3).** Agents now run in job objects by default. See Process containment in the [architecture notes](architecture.md#process-containment).
+- **No window before assignment:** instead of a suspended start, a launcher of AvA's own waits until AvA has assigned it to the job, and only then starts the agent.
+- **Lineage:** it covers what Windows starts outside the job, such as Microsoft Store apps.
+
+The original decision follows.
+
 Keep job-object enforcement out of provider launches for now. ACPX 0.19.4 calls its before-spawn hook, starts the process through Node, and only then exposes the running child. Attaching a job at that point leaves a window in which descendants can start outside it. The probe prevents that window by holding its own child on standard input; an arbitrary CLI does not obey that handshake.
 
 A production launcher should create the agent suspended, attach it to its job, then resume it. It must preserve ACP stdio, exit/cancellation behavior and nested-job compatibility, and deliberately retain app servers that the user is previewing. Each provider needs an isolated compatibility check before this becomes the default. This is a launcher change, not a switch to flip in the existing hook.

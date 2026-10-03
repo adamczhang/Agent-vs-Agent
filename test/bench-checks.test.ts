@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync,writeFileSync,readFileSync,symlinkSync } from 'node:fs';
+import { existsSync,mkdirSync,writeFileSync,readFileSync,symlinkSync } from 'node:fs';
 import { join } from 'node:path';
-import { checkTask,verifierEnvironment } from '../src/bench-checks.js';
+import { checkTask,verifierEnvironment,verifierGuardAvailable } from '../src/bench-checks.js';
 import { loadTask,type BenchCheck,type BenchTask } from '../src/bench-tasks.js';
 import { validateTask,validated,validationPath } from '../src/bench-validation.js';
 import { tempDir } from './temp.js';
@@ -38,6 +38,31 @@ test('a verifier records exit status, has no provider environment, and stops on 
     const timeout=await run('setInterval(()=>{},1000)',150);assert.equal(timeout.passed,false);assert.match(timeout.detail,/timed out/);
     const noisy=await run("process.stdout.write('X'.repeat(1000000));setInterval(()=>{},1000)");assert.equal(noisy.passed,false);assert.match(noisy.detail,/output limit/);assert.ok(noisy.detail.length<8001);
   }finally{if(previous===undefined)delete process.env.AVA_BENCH_CANARY;else process.env.AVA_BENCH_CANARY=previous;}
+});
+test('the verifier guard lets a verifier import and read the attempt and use its temp folder, and refuses the rest',async()=>{
+  const root=tempDir('ava-guarded-'),outside=tempDir('ava-guarded-outside-');mkdirSync(join(root,'tests'));
+  writeFileSync(join(root,'candidate.mjs'),'export const answer=42;');writeFileSync(join(outside,'secret.txt'),'not_a_real_secret');
+  const run=async(code:string)=>{writeFileSync(join(root,'tests','check.mjs'),code);return (await checkTask(task([{run:'node tests/check.mjs',timeout_ms:10000}]),'',root))[0]!;};
+  const allowed=await run(`import {answer} from '../candidate.mjs';import {readFileSync,writeFileSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';
+if(answer!==42||!readFileSync(new URL('../candidate.mjs',import.meta.url),'utf8'))process.exit(1);writeFileSync(join(tmpdir(),'scratch.txt'),'ok');console.log('allowed');`);
+  assert.equal(allowed.passed,true,allowed.detail);
+  if(!verifierGuardAvailable()){assert.equal(allowed.guarded,false,'a Node without network control runs verifiers unguarded, and live ones stay blocked');return;}
+  assert.equal(allowed.guarded,true);
+  const at=(name:string)=>JSON.stringify(join(outside,name));
+  for(const [name,code] of [
+    ['read outside the attempt',`import {readFileSync} from 'node:fs';readFileSync(${at('secret.txt')});`],
+    ['write into the attempt',`import {writeFileSync} from 'node:fs';writeFileSync(new URL('../planted.txt',import.meta.url),'x');`],
+    ['write outside',`import {writeFileSync} from 'node:fs';writeFileSync(${at('written.txt')},'x');`],
+    ['start a process',`import {execFileSync} from 'node:child_process';execFileSync(process.execPath,['-v']);`],
+    ['start a worker',`import {Worker} from 'node:worker_threads';new Worker('0',{eval:true});`],
+    ['open a connection',`import net from 'node:net';await new Promise((ok,fail)=>{const s=net.connect(9,'127.0.0.1',ok);s.on('error',fail);});`],
+    ['fetch',`await fetch('http://127.0.0.1:65530/');`],
+    ['listen',`import http from 'node:http';await new Promise((ok,fail)=>{const s=http.createServer();s.on('error',fail);s.listen(0,'127.0.0.1',ok);});`],
+  ] as const){
+    const refused=await run(code);
+    assert.equal(refused.passed,false,name);assert.equal(refused.guarded,true);assert.match(refused.detail,/^Blocked by the verifier guard: /,`${name}: ${refused.detail}`);
+  }
+  assert.equal(existsSync(join(root,'planted.txt')),false);assert.equal(existsSync(join(outside,'written.txt')),false);
 });
 test('checks reject linked parent folders and support cancellation without starting verifier work',async()=>{
   const root=tempDir('ava-check-link-'),outside=tempDir('ava-check-outside-');writeFileSync(join(outside,'check.mjs'),"throw new Error('should not run')");

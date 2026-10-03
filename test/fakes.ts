@@ -47,7 +47,7 @@ export class FakeParticipant implements Participant {
   emit(type:'thought'|'tool'|'output', text:string,index=this.calls.length-1) {this.calls[index]!.request.onEvent({type,text});}
   async close(){this.closed=true;for(const call of this.calls)if(!call.settled){call.settled=true;call.resolve({status:'cancelled',text:''});}}
 }
-type OpenOptions={internet?:()=>boolean;resumeSessionId?:string;workspace?:()=>string|undefined;bypass?:()=>boolean};
+type OpenOptions={internet?:()=>boolean;resumeSessionId?:string;workspace?:()=>string|undefined;bypass?:()=>boolean;keep?:()=>number[]};
 export class TestFactory implements ServiceFactory {
   agents:Array<FakeParticipant&ConfiguredParticipant&{options:OpenOptions;buildAccess?:boolean[]}>=[];
   ledger?:ServiceFactory['ledger'];
@@ -60,8 +60,7 @@ export class TestFactory implements ServiceFactory {
     const agent=new FakeParticipant(options.resumeSessionId??'native-'+this.agents.length) as FakeParticipant&ConfiguredParticipant&{options:OpenOptions;buildAccess?:boolean[]};
     agent.accepted=config;agent.evidence='simulation';agent.isConnected=()=>!agent.closed;agent.options=options;
     // As verified live: Codex and Grok Build fix web access at launch; Grok Build can't read images.
-    if(config.provider==='codex'||config.provider==='grok-build')agent.launchedWithInternet=options.internet?.()??false;
-    agent.imageInput=config.provider!=='grok-build';
+    if(config.provider==='codex'||config.provider==='grok-build')agent.launchedWithInternet=options.internet?.()??false;    agent.imageInput=config.provider!=='grok-build';
     // Codex switches its own mode for Build runs; record each switch.
     if(config.provider==='codex'){agent.buildAccess=[];agent.setBuildAccess=async(on:boolean)=>{agent.buildAccess!.push(on);};}
     const original=agent.request.bind(agent);

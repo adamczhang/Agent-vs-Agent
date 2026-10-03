@@ -92,8 +92,9 @@ test('Benchmarks validate tasks, show the ceiling, and recover a lost start ackn
   await room.service.call('resources.configure',{maxActiveAgents:6,requestId:'browser-benchmark-capacity'});
   await page.goto(room.url);await page.getByRole('button',{name:'More',exact:true}).click();await page.getByRole('menuitem',{name:'Benchmarks',exact:true}).click();
   const panel=page.getByRole('dialog',{name:'Benchmarks',exact:true});
-  await panel.getByLabel('Select Find two shop logic bugs',{exact:true}).uncheck();
-  await panel.getByLabel('Select Build a tip calculator',{exact:true}).uncheck();
+  // Only the invoice task, of the whole starter suite.
+  for(const box of await panel.getByRole('checkbox',{name:/^Select /}).all())if(await box.isChecked())await box.uncheck();
+  await panel.getByLabel('Select Add invoice amounts',{exact:true}).check();
   await expect(panel.getByRole('button',{name:'Run selected',exact:true})).toBeDisabled();
   await panel.getByRole('button',{name:'Validate selected',exact:true}).click();
   await expect(panel.getByRole('status')).toContainText('All selected tasks validated');
@@ -112,6 +113,10 @@ test('Benchmarks validate tasks, show the ceiling, and recover a lost start ackn
   await expect(panel.getByRole('region',{name:'Benchmark progress'})).toContainText('completed · 2/2 attempts');
   expect(room.service.benchmarks.jobs()).toHaveLength(1);
   expect(room.service.benchmarks.jobs()[0]!.requestsAdmitted).toBe(4);
+  // A finished job downloads as a standalone report.
+  const [download]=await Promise.all([page.waitForEvent('download'),panel.getByRole('button',{name:'Report (HTML)'}).click()]);
+  expect(download.suggestedFilename()).toMatch(/^ava-benchmark-starter-\d{4}-\d{2}-\d{2}-[0-9a-f]{8}\.html$/);
+  expect(readFileSync((await download.path())!,'utf8')).toContain('Add invoice amounts');
   await page.screenshot({path:info.outputPath('benchmark-run.png')});
 });
 

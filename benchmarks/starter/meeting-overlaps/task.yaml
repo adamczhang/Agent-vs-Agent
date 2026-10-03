@@ -1,0 +1,18 @@
+id: meeting-overlaps
+version: 1
+title: Count overlapping meetings
+mode: prompt
+time_limit_minutes: 2
+prompt: |
+  Today's meetings:
+  - Standup 09:00-09:15
+  - Design review 09:10-10:00
+  - One-to-one 10:00-10:30
+  - Planning 10:15-11:30
+  - Lunch 12:00-13:00
+  - Demo 12:45-13:15
+  - Retro 13:15-14:00
+  Two meetings overlap when they share any stretch of time. Meetings that only touch, where one ends exactly when the other starts, do not overlap.
+  How many pairs of meetings overlap? Reply with the number only.
+checks:
+  - equals: "3"

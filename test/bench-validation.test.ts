@@ -11,7 +11,8 @@ function task(manifest:string,answer='42'){
   writeFileSync(join(root,'task.yaml'),manifest);writeFileSync(join(root,'solution','answer.txt'),answer);return root;
 }
 const manifest='id: example\nversion: 1\nmode: prompt\nprompt: Return 42\nchecks:\n  - equals: "42"\n';
-test('all three starter tasks accept their reference and reject a do-nothing attempt',async()=>{
+test('every starter task accepts its reference and rejects a do-nothing attempt',{timeout:120000},async()=>{
+  assert.ok(loadSuite(resolve('benchmarks/starter')).length>=20,'about twenty starter tasks');
   const tasks=loadSuite(resolve('benchmarks/starter')),data=tempDir('ava-bench-proofs-');
   assert.deepEqual(new Set(tasks.map(t=>t.spec.mode)),new Set(['prompt','build','review']));
   for(const t of tasks){const proof=await validateTask(t,data);assert.equal(proof.validated,true,t.spec.id);assert.ok(proof.oracle.every(c=>c.passed));assert.ok(proof.empty.some(c=>!c.passed));assert.equal(validated(data,t)?.digest,t.digest);}

@@ -1,6 +1,6 @@
 # Architecture
 
-How Agent vs Agent v0.2.0 is built. Verified scope is in the [release notes](release-v0.2.0.md) and [validation record](validation.md); usage is in the [user guide](user-guide.md).
+How Agent vs Agent v0.3.1 is built. Verified scope is in the [v0.3.1 release notes](release-v0.3.1.md), and the v0.2.0 baseline's in its [validation record](validation.md); usage is in the [user guide](user-guide.md).
 
 The executable implementation is in `src/`, the browser interface in `ui/`, and the Codex plugin in `.codex-plugin/`, `hooks/`, and `skills/`. The Claude Code wrapper is in `wrappers/claude/`. The agents are reached through [ACPX](https://www.npmjs.com/package/acpx) and the Agent Client Protocol (ACP).
 
@@ -25,7 +25,7 @@ Not AppData: packaged Windows apps such as the Claude desktop app redirect AppDa
 
 `npm run serve` (`--standalone`) is the exception: without `AVA_DATA_DIR` it uses `.ava-serve` in the checkout, so a development server never opens the shared pool.
 
-Every host therefore resolves the same folder. `ensureService` finds or starts the single owner there: whichever plugin starts it, the others connect to it, and the owner lock keeps it to one. Pairs stay per chat (Codex thread ID, or `claude-<session ID>` in Claude Code); runs, History, search, and Stats are pool-wide. The folder is outside AppData because MSIX apps (the Claude desktop app) redirect AppData writes into private storage. `scripts/shared-pool-check.ts` runs both packaged plugins against one folder.
+Every host therefore resolves the same folder. `ensureService` finds or starts the single owner there: whichever plugin starts it, the others connect to it, and the owner lock keeps it to one. The MCP server answers the host's handshake without waiting for it, and starts it in the background. The MCP process never loads the engine or the room, which load only in the service, so the handshake costs about 250 module files rather than about 550. A service that fails to start writes one `{"status":"failed",…}` line with its reason to `service.log` and exits. The `ensureService` call that started it reads that line as soon as the process exits, so the tool call that needed the service reports the reason, and `/ava doctor` adds a data-folder check that needs no service. Pairs stay per chat (Codex thread ID, or `claude-<session ID>` in Claude Code); runs, History, search, and Stats are pool-wide. The folder is outside AppData because MSIX apps (the Claude desktop app) redirect AppData writes into private storage. `scripts/shared-pool-check.ts` runs both packaged plugins against one folder.
 
 ## Threads and 1:1 lines
 
@@ -68,7 +68,7 @@ Complete saves are staged in a sibling directory before replacing the active dir
 
 `bench-runner.ts` owns durable jobs and immutable attempt rows in schema v9 (`bench_jobs`, `bench_attempts`). The room and compiled `bench-cli.ts` use the same authenticated service API. Starts carry durable request IDs; a restart marks unsettled jobs interrupted without resubmission. Every task/repetition owns a fresh pair. Before hidden checks are copied into an independent artifact directory, the runner closes its agents and verifies that its recorded processes have stopped. Cancellation, Stop all, activation limits and history-clear guards share the service's existing controls.
 
-A task's exact files and validation digest are captured before starting. Attempt records include the task prompt and check definitions, task version/digest, suite, provider/model/effort/speed, AvA version, simulation marker, answer, check evidence, times and available token reports. Program-verifier tasks are refused in live mode before activation until F1 supplies execution isolation: a trusted test can still import untrusted generated code. Mock acceptance uses only authored fixtures and never opens provider sessions.
+A task's exact files and validation digest are captured before starting. Attempt records include the task prompt and check definitions, task version/digest, suite, provider/model/effort/speed, AvA version, simulation marker, answer, check evidence, times and available token reports. Program-verifier tasks run live only under the verifier guard (`bench-checks.ts`): Node's permission model lets the verifier, and the generated code it imports, read the attempt folder and write a throwaway temp folder, with no processes, workers, add-ons or network. On a Node without network control (`--allow-net`), or with `AVA_VERIFIER_GUARD=off`, they are refused before activation. Mock acceptance uses only authored fixtures and never opens provider sessions.
 
 `bench-results.ts` exposes filtered cursor pages, scoreboard rows, UTC daily trends, and JSON/CSV exports. Summary queries select metadata without loading all answers into memory. Agent configuration and simulation source identify score rows. Graded pass rate excludes infrastructure outcomes, which are counted separately. pass@k uses `1 - C(n-c,k)/C(n,k)` per task/version/digest/job/AvA-version batch, averaged across eligible settled, fully graded batches; batches with insufficient samples or any ungraded result do not contribute. Exports are bounded to 5,000 attempts/16 MiB, redact credential-shaped values, and escape CSV formula prefixes.
 
@@ -108,7 +108,7 @@ Benchmark rows and independent artifact copies are intentionally outside convers
 - `build.changes {runId, seat}` diffs the folder against its first commit through a temporary `GIT_INDEX_FILE` (`git add -A` into it, then `git diff --cached`). New files show and the agent's own index is untouched. The result has per-file status and line counts, plus a patch capped at 400 KB (no patch beyond 2,000 files).
 
 **Leftover processes.** `ConversationController.cleanup` runs `stopLeftovers` once both agents have reported and before the run ends (and fire-and-forget after any other ending).
-- **Leftovers:** live processes in that seat's recorded process tree (`Store.seatProcesses` plus `survivors`) that started after the run did. The agent itself started earlier.
+- **Leftovers:** live processes that started after the run did, in that seat's recorded process tree (`Store.seatProcesses` plus `survivors`) or among its job's members (see Process containment). The agent itself started earlier.
 - **Kept server:** if the agent named a server, the processes listening on its port (`Get-NetTCPConnection`; `lsof` elsewhere) are kept. So are their leftover ancestors and fresh descendants, recorded as a `build_server` event. A server started during the run counts even outside the tree.
 - **Stopped:** everything else is stopped by tree (`taskkill /T /F`, topmost PIDs only) and recorded as `build_cleanup`. Both outcomes are written to the agent's screen.
 - **Later:** `pair.clear` and `history.clear` stop the kept servers, checking that each PID still has the start time recorded.
@@ -204,6 +204,31 @@ Verified live (`scripts/probe-internet.ts`, `scripts/probe-capabilities.ts`, `sc
 - **Antigravity:** off, the gate refused `search_web`. On, it was allowed and completed.
 - **Grok Build:** off, it had no web tools. Started on and resumed off, the web tool was gone. Started off and resumed on, it searched once the prompt said the tools were back.
 
+## Process containment
+
+On Windows each agent runs in its own job object (`src/jobs.ts`).
+
+**Launching an agent:**
+1. ACPX starts a small launcher in place of the agent: `node <launcher> <signal folder> <agent command…>`.
+2. The launcher waits.
+3. In `onSpawned`, which ACPX awaits, AvA assigns the launcher to the agent's job and writes `<pid>.ready`.
+4. Only then does the launcher start the agent, on its own stdio.
+
+So the agent and everything it starts are in the job from their first instruction. The job allows no breakaway.
+
+**The helper** is one long-lived Windows PowerShell process with a compiled C# class. It holds the job handles (a job loses its name with its last handle), and it answers create, assign, list, terminate and close requests, one JSON line each.
+
+**Lineage.** Some programs start outside their parent's job, and Windows won't add them to another job. Seen live: Codex runs commands in PowerShell 7 from the Microsoft Store, and what that starts is outside the agent's job. So about every 100 ms the helper also reads a process snapshot and records each process whose parent is in the job or already in its lineage. Each record has a start time: a child can't be older than its parent, and a PID that comes back with another start time was reused. A job's members are then the processes in it plus the lineage still running.
+
+**Members** are used in three places:
+- **Build cleanup** adds them to the seat's process tree.
+- **Closing an agent** stops them after ACPX's own shutdown, except the app servers its Build runs kept (`ParticipantOptions.keep`); with nothing kept, the whole job is terminated.
+- **Activation evidence** reports the containment ("Processes contained in a Windows job object.").
+
+**What it doesn't change:**
+- The jobs aren't kill-on-close: if the service stops, agents and kept servers behave as before, and the process ledger and census still find survivors.
+- If the helper can't start, or `AVA_JOB_OBJECTS=off` is set, agents start uncontained and their evidence says so.
+
 ## Ownership
 
 `server.ts --mcp` is a small client of one background owner, not an independent controller. A transactional SQLite owner record prevents competing processes from opening the run store as active owners. An owner record names its PID and start time (in `service.lock` and the claim's token in `owner.sqlite`), and a live PID counts as the owner only if its start time matches: Windows reuses PIDs, often right after a reboot, and a PID check alone would then block every new service. Records from older versions have no start time and are judged by PID. A dead process does not authorize resubmission of its turns: startup quarantines unfinished runs and invalidates old readiness receipts. The service keeps an active pair lease during pause, cancellation, and uncertainty.
@@ -250,13 +275,13 @@ The packaged plugin's `.mcp.json` uses a relative path with `cwd: "."` and an ex
 
 ## Known limits
 
-The Resources panel enforces a persisted active-agent admission limit and reports sampled process memory. Stop all cancels work, closes owned sessions and checks the process ledger while preserving history. Windows job objects were [evaluated separately](windows-job-objects.md); production resource controls do not impose OS memory or filesystem limits.
+The Resources panel enforces a persisted active-agent admission limit and reports sampled process memory. Stop all cancels work, closes owned sessions and checks the process ledger while preserving history. Agents run in Windows job objects (see Process containment); production controls set no OS memory or filesystem limit yet.
 
-Known limits in v0.2.0. Planned work is tracked in the [roadmap](roadmap.md).
+Known limits in v0.3.1. Planned work is tracked in the [roadmap](roadmap.md).
 
-- **No common command sandbox yet.** Ask refuses execution requests even in Build; a workspace path is not confinement. Codex also has its own sandbox. A provider that approves work internally may not ask AvA, so the gate is not complete process isolation. Under **Bypass**, execution is explicitly trusted with the user's privileges. F1 remains necessary before executing untrusted benchmark candidates or verifiers.
+- **No common command sandbox yet.** Ask refuses execution requests even in Build; a workspace path is not confinement. Codex also has its own sandbox. A provider that approves work internally may not ask AvA, so the gate is not complete process isolation. Under **Bypass**, execution is explicitly trusted with the user's privileges. Benchmark verifiers, and the generated code they import, run under the verifier guard, which Node itself describes as a guard against accidents rather than a sandbox. Untrusted task bundles, including imported ones, run their verifiers in a Docker container instead (opt-in; see the [benchmark guide](benchmarks.md)).
 - **Claude Code's own settings come first.** Allow rules or a permissive `defaultMode` in the user's Claude Code settings approve tools before AvA's gate is asked, and ACPX can't turn those settings off for one session. The agent's screen says so once.
-- **Leftover processes are found by process tree and start time.** A process that left the tree (started through a service or re-parented by a launcher) isn't found or stopped. A server listening on the port an agent named is kept even if something outside its tree started it during the run.
+- **Process containment covers what agents start, directly or through their lineage.** On Windows each agent runs in a job object, and its lineage covers what starts outside it, such as a Microsoft Store app like PowerShell 7. A process that something else starts on the agent's behalf (a Windows service, a scheduled task, WMI) has no parent among the agent's processes and isn't found. A lineage member started and stopped within one 100 ms sweep can leave a child unattributed. Without the job helper (no Windows PowerShell, or `AVA_JOB_OBJECTS=off`), leftovers are found by process tree and start time only. A server listening on the port an agent named is kept even if something outside its tree started it during the run.
 - **CLI versions.** Codex and Claude Code must meet the adapters' minimum versions; AvA refuses an older one with the update command rather than fall back. Moving to a newer adapter can raise the minimum.
 - **Gateway models.** Model and effort are fixed when the agent starts. Some models answer only in their reasoning through the Codex agent and fail activation (seen: Kimi K2.6, K2.7 Code). Codex's warning about a model it has no metadata for is shown as a status line.
 - **No automatic crash recovery.** A run interrupted by a crash needs the user to release it (see Recovery); nothing is resent.
@@ -267,4 +292,4 @@ Keep the current native provider adapters. Add a scenario boundary before a prop
 
 ## Release scope
 
-The room, two host wrappers, prompt library, Resources and benchmark runner/results ship in v0.2.0. The [validation record](validation.md) distinguishes offline, browser and live-provider coverage. The future-games design above is a proposal. Common execution isolation, automatic crash recovery, an MCP Apps view, and macOS/Linux support are not implemented.
+The room, two host wrappers, prompt library, Resources and benchmark runner/results shipped in v0.2.0. The [validation record](validation.md) distinguishes its offline, browser and live-provider coverage. v0.3.1 adds the verifier guard, job-object containment, container verifiers, the 20-task starter suite, reports, importers and rubric scores; its [release notes](release-v0.3.1.md) record what was tested. The future-games design above is a proposal. A common execution sandbox for agents, automatic crash recovery, an MCP Apps view, and macOS/Linux support are not implemented.

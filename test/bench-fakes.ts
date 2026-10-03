@@ -8,13 +8,14 @@ import type { AvAService } from '../src/service.js';
 import type { BenchJob } from '../src/bench-runner.js';
 
 export class BenchmarkFactory extends TestFactory {
-  taskRequests=0;hold=false;wrongSeat?:Seat;failActivation=false;
+  taskRequests=0;judgeRequests=0;hold=false;wrongSeat?:Seat;failActivation=false;judgeReply='{"score":7,"reason":"Clear and correct."}';
   constructor(readonly data:string){super();}
   override async open(...args:Parameters<TestFactory['open']>){
     if(this.failActivation)throw new Error('Synthetic provider startup failure');
     const agent=await super.open(...args),scope=args[1] as {pairId:string;seat:Seat;generation:number},original=agent.request.bind(agent);
     agent.request=request=>{
       const result=original(request);if(/AVA_READY_[\w-]+/.test(request.text))return result;
+      if(request.text.startsWith('You are grading one attempt')){this.judgeRequests++;agent.raw(this.judgeReply);return result;}
       this.taskRequests++;if(this.hold)return result;
       let answer='42';
       const workspace=participantWorkspace(this.data,scope);

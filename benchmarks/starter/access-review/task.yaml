@@ -1,0 +1,13 @@
+id: access-review
+version: 1
+title: Find two access-check bugs
+mode: review
+time_limit_minutes: 3
+prompt: |
+  Review src/access.js for functional and security bugs. Do not edit the project.
+  Requirements: canEdit(user, doc) is true for admins, and for the document's owner while the document isn't locked; no one else may edit. isExpired(session, now) is true once now has reached or passed session.expiresAt.
+  For each bug, begin the finding with the exact location src/access.js:<line>, then explain the incorrect behavior and the correction. Do not report style issues.
+checks:
+  - contains: "src/access.js:2"
+  - contains: "src/access.js:6"
+rubric: "Score how well each finding explains why the line is wrong and gives a correct fix (10 = both bugs explained precisely with correct fixes, 0 = no useful explanation). Ignore formatting."

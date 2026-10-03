@@ -10,17 +10,12 @@ import {deflateSync,crc32} from 'node:zlib';
 import {AvAService} from '../src/service.js';
 import {NativeFactory,loadProviderSetups} from '../src/providers.js';
 import {installedDataRoot} from '../src/paths.js';
+import {LIVE_CONFIGS} from './live-configs.js';
 import type {Pair,Provider,ProviderConfig,Seat} from '../src/types.js';
 
 const args=process.argv.slice(2),option=(n:string)=>{const i=args.indexOf(n);return i>=0?args[i+1]:undefined;};
 const provider=option('--provider') as Provider;if(!provider)throw new Error('Pass --provider.');
-const CONFIGS:Record<Provider,ProviderConfig>={
-  codex:{provider:'codex',model:'gpt-6-astra',effort:{key:'reasoning_effort',value:'low'},auth:'provider-login'},
-  claude:{provider:'claude',model:'default',effort:{key:'effort',value:'low'},auth:'provider-login'},
-  'grok-build':{provider:'grok-build',model:'grok-4.7',auth:'provider-login'},
-  antigravity:{provider:'antigravity',model:'gemini-3.7-flash-high',auth:'provider-login'},
-  vercel:{provider:'vercel',model:'openai/gpt-5.6-luna',effort:{key:'model_reasoning_effort',value:'low'},auth:'api'},
-};
+const CONFIGS:Record<Provider,ProviderConfig>={...LIVE_CONFIGS};
 const root=mkdtempSync(join(tmpdir(),`ava-acceptance-${provider}-`)),shared=installedDataRoot(resolve('.'));
 if(existsSync(join(shared,'providers.json')))copyFileSync(join(shared,'providers.json'),join(root,'providers.json'));
 // A Vercel AI Gateway agent uses the key stored in the shared folder (read from there; it never enters this process's

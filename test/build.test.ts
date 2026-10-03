@@ -9,6 +9,7 @@ import { buildPermission } from '../src/providers.js';
 import { Previews, appTarget, pageIn } from '../src/preview.js';
 import { checkProject, copyProject, participantWorkspace, projectChanges, startProject } from '../src/workspace.js';
 import type { Pair } from '../src/types.js';
+import type { AgentJobs } from '../src/jobs.js';
 import { TestFactory, flush } from './fakes.js';
 import { tempDir } from './temp.js';
 
@@ -69,6 +70,8 @@ test('a build run copies the project into each agent\'s own workspace, grants ac
     const roots = (['cli1', 'cli2'] as const).map(seat => participantWorkspace(data, { pairId: pair.id, seat, generation: service.store.pair(pair.id).slots[seat].generation }));
     for (const root of roots) assert.ok(existsSync(join(root, run.config.build.folder, 'src', 'a.js')), 'each agent has its own copy in its workspace');
     assert.ok([codex, claude].every(a => a.calls.at(-1)!.request.text.includes(`folder "${run.config.build.folder}"`) && a.calls.at(-1)!.request.text.includes('Find bugs in the cart')), 'both get the same task pointing at their copy');
+    // A small project's files come with the prompt, numbered by line, for agents that read files only through commands.
+    assert.ok([codex, claude].every(a => a.calls.at(-1)!.request.text.includes(`--- src/a.js ---\n   1 | ${before.split(/\r?\n/)[0]}`)), 'the review prompt carries the numbered files');
     assert.deepEqual([codex.options.workspace!(), claude.options.workspace!()], roots, 'the gate knows each agent\'s workspace while the run is active');
     assert.deepEqual(codex.buildAccess, [true], 'Codex is switched to workspace-write for the run');
     assert.deepEqual(await service.call('run.start', { pairId: pair.id, text: 'Find bugs in the cart', requestId: 'r1', options: { mode: 'build' }, build: { kind: 'review', path: source } }), service.store.run(run.id), 'a retried start returns the same run and copies nothing again');
@@ -196,10 +199,13 @@ test('a Build session: 1:1 setup with tools, one prompt, an empty folder per age
       { pid: 5002, ppid: 4243, started: since + 2000, name: 'tsc.exe' }, { pid: 6000, ppid: 1, started: since + 1000, name: 'other.exe' },
       // A CLI helper started during the turn (kept, with its console host); a shell it ran is still a leftover.
       { pid: 5100, ppid: 4243, started: since + 500, name: 'codex-command-runner-0.159.3.exe' }, { pid: 5101, ppid: 5100, started: since + 600, name: 'conhost.exe' },
-      { pid: 5102, ppid: 5100, started: since + 700, name: 'pwsh.exe' }];
+      { pid: 5102, ppid: 5100, started: since + 700, name: 'pwsh.exe' },
+      // Left the tree (its parent, 9999, has exited): only cli1's job object still knows it.
+      { pid: 5200, ppid: 9999, started: since + 800, name: 'orphan.exe' }];
   };
+  const jobs = { scopeMembers: async (prefix: string) => prefix.startsWith(`${pairId}/cli1/`) ? [4243, 5000, 5001, 5002, 5200] : [], dispose() {} } as unknown as AgentJobs;
   const service: AvAService = new AvAService(data, factory, 'simulation', {
-    processes: async () => processes(), stopProcesses: async pids => { stopped.push(pids); }, listeners: async port => port === 5173 ? [5001] : [],
+    processes: async () => processes(), stopProcesses: async pids => { stopped.push(pids); }, listeners: async port => port === 5173 ? [5001] : [], jobs,
   });
   try {
     const pair = await service.call('pair.create', { thread: 'scratch' }) as Pair; pairId = pair.id;
@@ -235,13 +241,15 @@ test('a Build session: 1:1 setup with tools, one prompt, an empty folder per age
     for (let i = 0; i < 200 && service.store.run(run.id).status !== 'completed'; i++) await new Promise(r => setTimeout(r, 5));
     assert.equal(service.store.run(run.id).reason, 'build_done');
 
-    // Cleanup: the watcher and the shell under the CLI's helper are stopped; the app server it named keeps running (with
-    // its cmd parent); the helper itself, the agent and unrelated processes are not touched.
-    assert.deepEqual(stopped.map(s => [...s].sort()), [[5002, 5102]]);
+    // Cleanup: the watcher, the shell under the CLI's helper, and the process only its job still holds are stopped; the
+    // app server it named keeps running (with its cmd parent); the helper itself, the agent and unrelated processes are not touched.
+    assert.deepEqual(stopped.map(s => [...s].sort()), [[5002, 5102, 5200]]);
     const events = service.store.db.prepare("SELECT type,data FROM events WHERE run_id=? AND type IN ('build_cleanup','build_server','activity')").all(run.id).map(r => ({ type: String(r.type), data: JSON.parse(String(r.data)) }));
-    assert.deepEqual(events.find(e => e.type === 'build_cleanup')!.data.stopped.map((p: { pid: number }) => p.pid).sort(), [5002, 5102]);
+    assert.deepEqual(events.find(e => e.type === 'build_cleanup')!.data.stopped.map((p: { pid: number }) => p.pid).sort(), [5002, 5102, 5200]);
     assert.deepEqual(events.find(e => e.type === 'build_server')!.data.processes.map((p: { pid: number }) => p.pid).sort(), [5000, 5001]);
-    assert.ok(events.some(e => e.type === 'activity' && /keeps running at http:\/\/localhost:5173\//.test(e.data.text)) && events.some(e => e.type === 'activity' && /Stopped 2 processes it left running: (tsc.exe, pwsh.exe|pwsh.exe, tsc.exe)/.test(e.data.text)), 'the agent screen says what was kept and stopped');
+    assert.ok(events.some(e => e.type === 'activity' && /keeps running at http:\/\/localhost:5173\//.test(e.data.text)) && events.some(e => e.type === 'activity' && /Stopped 3 processes it left running: .*orphan\.exe/.test(e.data.text)), 'the agent screen says what was kept and stopped');
+    // Closing the agent leaves its kept app server running.
+    assert.deepEqual(one.options.keep!().sort(), [5000, 5001]); assert.deepEqual(two.options.keep!(), []);
 
     await assert.rejects(service.call('run.start', { pairId, text: 'Now add levels', requestId: 'r2', options: { mode: 'build' }, build: { kind: 'build' } }), /one prompt/, 'one prompt per Build session');
     await assert.rejects(service.call('run.start', { pairId, text: 'Talk', requestId: 'r3', options: { mode: 'conversation' } }), /one prompt/);

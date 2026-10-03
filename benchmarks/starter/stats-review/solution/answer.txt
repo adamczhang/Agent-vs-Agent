@@ -1,0 +1,2 @@
+src/stats.js:3 reads one past the end (i <= values.length), adding undefined and returning NaN: loop while i < values.length.
+src/stats.js:8 sorts the caller's array in place and compares numbers as strings: sort a copy numerically, [...values].sort((a, b) => a - b).

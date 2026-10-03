@@ -1,0 +1,13 @@
+id: pagination-review
+version: 1
+title: Find two pagination bugs
+mode: review
+time_limit_minutes: 3
+prompt: |
+  Review src/paginate.js for functional and security bugs. Do not edit the project.
+  Requirements: paginate(items, page, pageSize) returns the items on page `page`, where pages are numbered from 1. pageCount(total, pageSize) returns how many pages are needed to show `total` items, counting a final partial page.
+  For each bug, begin the finding with the exact location src/paginate.js:<line>, then explain the incorrect behavior and the correction. Do not report style issues.
+checks:
+  - contains: "src/paginate.js:4"
+  - contains: "src/paginate.js:9"
+rubric: "Score how well each finding explains why the line is wrong and gives a correct fix (10 = both bugs explained precisely with correct fixes, 0 = no useful explanation). Ignore formatting."

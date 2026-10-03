@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Temperature converter</title></head>
+<body>
+  <label>Temperature <input id="value" type="number" value="20"></label>
+  <label>From <select id="unit"><option value="c">Celsius</option><option value="f">Fahrenheit</option></select></label>
+  <output id="result"></output>
+  <script type="module">
+    import {cToF,fToC} from './convert.js';
+    const show=()=>{const v=Number(document.getElementById('value').value),c=document.getElementById('unit').value==='c';
+      try{document.getElementById('result').textContent=c?cToF(v)+' °F':fToC(v)+' °C';}catch(e){document.getElementById('result').textContent=e.message;}};
+    for(const id of ['value','unit'])document.getElementById(id).addEventListener('input',show);show();
+  </script>
+</body>
+</html>

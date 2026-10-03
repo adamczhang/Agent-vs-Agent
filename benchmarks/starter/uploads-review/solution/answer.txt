@@ -1,0 +1,2 @@
+src/files.js:7 allows path traversal: names such as ../../etc/passwd resolve outside ROOT. Resolve the path and refuse it unless it stays inside ROOT.
+src/files.js:13 labels kilobytes as MB: the value is bytes / 1024, so the unit must be KB.

@@ -1,0 +1,13 @@
+id: uploads-review
+version: 1
+title: Find a security bug and a display bug
+mode: review
+time_limit_minutes: 3
+prompt: |
+  Review src/files.js for functional and security bugs. Do not edit the project.
+  Requirements: readUpload(name) reads a file from the uploads folder, and must never read anything outside ROOT (a name like ../../etc/passwd must be refused). sizeLabel(bytes) shows sizes below 1024 in bytes ("512 B"), and larger sizes in kilobytes, rounded ("2 KB").
+  For each bug, begin the finding with the exact location src/files.js:<line>, then explain the incorrect behavior and the correction. Do not report style issues.
+checks:
+  - contains: "src/files.js:7"
+  - contains: "src/files.js:13"
+rubric: "Score how well the findings explain the path-traversal risk and the unit bug, and how sound the proposed fixes are (10 = both precise and safe, 0 = no useful explanation)."

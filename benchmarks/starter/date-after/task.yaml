@@ -1,0 +1,10 @@
+id: date-after
+version: 1
+title: Add days to a date
+mode: prompt
+time_limit_minutes: 2
+prompt: |
+  What calendar date is 45 days after 2026-02-10?
+  Reply with the date only, in YYYY-MM-DD format.
+checks:
+  - equals: "2026-03-27"

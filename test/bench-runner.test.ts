@@ -7,17 +7,31 @@ import { resolve,join } from 'node:path';
 import { AvAService } from '../src/service.js';
 import { listen } from '../src/http.js';
 import type { BenchJob } from '../src/bench-runner.js';
+import { verifierGuardAvailable } from '../src/bench-checks.js';
 import { BenchmarkFactory,agents,finishJob,startJob } from './bench-fakes.js';
 import { tempDir } from './temp.js';
 import { flush } from './fakes.js';
 const ids=['invoice-total','tip-calculator','discount-review'];
-test('live program verifiers are refused before any provider work, even after task validation',async()=>{
+test('without the verifier guard, live program verifiers are refused before any provider work, even after validation',async()=>{
   const data=tempDir('ava-bench-live-guard-'),factory=new BenchmarkFactory(data),service=new AvAService(data,factory,'live',{processes:async()=>[]});
+  const saved=process.env.AVA_VERIFIER_GUARD;process.env.AVA_VERIFIER_GUARD='off';
   try{
     await service.call('bench.validate',{taskIds:['tip-calculator']});
     await assert.rejects(startJob(service,['tip-calculator'],'blocked-live'),/execution sandbox/);
     assert.equal(factory.agents.length,0);assert.equal(service.benchmarks.jobs().length,0);
     assert.match(service.benchmarks.catalog().find(t=>t.id==='tip-calculator')!.blockedReason,/execution sandbox/);
+  }finally{if(saved===undefined)delete process.env.AVA_VERIFIER_GUARD;else process.env.AVA_VERIFIER_GUARD=saved;await service.shutdown();service.store.close();}
+});
+test('with the verifier guard, a live Build task runs and its verifier is graded under the guard',async()=>{
+  const data=tempDir('ava-bench-live-guarded-'),factory=new BenchmarkFactory(data),service=new AvAService(data,factory,'live',{processes:async()=>[]});
+  try{
+    const reason=service.benchmarks.catalog().find(t=>t.id==='tip-calculator')!.blockedReason;
+    if(!verifierGuardAvailable()){assert.match(reason,/execution sandbox/,'a Node without network control keeps live verifiers blocked');return;}
+    assert.equal(reason,'');
+    await service.call('bench.validate',{taskIds:['tip-calculator']});
+    const job=await finishJob(service,(await startJob(service,['tip-calculator'],'guarded-live')).id);
+    assert.equal(job.status,'completed',job.error??'The job should complete');assert.deepEqual(job.results.map(r=>r.status),['pass','pass']);
+    for(const result of job.results){const run=service.benchmarks.attempt(result.id).checks.find(c=>c.kind==='run')!;assert.equal(run.passed,true,run.detail);assert.equal(run.guarded,true);}
   }finally{await service.shutdown();service.store.close();}
 });
 function fixture(){const data=tempDir('ava-bench-run-'),factory=new BenchmarkFactory(data),service=new AvAService(data,factory,'simulation',{processes:async()=>[]});return {data,factory,service,async close(){await service.shutdown();service.store.close();}};}
@@ -31,6 +45,23 @@ test('unvalidated tasks refuse model work; a full run uses fresh sessions and re
     assert.equal(new Set(f.factory.agents.map(a=>a.sessionId)).size,6);
     const built=f.service.benchmarks.attempt(job.results.find(r=>r.taskId==='tip-calculator')!.id);assert.equal(built.checks.length,2);assert.match(readFileSync(join(built.artifact!,'tip.js'),'utf8'),/calcTip/);
     const calls=f.factory.taskRequests;const retry=await startJob(f.service,ids);assert.equal(retry.id,job.id);await flush();assert.equal(f.factory.taskRequests,calls,'lost start acknowledgement cannot launch another job');
+  }finally{await f.close();}
+});
+test('a judge scores attempts at rubric tasks apart from their checks, within the ceiling, and is retired',async()=>{
+  const f=fixture();f.factory.wrongSeat='cli2';try{
+    await f.service.call('bench.validate',{taskIds:['discount-review','invoice-total']});
+    const judge={provider:'claude',model:'judge',auth:'provider-login'} as const;
+    const started=await f.service.call('bench.start',{taskIds:['discount-review','invoice-total'],agents,judge,requestId:'judged',repeats:1}) as BenchJob;
+    assert.equal(started.requestCeiling,8+1+2,'one judge check, and one judgment for each attempt at the rubric task');
+    const job=await finishJob(f.service,started.id);assert.equal(job.status,'completed',job.error??'The job should complete');assert.equal(job.requestsAdmitted,job.requestCeiling);
+    const attempts=job.results.map(r=>f.service.benchmarks.attempt(r.id)),review=attempts.filter(a=>a.taskId==='discount-review');
+    assert.deepEqual(review.map(a=>[a.seat,a.status,a.rubric?.score,a.rubric?.judge.model]),[['cli1','pass',7,'judge'],['cli2','fail',7,'judge']],'a score never changes the verdict');
+    assert.ok(attempts.filter(a=>a.taskId==='invoice-total').every(a=>a.rubric===undefined),'tasks without a rubric are not judged');
+    assert.equal(f.factory.judgeRequests,2);assert.ok(f.factory.agents.every(a=>a.closed),'the judge is retired with the job');
+    // A judge that doesn't answer with a score leaves none, with the reason.
+    f.factory.judgeReply='I think it is fine.';
+    const again=await finishJob(f.service,(await f.service.call('bench.start',{taskIds:['discount-review'],agents,judge,requestId:'judged-2',repeats:1}) as BenchJob).id);
+    assert.deepEqual(f.service.benchmarks.attempt(again.results[0]!.id).rubric,{judge,score:null,error:'The judge did not answer with JSON.'});
   }finally{await f.close();}
 });
 test('repeats get new sessions and attempt IDs while a check failure remains a scored result',async()=>{

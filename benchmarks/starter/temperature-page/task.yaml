@@ -1,0 +1,15 @@
+id: temperature-page
+version: 1
+title: Build a temperature converter page
+mode: build
+time_limit_minutes: 8
+prompt: |
+  Build a small, dependency-free temperature converter.
+  index.html has a number input, a unit selector for Celsius or Fahrenheit, and an output element showing the converted value.
+  Export cToF(c) and fToC(f) from convert.js as an ES module. Both round to one decimal place and throw a TypeError for anything that isn't a finite number. Use no dependencies or network.
+checks:
+  - file_exists: convert.js
+  - file_exists: index.html
+  - run: node tests/verify.mjs
+    timeout_ms: 10000
+rubric: "Score the page and code for clarity and usability: labelled inputs, a readable result, sensible handling of invalid input, and simple readable code (10 = excellent, 0 = unusable)."

@@ -53,6 +53,8 @@ export class ConversationController {
   // Build runs: called once both agents have reported, before the run ends (and after any other ending), to stop what
   // the agents left running.
   cleanup?: (run: Run) => Promise<void>;
+  // A Review run's project files as numbered text, when small enough (set by the service: workspace.ts inlineProject).
+  reviewFiles?: (run: Run, seat: Seat) => string;
   constructor(readonly store: Store, private readonly clock: Clock = systemClock, private readonly cancellationGraceMs = 15_000) {}
   start(pairId: string, config: RunConfig, requestId: string, participants: Record<Seat, Participant>, attachments: AttachmentRef[] = []) {
     const previous=this.store.previousStart(pairId,config,requestId);if(previous)return previous;
@@ -265,13 +267,17 @@ export class ConversationController {
       const bypass = this.store.pair(run.pairId).slots[seat].permissions === 'bypass';
       const tools = bypass ? 'The operator enabled Bypass: commands are permitted. Keep work inside your copy and never stop unrelated processes.'
         : 'Ask mode permits scoped file tools only. Do not run shell commands, scripts, interpreters, package managers, tests, or process-control tools. A working folder is not a sandbox. Report any execution checks you could not perform.';
-      if (b.kind === 'review') return [
+      if (b.kind === 'review') {
+        const inline = this.reviewFiles?.(run, seat) ?? '';
+        return [
         `You are reviewing a software project. Your own private copy of it is in the folder "${b.folder}" inside your working directory. Another agent works on a separate copy of the same project, and the original is never touched.`,
         'You may read files in your copy. Keep any changes inside your copy; you do not need to fix anything.', tools, NO_INPUT,
         `Task: ${task}`, ...attached,
+        ...(inline ? [`The project is small, so its files follow, with line numbers (the same files are in your copy):\n\n${inline}`] : []),
         'When you are done, reply in plain text with your findings. For each issue give the file and line, its severity (high, medium, or low), what is wrong, and how to fix it. End with a one-line summary.',
         `(Operator setting for you: ${web})`,
       ].join('\n\n');
+      }
       return [
         b.source ? `You are building on a software project. Your own private copy of it is in the folder "${b.folder}" inside your working directory. Another agent works on a separate copy of the same project, and the original is never touched.`
           : `You are building software. Your own private folder for it is "${b.folder}" inside your working directory; it starts empty. Another agent builds the same thing in its own separate folder.`,

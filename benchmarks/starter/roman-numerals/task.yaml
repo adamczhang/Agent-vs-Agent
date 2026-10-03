@@ -1,0 +1,14 @@
+id: roman-numerals
+version: 1
+title: Convert to and from Roman numerals
+mode: build
+time_limit_minutes: 8
+prompt: |
+  Create roman.js exporting toRoman(n) and fromRoman(text) as ES module functions.
+  toRoman converts integers from 1 to 3999 to standard uppercase Roman numerals, with the subtractive forms IV, IX, XL, XC, CD and CM.
+  fromRoman converts a standard numeral back, accepting only the canonical form toRoman produces.
+  Both throw a RangeError for anything else: 0, 4000, non-integers, IIII, VX, lowercase or empty text. Use no dependencies.
+checks:
+  - file_exists: roman.js
+  - run: node tests/verify.mjs
+    timeout_ms: 10000

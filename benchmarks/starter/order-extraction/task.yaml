@@ -1,0 +1,16 @@
+id: order-extraction
+version: 1
+title: Extract order details as JSON
+mode: prompt
+time_limit_minutes: 2
+prompt: |
+  Extract the order details from this customer message:
+  "Hello! Following up on order #A-1047 placed on 3 March. I bought 3 notebooks at $4.50 each and 2 gel pens at $1.25 each. Shipping was free, and no coupon was used."
+  Reply with only a JSON object, with no Markdown fences or other text, with these keys:
+  - order_id: the order number as a string, without the # sign
+  - item_count: the total number of items, as a number
+  - total: the amount paid in dollars, as a number
+checks:
+  - json_path: { path: "$.order_id", equals: "A-1047" }
+  - json_path: { path: "$.item_count", equals: 5 }
+  - json_path: { path: "$.total", equals: 16 }

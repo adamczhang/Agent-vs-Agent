@@ -1,0 +1,20 @@
+id: log-errors
+version: 1
+title: Count error lines for one service
+mode: prompt
+time_limit_minutes: 2
+prompt: |
+  From this log, how many ERROR lines come from the payments service?
+  2026-09-30T10:00:01Z INFO  payments  charge accepted id=881
+  2026-09-30T10:00:03Z ERROR payments  card declined id=882
+  2026-09-30T10:00:04Z ERROR shipping  label service timeout
+  2026-09-30T10:00:09Z WARN  payments  retrying charge id=883
+  2026-09-30T10:00:10Z ERROR payments  retry limit reached id=883
+  2026-09-30T10:00:12Z INFO  shipping  label created id=884
+  2026-09-30T10:00:15Z ERROR auth      token expired user=17
+  2026-09-30T10:00:18Z ERROR payments  card declined id=885
+  2026-09-30T10:00:20Z INFO  payments  refund issued id=881
+  2026-09-30T10:00:22Z ERROR payments  webhook signature invalid
+  Reply with the number only.
+checks:
+  - number: { value: 4, tolerance: 0 }

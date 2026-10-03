@@ -15,3 +15,4 @@ checks:
   - file_exists: index.html
   - run: node tests/verify.mjs
     timeout_ms: 5000
+rubric: "Score the page and code for clarity and usability: labelled inputs, a readable result, sensible handling of invalid input, and simple readable code (10 = excellent, 0 = unusable)."
