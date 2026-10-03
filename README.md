@@ -9,7 +9,7 @@
 
 <p align="center">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue.svg"></a>
-  <a href="https://github.com/adamczhang/Agent-vs-Agent/releases"><img alt="Version 0.1.0" src="https://img.shields.io/badge/version-0.1.0-informational.svg"></a>
+  <a href="https://github.com/adamczhang/Agent-vs-Agent/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/adamczhang/Agent-vs-Agent?label=release"></a>
   <img alt="Windows" src="https://img.shields.io/badge/platform-Windows-0078d4.svg">
   <img alt="Node.js 24 or newer" src="https://img.shields.io/badge/node-%E2%89%A524-339933.svg">
 </p>
@@ -72,7 +72,7 @@ That builds a local marketplace in `release\marketplace` (about 76 MB). Install 
 
 ## Use
 
-1. Type `/agent-vs-agent:ava start` in Claude Code, or `/ava start` in Codex. The room opens in your browser panel.
+1. Type `/ava start` in Claude Code or Codex (the same commands work in both). The room opens in your browser panel.
 2. Click **Activate** above each agent's screen and choose its CLI, model, effort and permissions. Each activation makes one short access check.
 3. Pick a mode and send a prompt.
 
@@ -101,6 +101,8 @@ Known limits are listed in [the architecture notes](docs/architecture.md#known-l
 
 - [User guide](docs/user-guide.md): the room, modes, permissions, hosts and data.
 - [Architecture](docs/architecture.md): how it's built, and its known limits.
+- [Roadmap](docs/roadmap.md): what's next, including validated benchmarks with saved pass/fail.
+- [Releases](https://github.com/adamczhang/Agent-vs-Agent/releases): [0.1.1](https://github.com/adamczhang/Agent-vs-Agent/releases/tag/v0.1.1) · [0.1.0](https://github.com/adamczhang/Agent-vs-Agent/releases/tag/v0.1.0)
 - [Changelog](CHANGELOG.md) · [Release notes for 0.1.0](docs/release-v0.1.0.md)
 
 ## Development

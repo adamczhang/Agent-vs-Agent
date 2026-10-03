@@ -24,13 +24,13 @@ if(process.argv.includes('--mcp')){
   const rpc=async<T=unknown>(method:string,params:unknown)=>{address=await ensureService(projectRoot,dataRoot);return callEndpoint<T>(address,method,params);};
   const server=new McpServer({name:'agent-vs-agent',version:packageVersion});
   const reply=(value:unknown)=>({content:[{type:'text' as const,text:JSON.stringify(value)}]});
-  // Codex passes its chat ID. Claude Code doesn't expose a session ID to plugins, so a missing thread means "this host
-  // session": the Claude Code process that launched this MCP server (stable across MCP restarts within that session).
+  // Each host passes its chat identity: Codex its thread ID (from the prompt hook), Claude Code its session ID (the /ava
+  // skill passes claude-<session ID>). A missing thread falls back to the host process that launched this MCP server.
   const hostThread=`session-${process.ppid}`,threadArg=z.string().min(1).max(200).optional();
-  // The tool always receives "/ava …". A host whose users type the command under another name (Claude Code plugin
-  // commands are namespaced: /agent-vs-agent:ava) sets AVA_COMMAND_NAME, so menus and errors show what to type there.
+  // The tool always receives "/ava …", and both hosts take /ava as typed. A host whose users had to type the command
+  // under another name could set AVA_COMMAND_NAME, so menus and errors show what to type there; none does now.
   const commandName=process.env.AVA_COMMAND_NAME,forHost=(text:string)=>commandName?text.replace(/(?<![\w.\/\\-])\/ava(?![\w.\/\\-])/g,commandName):text;
-  // Typed /ava commands arrive here: from the Codex prompt hook, or from the Claude Code /ava command.
+  // Typed /ava commands arrive here: from the Codex prompt hook, or from the Claude Code /ava skill.
   server.registerTool('ava_command',{description:'Run a typed Agent vs Agent control command (/ava, /ava CLI1 [choice], /ava CLI2 [choice], /ava start, /ava status, /ava reconcile) for this chat and return the text to show. Opening menus sends no model prompt; choosing "Activate and verify" sends one short access check. Omit thread in Claude Code.',inputSchema:{thread:threadArg,command:z.string().min(1).max(40)}},async({thread=hostThread,command})=>{
     const normalized=normalizeCommand(command);
     if(!normalized)return reply({error:forHost('Not an Agent vs Agent command. Use /ava, /ava CLI1, /ava CLI2, /ava start, /ava status, or /ava reconcile.')});

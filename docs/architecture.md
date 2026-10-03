@@ -11,10 +11,10 @@ One core (`dist/`, `node_modules/`, the MCP server, the background service, the 
 They are separate folders because Claude Code auto-loads `hooks/hooks.json` and `.mcp.json` from a plugin root and would pick up the Codex versions.
 
 - **Codex:** a `UserPromptSubmit` hook validates a typed `/ava …` and tells Codex to call `ava_command` with the chat's thread ID.
-- **Claude Code:** a `/agent-vs-agent:ava` command. Claude Code's `UserPromptSubmit` doesn't fire for slash commands, and plugins get no session ID.
-  - The command passes `/ava $ARGUMENTS` to `ava_command` with no thread. The server then uses `session-<parent PID>`, one pair per Claude Code process.
-  - `allowed-tools` pre-approves only that tool, only while the command runs. `disable-model-invocation` keeps Claude from running the command itself.
-  - The wrapper's `.mcp.json` sets `AVA_COMMAND_NAME=/agent-vs-agent:ava`. The MCP layer rewrites `/ava` in `ava_command` output, so menus show what to type in that host. The shared service's text stays host-neutral.
+- **Claude Code:** the same `/ava` commands, from a plugin skill named `ava` (`skills/ava/SKILL.md`). A plugin skill answers to its bare name unless another command claims it, and its full name `/agent-vs-agent:ava` always works.
+  - The skill passes `/ava $ARGUMENTS` to `ava_command` with thread `claude-${CLAUDE_SESSION_ID}`, so each Claude Code conversation has its own pair, as each Codex chat does, and resuming it brings the pair back. The operating skill passes the same thread to the read-only tools. A call with no thread (an older wrapper) falls back to `session-<parent PID>`.
+  - `allowed-tools` pre-approves only that tool, only during that turn. `disable-model-invocation` keeps Claude from running the skill itself.
+  - Menus read `/ava …` in both hosts. The server still supports `AVA_COMMAND_NAME` for a host that needs another name, but none sets it.
 
 **One conversation pool.** `src/paths.ts` `dataRootFor()` resolves the data folder in this order:
 1. `AVA_DATA_DIR`;
@@ -229,13 +229,13 @@ The packaged plugin's `.mcp.json` uses a relative path with `cwd: "."` and an ex
 
 ## Known limits
 
-Known and accepted for 0.1.0, deliberately or for later.
+Known and accepted in 0.1.x, deliberately or for later. Fixes are planned in the [roadmap](roadmap.md).
 
 - **Build commands aren't confined.** The Build gate checks the paths a tool request names, not what a command does: a command runs in the agent's copy but can read and write anywhere the user can. Only Codex runs commands in its own sandbox. For the other agents the internet switch governs web tools, not a command's network access (`curl`, `git clone`). Under **bypass** everything is allowed.
 - **Claude Code's own settings come first.** Allow rules or a permissive `defaultMode` in the user's Claude Code settings approve tools before AvA's gate is asked, and ACPX can't turn those settings off for one session. The agent's screen says so once.
 - **Leftover processes are found by process tree and start time.** A process that left the tree (started through a service or re-parented by a launcher) isn't found or stopped. A server listening on the port an agent named is kept even if something outside its tree started it during the run.
 - **The Build copy is synchronous.** Copying a large project (up to 20,000 files or 500 MB) holds the service until it finishes; other requests wait.
-- **Claude Code pairs follow the process.** Claude Code gives plugins no session ID, so its pair is `session-<parent PID>`: a new Claude Code process gets a new pair (the old threads stay in History).
+- **Codex agents inherit your own MCP servers.** Agents start with plugins, apps and hooks off, but MCP servers configured in your Codex `config.toml` (say `node_repl`) still start with them.
 - **Windows file permissions.** Files AvA writes with mode 0600 (`server.json`, the Gateway key) are protected on Windows only by the data folder's own permissions.
 - **CLI versions.** Codex and Claude Code must meet the adapters' minimum versions; AvA refuses an older one with the update command rather than fall back. Moving to a newer adapter can raise the minimum.
 - **Gateway models.** Model and effort are fixed when the agent starts. Some models answer only in their reasoning through the Codex agent and fail activation (seen: Kimi K2.6, K2.7 Code). Codex's warning about a model it has no metadata for is shown as a status line.
@@ -245,6 +245,6 @@ Known and accepted for 0.1.0, deliberately or for later.
 
 Keep the current native provider adapters. Add a scenario boundary before a proposed reply is committed to the room. A separate CAMEL Python worker can receive opaque seat IDs and typed actions and return public events, private observations, verdicts, and a terminal result. The controller must persist and validate that decision before routing anything to the peer. Do not forward CAMEL's raw state or let the two CLIs determine authoritative scores. The pinned reference is CAMEL 0.2.91a7; a production worker dependency still needs its own compatibility pilot.
 
-## Status (0.1.0)
+## Status (0.1.1)
 
 Everything above is implemented, covered by the offline suite (`npm test`), and verified live on all five providers with `scripts/live-validate.ts` (see the release notes). Not implemented: automatic crash recovery, an MCP Apps view, and testing on macOS or Linux.

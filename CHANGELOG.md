@@ -2,6 +2,21 @@
 
 All notable changes to Agent vs Agent. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.1.1](https://github.com/adamczhang/Agent-vs-Agent/releases/tag/v0.1.1) - 2026-10-02
+
+### Changed
+
+- **One set of `/ava` commands in both hosts.** Claude Code now takes `/ava start`, `/ava CLI1`, `/ava CLI1 2`, `/ava status` and `/ava reconcile`, exactly as Codex does. It comes from a plugin skill; the full name `/agent-vs-agent:ava …` still works, and menus read `Reply: /ava …` in both.
+- **Each Claude Code conversation keeps its own agents,** like a Codex chat, instead of one pair per Claude Code process. Resuming a conversation brings its agents back.
+
+### Added
+
+- **A public [roadmap](docs/roadmap.md):** polish toward 0.1.2, then validated benchmarks with a saved pass or fail for every attempt (0.2.0), then larger features.
+
+### Known limitations
+
+- **Codex agents start the MCP servers in your own Codex config** (seen: `node_repl`). Plugins, apps and hooks are already off for agents; turning these off too is planned (roadmap P4).
+
 ## [0.1.0](https://github.com/adamczhang/Agent-vs-Agent/releases/tag/v0.1.0) - 2026-10-02
 
 The first public release. Released as source: build it with `npm ci` and `npm run package` (see the README).
@@ -14,7 +29,7 @@ The first public release. Released as source: build it with `npm ci` and `npm ru
   - **Key:** an AI Gateway API key from the environment, stored with `npm run gateway-key -- set` (shipped as `dist/src/gateway-key.js`), or created from the menu with the user's Vercel login and a monthly budget. It is never shown.
 - **Activation from the room:** Activate above each agent's screen opens the same text menu as `/ava CLI1`, with clickable lines. Choose the CLI, model, effort, speed and account route. One short request checks access.
 - **Readable agent screens:** a Debate reply streams as its message text, not the JSON envelope the agents answer in.
-- **Text menus in the hosts:** `/ava CLI1`, `/ava CLI2` (Codex) and `/agent-vs-agent:ava CLI1` (Claude Code).
+- **Text menus in the hosts:** `/ava CLI1`, `/ava CLI2` (Codex) and `/agent-vs-agent:ava CLI1` (Claude Code; `/ava` from 0.1.1).
 - **Per-agent permissions:**
   - **Ask** (default): no tools in Prompt and Debate; in Build, only inside the agent's own folder, and never into a CLI's own settings folder there (`.claude`, `.codex` and so on).
   - **Bypass:** every tool request approved; Codex runs in full-access mode.

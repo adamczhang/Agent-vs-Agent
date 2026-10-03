@@ -1,6 +1,6 @@
 # Agent vs Agent 0.1.0
 
-The first public release, as source. The text under **Release notes** is meant for the GitHub release page; **Publishing** lists what's done and what's left.
+The first public release, as source, published 2026-10-02 at [github.com/adamczhang/Agent-vs-Agent](https://github.com/adamczhang/Agent-vs-Agent). The text under **Release notes** is for the GitHub release page. What comes next is in the [roadmap](roadmap.md).
 
 ## Release notes
 
@@ -59,32 +59,3 @@ All on Windows 11, with Node 26, Codex 0.159.3 and 0.160.0, Claude Code 2.1.287,
 | The packaged plugin: hook or command routing, MCP tools, menus, data folder, version, idle exit, no bundled CLI copies | Smoke test on both plugins |
 | The UI in the simulator: every control, the ring's color states, dialogs, New thread, activation from the room | Clicked through |
 | A fresh checkout of the release: `npm ci`, typecheck, tests, `npm run package` (76 MB), smoke tests with the default data folder, install into a throwaway Codex profile, Claude Code marketplace validation | All pass |
-
-## Publishing
-
-Done:
-- [x] **License:** MIT, © 2026 Adam Zhang (`LICENSE`).
-- [x] **Version** 0.1.0 in `package.json` and both plugin manifests.
-- [x] **Data folder:** public builds default to `%USERPROFILE%\AgentVsAgent`; `AVA_DATA_DIR` or `config.dataDir` override it.
-- [x] **Package size:** 76 MB. It drives the installed Codex and Claude Code rather than bundling them.
-- [x] **Third-party terms:**
-  - Released as source only: nothing third-party is redistributed.
-  - `npm ci` installs the Claude Agent SDK (proprietary "SEE LICENSE" terms) for each user from npm.
-  - `scripts/notices.ts` writes `THIRD_PARTY_NOTICES.md` into every build.
-- [x] **Changelog** dated.
-- [x] **Codex hook review** is explained in the README's install steps.
-- [x] **Plugin icon** for Codex: logo, composer icon and brand color.
-- [x] **Clean public history:** the release is one commit with only the product files, so the development record, personal paths and private links stay out. Its author is Adam Zhang <adam.dadvibes@gmail.com>.
-- [x] **Clean-checkout test** of that commit passed (see the table above).
-
-Left for the owner:
-- [ ] **Banner and icon art.** `docs/images/banner.jpg` and the Codex plugin icon (`assets/logo.jpg`, `assets/composer-icon.png`) are pixel-art takes on MAD Magazine's *Spy vs. Spy* characters (DC). Confirm you may use them, or replace them before publishing. The README already says the artwork isn't covered by the MIT license.
-- [x] **GitHub repository:** [github.com/adamczhang/Agent-vs-Agent](https://github.com/adamczhang/Agent-vs-Agent) (public, empty).
-- [ ] **Push** the release branch as `main`, plus the tag:
-  ```powershell
-  git remote add origin https://github.com/adamczhang/Agent-vs-Agent.git
-  git push origin public:main
-  git push origin v0.1.0
-  ```
-- [ ] **Create the GitHub release** from tag `v0.1.0`, with the **Release notes** above as its text. Attach no binaries (source release).
-- [ ] *Optional:* run the README's install on a second machine.

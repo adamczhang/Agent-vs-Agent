@@ -34,18 +34,20 @@ const expectedDataDir=(JSON.parse(readFileSync(join(checkout,'package.json'),'ut
 // A build with config.dataDir carries it into the plugin; a build without one (the public default) uses the home folder.
 check(expectedDataDir?`plugin uses the shared data folder (${expectedDataDir})`:'plugin uses the default data folder (%USERPROFILE%\\AgentVsAgent)',expectedDataDir?sharedDataDir===expectedDataDir:sharedDataDir===undefined,{sharedDataDir});
 
-// 2. The host wrapper routes a typed command to the MCP tool: the Codex prompt hook, or the Claude Code /ava command.
+// 2. The host wrapper routes a typed command to the MCP tool: the Codex prompt hook, or the Claude Code /ava skill. Both hosts
+//    take the same /ava commands, and each passes its own chat identity (Codex's thread ID, Claude Code's session ID).
 const claude=existsSync(join(plugin,'.claude-plugin','plugin.json'));
 let commandName='/ava';
 if(claude){
-  const command=readFileSync(join(plugin,'commands','ava.md'),'utf8'),mcp=readFileSync(join(plugin,'.mcp.json'),'utf8');
+  const command=readFileSync(join(plugin,'skills','ava','SKILL.md'),'utf8'),mcp=readFileSync(join(plugin,'.mcp.json'),'utf8');
+  check('Claude Code /ava is a skill named ava (bare /ava works, like Codex) that passes this conversation’s session ID as the thread',/^name: ava\s*$/m.test(command)&&command.includes('thread `claude-${CLAUDE_SESSION_ID}`')&&!existsSync(join(plugin,'commands','ava.md')));
   check('Claude Code /ava command calls ava_command and pre-approves only that tool, only while it runs',/ava_command/.test(command)&&/\$ARGUMENTS/.test(command)&&/allowed-tools: mcp__plugin_agent-vs-agent_ava__ava_command\s*$/m.test(command));
   // Otherwise Claude could run the command itself (Skill tool) and inherit that pre-approval without the user typing it.
   check('only the user can run the /ava command (disable-model-invocation)',/^disable-model-invocation: true\s*$/m.test(command));
   check('Claude Code MCP config uses ${CLAUDE_PLUGIN_ROOT} and the wrapper has no hooks',mcp.includes('${CLAUDE_PLUGIN_ROOT}/dist/src/server.js')&&!existsSync(join(plugin,'hooks')));
   // Claude Code passes the server's env block on top of its own environment.
   const serverEnv=(JSON.parse(mcp) as {mcpServers:{ava:{env?:Record<string,string>}}}).mcpServers.ava.env??{};
-  Object.assign(env,serverEnv);commandName=serverEnv.AVA_COMMAND_NAME??commandName;
+  Object.assign(env,serverEnv);
 }else{
   const hook=spawnSync(process.execPath,[join(plugin,'hooks','route.mjs')],{env,input:JSON.stringify({thread_id:'pkg-smoke',prompt:'/ava cli1'}),encoding:'utf8',windowsHide:true});
   check('packaged hook routes /ava CLI1 to ava_command',hook.status===0&&/ava_command/.test(hook.stdout)&&/command \\"\/ava CLI1\\"/.test(hook.stdout));
@@ -60,7 +62,7 @@ const menu=await client.callTool({name:'ava_command',arguments:{thread:'pkg-smok
 check('ava_command serves the CLI1 menu without model work',(menu.content as Array<{text?:string}>).some(c=>/Choose a CLI/.test(c.text??'')));
 check(`menus tell the user to reply with ${commandName}`,(menu.content as Array<{text?:string}>).some(c=>(c.text??'').includes(`Reply: ${commandName} CLI1 <number>`)));
 const sessionMenu=await client.callTool({name:'ava_command',arguments:{command:'/ava CLI2'}});
-check('ava_command without a thread uses this host session (Claude Code has no session ID for plugins)',(sessionMenu.content as Array<{text?:string}>).some(c=>/Choose a CLI/.test(c.text??'')));
+check('ava_command without a thread falls back to a pair for this host process',(sessionMenu.content as Array<{text?:string}>).some(c=>/Choose a CLI/.test(c.text??'')));
 const server=existsSync(join(dataRoot,'server.json'))?JSON.parse(readFileSync(join(dataRoot,'server.json'),'utf8')):null;
 check(flag('--copy')?'data lives in the folder set by the plugin\'s config.dataDir':'data lives in the AVA_DATA_DIR override',!!server&&existsSync(join(dataRoot,'ava.sqlite')),{dataRoot});
 const health=server?await (await fetch(`http://127.0.0.1:${server.port}/api`,{method:'POST',headers:{Authorization:`Bearer ${server.token}`},body:JSON.stringify({method:'health',params:{}})})).json() as {result:{version:string;databaseVersion:number}}:null;

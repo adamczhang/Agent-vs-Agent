@@ -4,7 +4,7 @@ The room in detail. For an overview, see the [README](../README.md).
 
 ## Opening the room and activating agents
 
-- **Codex:** type `/ava start`. **Claude Code:** type `/agent-vs-agent:ava start`. The room opens in your browser panel (or you get its link).
+- Type `/ava start` in Codex or Claude Code (the same `/ava` commands work in both hosts). The room opens in your browser panel, or you get its link.
 - Above each agent's screen, **Activate** stands where the agent's name goes. Click it to open that agent's setup menu: the same text menu the hosts print for `/ava CLI1`, in a small window. Click a line, or type its number; **B** goes back and **X** closes.
   - Choose the CLI (Claude Code, Codex CLI, Grok Build or Antigravity; the same CLI can take both seats), then its model, effort, speed, account route and permissions.
   - **Activate and verify** sends one short request to check that the model answers.
@@ -17,7 +17,7 @@ The room in detail. For an overview, see the [README](../README.md).
     - AvA keeps its key in the data folder (`secrets/ai-gateway.json`) and never shows it. `npm run gateway-key -- status` says whether the Gateway accepts it.
   - **Internet switch:** the Gateway agent has no built-in web search, so the switch only lets its commands reach the network.
 - Once an agent is active, click its name to change its settings. A new model, effort or CLI needs reactivating, which starts a fresh session for that agent. Permissions change at once.
-- The text menus still work in the hosts: `/ava CLI1`, `/ava CLI2` (Codex), `/agent-vs-agent:ava CLI1` (Claude Code), with choices like `/ava CLI1 2`.
+- The text menus still work in both hosts: `/ava CLI1`, `/ava CLI2`, with choices like `/ava CLI1 2`.
 
 ### Permissions
 
@@ -118,9 +118,10 @@ Typed `/ava …` commands are routed by the plugin's prompt hook to its `ava_com
 
 ### Claude Code
 
-`/agent-vs-agent:ava …` (Claude Code namespaces plugin commands).
-- A slash command replaces the prompt hook, so there is no hook to review.
-- The command pre-approves only `ava_command`, only while it runs, and Claude can't run it by itself.
+The same `/ava …` commands as in Codex, provided by the plugin's `ava` skill. Its full name, `/agent-vs-agent:ava …`, also works (useful if another plugin ever claims `/ava`).
+- Each Claude Code conversation keeps its own pair of agents, like a Codex chat, and resuming the conversation brings them back.
+- A skill replaces the prompt hook, so there is no hook to review.
+- The skill pre-approves only `ava_command`, only while it runs, and Claude can't run it by itself.
 - Each Claude Code session gets its own room.
 
 Both plugins drive the same background service and share one conversation pool.
