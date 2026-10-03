@@ -35,7 +35,7 @@ The essential paths cover attachment-backed Prompt, private messaging, Debate, t
 
 Mock timing and live Stats checks found the two defects listed above; both were fixed with regression tests before the successful acceptance runs. A Claude host-check comparison initially rejected a harmless trailing space in `/ava `; the verifier now uses the product's command normalizer. Failed attempts were retained as evidence, and no uncertain work was resent.
 
-The first hosted Windows CI result is reported by the [CI workflow](https://github.com/adamczhang/Agent-vs-Agent/actions/workflows/ci.yml). Local acceptance does not assert a hosted pass before publication.
+The [hosted Windows / Node 24 CI passed](https://github.com/adamczhang/Agent-vs-Agent/actions/runs/37092660252), including dependency installation, typecheck, tests, packaging and both smoke tests. A follow-up commit on `main` corrects GitHub Actions environment setup; the published `v0.1.2` tag is unchanged and the application code is identical. The tagged workflow retains the original validation error; use `main` for the corrected CI configuration.
 
 ## Upgrade
 

@@ -32,7 +32,7 @@ Make the current version easy to build on: published, tested in CI, no known che
 | ID | Item | Gate | Status |
 | --- | --- | --- | --- |
 | P1 | Publish 0.1.1, and GitHub release pages for 0.1.0 and 0.1.1 | user | done |
-| P2 | Continuous integration on GitHub | offline (+ user to push) | in progress: public push authorized; hosted CI verification follows publication |
+| P2 | Continuous integration on GitHub | offline (+ user to push) | done |
 | P3 | No skipped tests | offline | done |
 | P4 | Close the agent-isolation gaps found in testing | offline + live | done |
 | P5 | Robustness fixes from the known limits | offline | done |
@@ -47,6 +47,8 @@ Make the current version easy to build on: published, tested in CI, no known che
   - *Done when* a push to `main` runs green.
   - **Local work 2026-10-02:** added `.github/workflows/ci.yml` and the badge. Typecheck, build, tests (123 passed, one private-fixture skip), and both staged plugin smoke tests passed. The GitHub run awaits an authorized public export/push; it is not yet verified green.
   - **Final P2–P7 validation:** Node 24.21.0 ran all 135 tests with zero failures/skips and both staged plugin smoke checks (16 Codex / 19 Claude). Typecheck, build, documentation links and YAML checks also passed. No push, release tag or real-profile installation was performed.
+  - **First hosted attempt 2026-10-02:** GitHub rejected the job-level `runner.temp` expression before a runner started. Actionlint reproduced the error. The isolation directory is now set in a PowerShell step using `RUNNER_TEMP`; the CI-only follow-up preserves the already pushed 0.1.2 tag.
+  - **Done 2026-10-02:** [Windows / Node 24 CI passed on public `main`](https://github.com/adamczhang/Agent-vs-Agent/actions/runs/37092660252), including `npm ci`, typecheck, all tests, packaging and both plugin smoke tests. Public commit `8e11d6a` corrects only CI setup relative to the unchanged `v0.1.2` tag; the application code is identical.
 - **P3 No skipped tests.** Replace the private pilot database that one migration test needs with a small synthetic schema-v1 fixture committed to `test/fixtures/`. *Done when* `npm test` shows no skipped tests. **Done 2026-10-02:** frozen SQL fixture, service/export and integrity checks; 124 tests passed, zero skipped.
 - **P4 Agent isolation.**
   - Codex agents currently start the MCP servers in the user's own Codex config (seen: `node_repl`). Turn those off for agents, as plugins, apps and hooks already are.
@@ -77,7 +79,7 @@ Make the current version easy to build on: published, tested in CI, no known che
   - **Authorized 2026-10-02:** finish branding, install, validate and publish 0.1.2; the owner additionally authorized unrestricted subscription usage and inexpensive Gateway calls, then revised the timed test to **5 minutes**. The planned batches are capped at 20 participant requests for each host's essential paths, 18 for the 5-minute Debate, and 4 each for Grok Build, Antigravity and a cheap Gateway model. Host-routing probes have separate logged ceilings. All test data is temporary; failures stop the current batch, and hook trust stays a user action.
   - Then run the essential paths in both hosts, and the **5-minute timed Debate** (owner revised from 15 minutes on 2026-10-02). A quota limit or a manual stop counts as an early exit, not a pass.
   - Record the result in the release notes and tag **0.1.2**.
-  - **Acceptance complete 2026-10-02:** 23 essential checks per installed host wrapper; all four slash-command routes in each real host; Grok Build, Antigravity and cheap Gateway probes; and the uninterrupted 5-minute Debate (11 debate requests plus 2 activations) passed. All 137 offline tests pass on Node 24.21.0. See [0.1.2 release notes](release-v0.1.2.md). The release export/tag follows this commit; P2 remains pending its first hosted CI result.
+  - **Done 2026-10-02:** 23 essential checks per installed host wrapper; all four slash-command routes in each real host; Grok Build, Antigravity and cheap Gateway probes; and the uninterrupted 5-minute Debate (11 debate requests plus 2 activations) passed. All 137 offline tests pass on Node 24.21.0. Both installed plugins are 0.1.2, and the public release tag is pushed. See [0.1.2 release notes](release-v0.1.2.md); P2's hosted CI has also passed.
 
 ## Phase 2 — validated benchmarks with saved pass/fail (target 0.2.0)
 
