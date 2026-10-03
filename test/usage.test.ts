@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { AvAService } from '../src/service.js';
-import { NativeParticipant } from '../src/providers.js';
+import { NativeParticipant, usageDelta, requestUsageSince } from '../src/providers.js';
 import { parseCredits } from '../src/gateway.js';
 import { SimulationFactory } from '../src/simulation.js';
 import type { Pair } from '../src/types.js';
@@ -23,13 +23,37 @@ test('an agent’s usage reports feed the context ring instead of its activity',
   ], { cumulative: { inputTokens: 1_200_000, outputTokens: 34_100, cachedReadTokens: 900_000 }, cost: { amount: 0.42, currency: 'USD' } });
   const participant = new NativeParticipant(runtime, { agentSessionId: 'session-1' } as never, { provider: 'claude', model: 'm', auth: 'provider-login' }, 'evidence');
   const seen: string[] = [];
+  participant.noteSessionUsage({cumulative:{inputTokens:1_199_000,outputTokens:34_000,cachedReadTokens:899_500}});
   const result = await participant.request({ id: 'r1', text: 'hi', signal: new AbortController().signal, onStarted() {}, onEvent(e) { seen.push(`${e.type}:${e.text}`); } });
   assert.equal(result.text, 'Hello');
+  assert.deepEqual(result.usage,{input:1000,output:100,cachedRead:500});
   assert.ok(!seen.some(s => s.includes('usage updated')), 'not an activity line');
   const usage = participant.usage()!;
   assert.deepEqual(usage.context, { used: 142_300, size: 258_400 });
-  assert.deepEqual(usage.tokens, { input: 1_200_000, output: 34_100, cachedRead: 900_000, total: undefined });
+  assert.deepEqual(usage.tokens, { input: 1_200_000, output: 34_100, cachedRead: 900_000 });
   assert.deepEqual(usage.cost, { amount: 0.42, currency: 'USD' });
+});
+
+test('usage deltas exclude prior work and never turn missing or reset counters into totals',()=>{
+  assert.deepEqual(usageDelta({input:100,output:20},{input:130,output:25}),{input:30,output:5});
+  assert.deepEqual(usageDelta({output:20},{output:20}),{output:0});
+  assert.equal(usageDelta(undefined,{output:25}),undefined);
+  assert.equal(usageDelta({output:25},{output:3}),undefined);
+  assert.equal(usageDelta({output:2},{output:NaN}),undefined);
+});
+test('per-request reports stay correct when the field named cumulative falls between turns',async()=>{
+  // Values observed in P8: each adapter's second output is smaller than its activation output.
+  for(const [provider,before,after] of [['codex',28,6],['claude',31,4]] as const){
+    const old={activation:{inputTokens:100,outputTokens:before}},current={...old,prompt:{inputTokens:2,outputTokens:after}};
+    const runtime=fakeRuntime([{type:'text_delta',text:'7319',stream:'output'}],{cumulative:{inputTokens:2,outputTokens:after},perRequest:current});
+    const participant=new NativeParticipant(runtime,{agentSessionId:'session-1'} as never,{provider,model:'m',auth:'provider-login'},'test');
+    participant.noteSessionUsage({cumulative:{inputTokens:100,outputTokens:before},perRequest:old});
+    const result=await participant.request({id:'host-request-id-differs-from-acp-id',text:'number',signal:new AbortController().signal,onStarted(){},onEvent(){}});
+    assert.deepEqual(result.usage,{input:2,output:after});
+    assert.deepEqual(participant.usage()!.tokens,{input:102,output:before+after});
+    assert.equal(requestUsageSince(current,current),undefined,'a report is never counted twice');
+    assert.equal(requestUsageSince(undefined,current),undefined,'unknown resume baseline is not guessed');
+  }
 });
 
 test('the room shows each active agent’s latest usage, and nothing for an agent that isn’t active', async () => {

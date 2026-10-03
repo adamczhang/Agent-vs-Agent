@@ -54,5 +54,6 @@ test('Codex agents start the installed CLI with integrations disabled; Claude ag
   const env = participantEnvironment('codex', {}, data, false, undefined, cli), wrapper = readFileSync(env.CODEX_PATH!, 'utf8');
   assert.ok(wrapper.includes(cli.args[0]!) && wrapper.includes('--disable plugins --disable apps --disable remote_plugin --disable hooks'), wrapper);
   assert.throws(() => participantEnvironment('codex', {}, data, false), /Codex isn’t installed/, 'never the adapter’s fallback copy');
-  assert.equal(participantEnvironment('claude', {}, data, false, undefined, { command: 'C:\\x\\claude.exe', args: [], path: 'C:\\x\\claude.exe' }).CLAUDE_CODE_EXECUTABLE, 'C:\\x\\claude.exe');
+  const claude=participantEnvironment('claude', {}, data, false, undefined, { command: 'C:\\x\\claude.exe', args: [], path: 'C:\\x\\claude.exe' });
+  assert.match(readFileSync(claude.CLAUDE_CODE_EXECUTABLE!, 'utf8'), /--strict-mcp-config/);
 });

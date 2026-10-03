@@ -93,7 +93,14 @@ export class ConversationController {
     return pair.activeRunId === id && SEATS.every(s => pair.slots[s].generation === run.generations[s] && pair.slots[s].sessionId === run.sessions[s]);
   }
   private assertPermitted(id: string) {
-    if (!this.permitted(id)) throw new AvAError('REVOKED', 'This request no longer has authority to run.');
+    if (!this.permitted(id)) {
+      // A paced wake or completed reply can beat an overdue deadline callback. Expiry is still a normal finish.
+      const live=this.live.get(id),run=this.store.run(id);
+      if(live&&!live.failure&&['running','pausing'].includes(run.status)&&this.remaining(id)<=0){
+        this.halt(id,'duration_reached',false);throw new AvAError('DURATION_REACHED','The conversation reached its time limit.');
+      }
+      throw new AvAError('REVOKED', 'This request no longer has authority to run.');
+    }
   }
   broadcast(id: string, text: string, requestId: string, attachments: AttachmentRef[] = []) {
     const { id: messageId, replayed } = this.store.broadcast(id, text, requestId, attachments);
@@ -195,6 +202,7 @@ export class ConversationController {
       await this.waitForPace(id);
       run = this.store.run(id);
       if (run.status !== 'running' || live.failure) continue;
+      if (this.remaining(id) <= 0) { this.halt(id, 'duration_reached', false); continue; }
       const broadcast = this.store.queued(id)[0];
       if(broadcast&&broadcast.text!==run.config.topic){
         const match=broadcast.text.match(/\bfor\s+(\d+(?:\.\d+)?)\s*(minutes?|mins?|m|seconds?|secs?|s)\s*[.!]?$/i);
@@ -290,7 +298,7 @@ export class ConversationController {
     const uncertain = new Promise<never>((_, reject) => {
       abort.signal.addEventListener('abort', () => { cancelGrace = this.clock.timer(() => { live.uncertain = true; reject(new AvAError('UNCERTAIN', 'Provider did not settle cancellation.')); }, this.cancellationGraceMs); }, { once: true });
     });
-    const perTurn = this.clock.timer(() => this.halt(id, 'turn_timeout', false), Math.min(this.store.run(id).config.perTurnMs, this.remaining(id)));
+    const perTurn = this.clock.timer(() => this.halt(id, this.remaining(id)<=0?'duration_reached':'turn_timeout', false), Math.min(this.store.run(id).config.perTurnMs, this.remaining(id)));
     // A build report ends with its APP line. If an agent has written that and then gone quiet while its turn stays open
     // (seen live: a command it ran sat waiting for input), the report is final: the turn is cancelled and what it wrote
     // is its answer.
@@ -313,6 +321,7 @@ export class ConversationController {
           this.store.event(id, 'activity', { seat, turnId, type: event.type, text: event.text.slice(0, 32000), late: !this.permitted(id) });
         },
       }), uncertain]);
+      if(result.usage)this.store.event(id,'usage_reported',{seat,turnId,tokens:result.usage});
       // The cancelled turn's last message is the report; the streamed output stands in if the provider returned none.
       if (answered && result.status === 'cancelled') return { ...result, status: 'completed', text: APP_DONE.test(result.text) ? result.text : output.slice(-256000) };
       return result;

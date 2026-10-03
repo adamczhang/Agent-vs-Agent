@@ -32,44 +32,52 @@ Make the current version easy to build on: published, tested in CI, no known che
 | ID | Item | Gate | Status |
 | --- | --- | --- | --- |
 | P1 | Publish 0.1.1, and GitHub release pages for 0.1.0 and 0.1.1 | user | done |
-| P2 | Continuous integration on GitHub | offline (+ user to push) | next |
-| P3 | No skipped tests | offline | todo |
-| P4 | Close the agent-isolation gaps found in testing | offline + live | todo |
-| P5 | Robustness fixes from the known limits | offline | todo |
-| P6 | First run and diagnostics: `/ava` help and `/ava doctor` | offline | todo |
-| P7 | Contributor docs, and the artwork decision | offline + user | todo |
-| P8 | Acceptance on the installed plugins, then tag 0.1.2 | user + live | todo |
+| P2 | Continuous integration on GitHub | offline (+ user to push) | in progress: public push authorized; hosted CI verification follows publication |
+| P3 | No skipped tests | offline | done |
+| P4 | Close the agent-isolation gaps found in testing | offline + live | done |
+| P5 | Robustness fixes from the known limits | offline | done |
+| P6 | First run and diagnostics: `/ava` help and `/ava doctor` | offline | done |
+| P7 | Contributor docs, and the artwork decision | offline + user | done |
+| P8 | Acceptance on the installed plugins, then tag 0.1.2 | user + live | done |
 
 - **P1 Publish 0.1.1.** Re-run the export (one public commit on top of 0.1.0's), tag `v0.1.1`, and push with the owner's go-ahead. Create GitHub release pages for `v0.1.0` and `v0.1.1` from the changelog. *Done when* both releases are on GitHub, and the README links them. **Done 2026-10-02.**
 - **P2 CI.**
   - A GitHub Actions workflow on Windows with Node 24: `npm ci`, typecheck, `npm test`, `npm run package`, and the package smoke test for both plugins. No live requests.
   - A status badge in the README.
   - *Done when* a push to `main` runs green.
-- **P3 No skipped tests.** Replace the private pilot database that one migration test needs with a small synthetic schema-v1 fixture committed to `test/fixtures/`. *Done when* `npm test` shows no skipped tests.
+  - **Local work 2026-10-02:** added `.github/workflows/ci.yml` and the badge. Typecheck, build, tests (123 passed, one private-fixture skip), and both staged plugin smoke tests passed. The GitHub run awaits an authorized public export/push; it is not yet verified green.
+  - **Final P2–P7 validation:** Node 24.21.0 ran all 135 tests with zero failures/skips and both staged plugin smoke checks (16 Codex / 19 Claude). Typecheck, build, documentation links and YAML checks also passed. No push, release tag or real-profile installation was performed.
+- **P3 No skipped tests.** Replace the private pilot database that one migration test needs with a small synthetic schema-v1 fixture committed to `test/fixtures/`. *Done when* `npm test` shows no skipped tests. **Done 2026-10-02:** frozen SQL fixture, service/export and integrity checks; 124 tests passed, zero skipped.
 - **P4 Agent isolation.**
   - Codex agents currently start the MCP servers in the user's own Codex config (seen: `node_repl`). Turn those off for agents, as plugins, apps and hooks already are.
   - Check whether Claude Code agents load the user's own MCP servers, and close or document it.
   - *Done when* a process census during a live run shows only the agents' own processes.
+  - **Done 2026-10-02:** Codex disables effective disk MCP entries at startup and drops session-supplied MCP overrides; Claude Code uses strict MCP configuration. Offline launcher tests pass. The first live attempt stopped at a configuration error before any model request; after a fix and owner-approved retry, one subscription response and process census passed for each CLI (`pilot-evidence/stage-d/p4-isolation.json`).
 - **P5 Robustness.**
   - Copy Build projects off the service's main thread, so a large project doesn't freeze the room.
   - Make `secrets/` and `server.json` owner-only on Windows (file permissions, not just mode 0600).
   - Have Stats use the token counts Codex and Claude Code report, with estimates only for the CLIs that don't report them.
   - Drop the per-process fallback for a call with no chat identity, once no wrapper sends one.
   - *Done when* each change has a test, and the known-limits list shrinks to match.
+  - **Done 2026-10-02:** Build preparation uses workers with conflict guards; secret writes and existing Gateway keys get owner-only Windows ACLs; Stats saves per-request reported token deltas; MCP chat-scoped tools require an identity. Typecheck/build, 129 tests (zero skipped), and both staged package smoke tests passed; ACLs were inspected on Windows.
 - **P6 First run and diagnostics.**
   - `/ava` with no arguments shows a short help.
   - `/ava doctor` checks each CLI (installed, version against AvA's minimum, signed in where that can be checked) and the Gateway key and credit, with no model requests.
   - The activation menu flags a CLI that needs an update.
   - *Done when* it works in both hosts, with tests.
+  - **Done 2026-10-02:** help/doctor routing and diagnostic, credit-error, menu-warning and idle-shutdown tests pass. Staged MCP checks passed for both wrappers (16 Codex / 19 Claude checks); no model requests. The changed Codex hook will need the owner's trust review when installed; no real profile was changed.
 - **P7 Docs and artwork.**
   - `CONTRIBUTING.md`: setup, tests, the simulator, the live suites and their quota, the release and export steps.
   - `SECURITY.md`: the local token model, and what Bypass trusts.
   - Issue and pull-request templates, and a user-guide refresh.
   - **User:** confirm the rights to the banner and icon (a *Spy vs. Spy* homage), or replace them.
+  - **Done 2026-10-02:** contributor/security guides, issue and PR templates, and user-guide updates added. The owner explicitly confirmed the rights and chose to retain the artwork. It remains excluded from the MIT license; no additional reuse permission is implied.
 - **P8 Acceptance on the installed plugins.**
   - **User:** approve a plan with request ceilings.
-  - Then run the essential paths in both hosts, and the 15-minute timed Debate. A quota limit or a manual stop counts as an early exit, not a pass.
+  - **Authorized 2026-10-02:** finish branding, install, validate and publish 0.1.2; the owner additionally authorized unrestricted subscription usage and inexpensive Gateway calls, then revised the timed test to **5 minutes**. The planned batches are capped at 20 participant requests for each host's essential paths, 18 for the 5-minute Debate, and 4 each for Grok Build, Antigravity and a cheap Gateway model. Host-routing probes have separate logged ceilings. All test data is temporary; failures stop the current batch, and hook trust stays a user action.
+  - Then run the essential paths in both hosts, and the **5-minute timed Debate** (owner revised from 15 minutes on 2026-10-02). A quota limit or a manual stop counts as an early exit, not a pass.
   - Record the result in the release notes and tag **0.1.2**.
+  - **Acceptance complete 2026-10-02:** 23 essential checks per installed host wrapper; all four slash-command routes in each real host; Grok Build, Antigravity and cheap Gateway probes; and the uninterrupted 5-minute Debate (11 debate requests plus 2 activations) passed. All 137 offline tests pass on Node 24.21.0. See [0.1.2 release notes](release-v0.1.2.md). The release export/tag follows this commit; P2 remains pending its first hosted CI result.
 
 ## Phase 2 — validated benchmarks with saved pass/fail (target 0.2.0)
 
@@ -124,7 +132,7 @@ rubric: optional text for a model-graded score, saved separately, never part of 
 
 | ID | Item | Gate | Status |
 | --- | --- | --- | --- |
-| B1 | Task format, loader and `bench validate` | offline | todo |
+| B1 | Task format, loader and `bench validate` | offline | next |
 | B2 | Checks engine | offline | todo |
 | B3 | Runner in the room and from the command line | offline + live | todo |
 | B4 | Saved results and a scoreboard | offline | todo |

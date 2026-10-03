@@ -27,7 +27,7 @@ test('hook refuses anything outside the command grammar without echoing it',()=>
   assert.match(hook('/ava status','bad id; rm').context,/cannot identify this Codex chat/);
 });
 test('hook and MCP tool apply the same command grammar',()=>{
-  for(const prompt of ['/ava','/AVA cli2','/ava CLI1 12','/ava cli2 b','/ava cli1 X','/ava start','/ava status','/ava reconcile','/ava start 1','/ava cli1 1234','/ava cli1 a','/ava foo']){
+  for(const prompt of ['/ava','/ava doctor','/AVA DOCTOR','/ava doctor 1','/AVA cli2','/ava CLI1 12','/ava cli2 b','/ava cli1 X','/ava start','/ava status','/ava reconcile','/ava start 1','/ava cli1 1234','/ava cli1 a','/ava foo']){
     const expected=normalizeCommand(prompt),context=hook(prompt).context;
     if(expected)assert.ok(context.includes(`command "${expected}"`),prompt);else assert.match(context,/not recognized/,prompt);
   }

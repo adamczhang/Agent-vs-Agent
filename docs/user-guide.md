@@ -2,8 +2,12 @@
 
 The room in detail. For an overview, see the [README](../README.md).
 
+For development and validation, see [Contributing](../CONTRIBUTING.md). For the local token model, Bypass and vulnerability reporting, see [Security](../SECURITY.md).
+
 ## Opening the room and activating agents
 
+- Type `/ava` for short help, or `/ava doctor` for diagnostics in either host. Doctor checks CLI installation and versions, Codex and Claude Code sign-in status where available, and the Gateway key's credit endpoint. It sends **no model requests**. Grok Build and Antigravity sign-in checks are reported as unavailable; only activation proves model access.
+- An outdated Codex or Claude Code is flagged in the activation menu with its update command. The Gateway also requires a compatible Codex CLI.
 - Type `/ava start` in Codex or Claude Code (the same `/ava` commands work in both hosts). The room opens in your browser panel, or you get its link.
 - Above each agent's screen, **Activate** stands where the agent's name goes. Click it to open that agent's setup menu: the same text menu the hosts print for `/ava CLI1`, in a small window. Click a line, or type its number; **B** goes back and **X** closes.
   - Choose the CLI (Claude Code, Codex CLI, Grok Build or Antigravity; the same CLI can take both seats), then its model, effort, speed, account route and permissions.
@@ -102,7 +106,7 @@ The paperclip (or paste, or drag and drop) attaches images (PNG, JPEG, GIF, WebP
   - **This session:** input, output and cached tokens, and the agent's cost estimate at API prices (a subscription isn't billed per request), when the agent reports them.
   - **Plan usage:** the CLIs don't pass their 5-hour and weekly limits to AvA, so this says where to see them (`/status` in Codex, `/usage` in Claude Code). A Vercel Gateway agent shows the key's credit instead.
   - Codex and Claude Code report after each reply; Grok Build and Antigravity don't report their context.
-- **Stats** (the chart button) covers the whole thread: conversation time, time to first token, reply time, estimated tokens per second, a per-agent table, and a timeline. Its token figures are estimates (characters ÷ 4), comparable across all CLIs; the context ring shows what Codex and Claude Code report themselves.
+- **Stats** (the chart button) covers the whole thread: conversation time, time to first token, reply time, tokens per second, a per-agent table, and a timeline. Codex, Claude Code and Gateway counts use saved provider reports for each request; only Grok Build and Antigravity use estimates (characters ÷ 4), marked ≈. Missing reports and older history stay unavailable. The context ring shows session totals, which also include activation and private messages.
 - **⋯** also has Replay and Export (JSON or Markdown, including the 1:1 lines).
 - **⋯ → Clear history** permanently deletes every saved thread in the shared data folder after a confirmation. That covers prompts, replies, 1:1 messages, attachments, and the agents' working folders with everything they built. It also stops app servers they left running and gives this page's agents fresh sessions.
 
@@ -141,6 +145,7 @@ Both plugins drive the same background service and share one conversation pool.
 
 - **Loopback only:** the service binds only to 127.0.0.1, checks Host and Origin, and requires a random bearer token.
   - The room receives the token in the URL fragment and removes it from the address bar. Don't share the room link or `server.json` in the data folder.
+  - Current source protects `server.json` and Gateway secrets with an owner-only Windows ACL. This does not protect against programs already running as your account.
 - **Interrupted work:** on a service interruption or an uncertain cancellation, AvA quarantines the run and never resends work whose outcome is unknown.
   - **Release** (or `/ava reconcile`) frees the pair once no provider process from it is running.
 - **Separate origins:** app previews run on separate loopback origins behind a cookie that only the room's link sets.

@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { existsSync,readdirSync,rmSync,statSync } from 'node:fs';
+import { rm } from 'node:fs/promises';
 import { basename,dirname,join,relative } from 'node:path';
 import { z } from 'zod';
 import { SCHEMA_VERSION,Store,threadKey } from './store.js';
@@ -11,7 +12,10 @@ import { NativeFactory,loadProviderSetups,type Catalog } from './providers.js';
 import { LABELS,Menus } from './menus.js';
 import { listProcesses,survivors,systemCensus,type Census,type ProcessLedger,type SystemProcess } from './census.js';
 import { combineStats,computeStats } from './stats.js';
-import { checkProject,copyFolder,copyProject,participantWorkspace,projectChanges,startProject } from './workspace.js';
+import { checkProject,copyFolder,copyProject,participantWorkspace,projectChanges } from './workspace.js';
+import { prepareProject } from './prepare-project.js';
+import { protectPrivatePath } from './private-files.js';
+import type { DoctorReport } from './doctor.js';
 import { Previews,appTarget,pageIn } from './preview.js';
 import { createGatewayKey,forgetGatewayKey,gatewayCredit,gatewayKeyStatus,gatewayModels,type GatewayModel,type RunVercel } from './gateway.js';
 import { AvAError,PROVIDERS,SEATS,conversationConfig,type AgentUsage,type Pair,type Provider,type ProviderConfig,type Run,type Seat } from './types.js';
@@ -62,6 +66,8 @@ function listeningOn(port:number){
   });
 }
 export interface ServiceFactory extends ParticipantFactory {
+  doctor?():Promise<DoctorReport>;
+  cliWarnings?():Promise<Partial<Record<Provider,string>>>;
   ledger?:ProcessLedger;
   // Test doubles for the Vercel AI Gateway: its model list and the Vercel CLI.
   gatewayModels?():Promise<GatewayModel[]>;
@@ -77,6 +83,9 @@ export class AvAService {
   private catalogs=new Map<string,{value:Catalog;at:number}>();
   private tickets=new Map<string,{pairId:string;generations:number[];expires:number}>();
   private operations=new Map<string,Promise<unknown>>();
+  private preparing=new Set<string>();
+  private preparationDone=new Set<Promise<void>>();
+  private shuttingDown=false;
   private census:Census;
   private processes:()=>Promise<SystemProcess[]>;
   private stopProcesses:(pids:number[])=>Promise<void>;
@@ -84,6 +93,8 @@ export class AvAService {
   readonly previews=new Previews();
   constructor(readonly dataRoot:string,readonly factory:ServiceFactory=new NativeFactory(dataRoot,loadProviderSetups(dataRoot)),readonly mode:'live'|'simulation'='live',
     options:{census?:Census;processes?:()=>Promise<SystemProcess[]>;stopProcesses?:(pids:number[])=>Promise<void>;listeners?:(port:number)=>Promise<number[]>}={}){
+    // Upgrade the existing key's permissions as well as protecting newly written secrets.
+    for(const path of [join(dataRoot,'secrets'),join(dataRoot,'secrets','ai-gateway.json')])if(existsSync(path))protectPrivatePath(path);
     this.store=new Store(join(dataRoot,'ava.sqlite'));this.store.interruptUnfinished();
     this.factory.ledger??=this.store;this.census=options.census??systemCensus;
     this.processes=options.processes??listProcesses;this.stopProcesses=options.stopProcesses??stopTrees;this.listeners=options.listeners??listeningOn;
@@ -106,7 +117,7 @@ export class AvAService {
     this.activation.directBusy=(pairId,seat)=>this.direct.has(`${pairId}:${seat}`);
     this.menus=new Menus(this.store,this.activation,(p,m,a)=>this.catalog(p,m,a),(pairId,seat,level)=>this.setPermissions(pairId,seat,level),{
       models:()=>this.factory.gatewayModels?.()??gatewayModels(this.dataRoot),keyStatus:()=>gatewayKeyStatus(this.dataRoot),
-      createKey:budget=>createGatewayKey(this.dataRoot,budget,this.factory.runVercel),forgetKey:()=>forgetGatewayKey(this.dataRoot)});
+      createKey:budget=>createGatewayKey(this.dataRoot,budget,this.factory.runVercel),forgetKey:()=>forgetGatewayKey(this.dataRoot)},()=>this.factory.cliWarnings?.()??Promise.resolve({}));
   }
   async catalog(provider:Provider,model='',auth:ProviderConfig['auth']='provider-login'){
     const key=JSON.stringify([provider,model,auth]),cached=this.catalogs.get(key);
@@ -114,12 +125,16 @@ export class AvAService {
     const value=await this.factory.discover(provider,AbortSignal.timeout(120000),model,auth);this.catalogs.set(key,{value,at:Date.now()});return value;
   }
   async call(method:string,input:unknown):Promise<unknown>{
+    if(this.shuttingDown&&CHANGING.has(method))throw new AvAError('SHUTTING_DOWN','The service is shutting down.');
+    const changingPair=input&&typeof input==='object'?(input as {pairId?:string}).pairId:undefined;
+    if(CHANGING.has(method)&&(method==='history.clear'?this.preparing.size>0:changingPair&&this.preparing.has(changingPair)))throw new AvAError('BUILD_PREPARING','A project is being prepared. Wait for it to finish, then try again.');
     // While history is being cleared nothing may start or change: the clear deletes runs and agents' folders.
     if(this.clearing&&CHANGING.has(method))throw new AvAError('CLEARING','History is being cleared. Try again in a moment.');
     switch(method){
       case 'health': return {mode:this.mode,pid:process.pid,version:packageVersion,schemaVersion:1,databaseVersion:SCHEMA_VERSION};
       case 'pair.create': {const p=z.object({thread:id}).parse(input);return this.store.createPair(p.thread);}
       case 'providers.list':return this.factory.list();
+      case 'doctor':if(!this.factory.doctor)throw new AvAError('SIMULATION','Diagnostics require the live provider factory (no model requests).');return this.factory.doctor();
       case 'providers.catalog':{const p=z.object({provider,model:z.string().optional(),auth:z.enum(['provider-login','api']).optional()}).parse(input);return this.catalog(p.provider,p.model,p.auth);}
       case 'menu.show':{const p=z.object({pairId:id,seat,phase:z.enum(['home','provider','model','effort','speed','auth','permissions','gateway-key']).optional()}).parse(input);return this.menus.show(p.pairId,p.seat,p.phase);}
       // The room's search over a long model list (the Vercel AI Gateway's); the result is a numbered menu like any other.
@@ -211,22 +226,27 @@ export class AvAService {
         this.assertNoDirect(p.pairId);
         const participants=this.activation.participants(p.pairId),attachments=this.attachable(p.pairId,p.attachments);
         let copied:ReturnType<typeof copyProject>|undefined;const made:string[]=[];
+        this.preparing.add(p.pairId);
+        let preparationFinished!:()=>void;
+        const preparation=new Promise<void>(resolve=>{preparationFinished=resolve;});this.preparationDone.add(preparation);
         try{
           if(config.build){
             // Each agent gets its own copy (or empty folder), inside its own workspace; then Codex may edit and run commands there.
             const pair=this.store.pair(p.pairId);
             for(const seat of SEATS){
               const target=join(participantWorkspace(this.dataRoot,{pairId:p.pairId,seat,generation:pair.slots[seat].generation}),config.build.folder);
-              copied=config.build.source?copyProject(config.build.source,target):startProject(target);made.push(target);
+              copied=await prepareProject(config.build.source,target);made.push(target);
             }
           }
           // (Codex's sandbox is set again before each request; this spares its first one the switch.)
           for(const seat of SEATS)await participants[seat].setBuildAccess?.(!!config.build);
+          if(this.shuttingDown)throw new AvAError('SHUTTING_DOWN','The service is shutting down.');
           const run=this.engine.start(p.pairId,config,p.requestId,participants,attachments);
           if(copied)this.store.event(run.id,'build_copied',{files:copied.files,bytes:copied.bytes,gitSource:copied.gitSource,baseline:copied.baseline});
           return run;
         // A start that fails takes its copies with it, so a retry with the same request starts clean.
-        }catch(error){for(const dir of made)rmSync(dir,{recursive:true,force:true});throw error;}
+        }catch(error){for(const dir of made)await rm(dir,{recursive:true,force:true});throw error;}
+        finally{this.preparing.delete(p.pairId);this.preparationDone.delete(preparation);preparationFinished();}
       }
       // Build results: what each agent changed in its copy, and a preview of it served on its own origin.
       case 'build.changes':{const p=z.object({runId:id,seat}).parse(input);return projectChanges(this.buildCopy(p.runId,p.seat).copy);}
@@ -598,6 +618,7 @@ export class AvAService {
     return report||credit?{...report,...(credit?{credit}:{}),at:report?.at??Date.now()}:null;
   }
   async shutdown(){
+    this.shuttingDown=true;await Promise.allSettled(this.preparationDone);
     for(const row of this.store.db.prepare('SELECT data FROM runs').all()){
       const run=JSON.parse(String(row.data)) as {id:string;status:string};
       if(['running','pausing','paused'].includes(run.status))this.engine.stop(run.id);

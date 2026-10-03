@@ -9,6 +9,7 @@
 
 <p align="center">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue.svg"></a>
+  <a href="https://github.com/adamczhang/Agent-vs-Agent/actions/workflows/ci.yml"><img alt="Windows CI" src="https://github.com/adamczhang/Agent-vs-Agent/actions/workflows/ci.yml/badge.svg?branch=main"></a>
   <a href="https://github.com/adamczhang/Agent-vs-Agent/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/adamczhang/Agent-vs-Agent?label=release"></a>
   <img alt="Windows" src="https://img.shields.io/badge/platform-Windows-0078d4.svg">
   <img alt="Node.js 24 or newer" src="https://img.shields.io/badge/node-%E2%89%A524-339933.svg">
@@ -16,7 +17,7 @@
 
 ---
 
-**Agent vs Agent** (AvA) is a plugin for **Codex** and **Claude Code**. It runs two coding agents in one controlled room. Pick any two of **Codex**, **Claude Code**, **Grok Build**, **Antigravity** and the **Vercel AI Gateway** (250+ models from OpenAI, Anthropic, Google, xAI, DeepSeek, Qwen, Kimi, GLM and more), or the same one twice. The CLIs run as themselves, signed in with your own accounts, and no third model relays their turns.
+**Agent vs Agent** (AvA) is a plugin for **Codex** and **Claude Code**. It lets two separate CLI agents run side by side. Supported agents include **Codex**, **Claude Code**, **Grok Build**, **Antigravity** and the **Vercel AI Gateway** (250+ models from NVIDIA, DeepSeek, Qwen, Kimi, GLM and more). Compare them in three modes: **Prompt** (parallel answers to the same prompt), **Debate** (an ongoing agent-to-agent conversation), and **Build** (head-to-head coding and bug hunting).
 
 <p align="center">
   <img src="docs/images/room.png" alt="The Agent vs Agent room: Codex and Claude Code debating tabs versus spaces, each agent's own screen on top and the shared conversation below" width="100%">
@@ -100,10 +101,11 @@ Known limits are listed in [the architecture notes](docs/architecture.md#known-l
 ## Documentation
 
 - [User guide](docs/user-guide.md): the room, modes, permissions, hosts and data.
+- [Contributing](CONTRIBUTING.md): setup, validation and release workflow. [Security](SECURITY.md): local access, Bypass and vulnerability reporting.
 - [Architecture](docs/architecture.md): how it's built, and its known limits.
 - [Roadmap](docs/roadmap.md): what's next, including validated benchmarks with saved pass/fail.
-- [Releases](https://github.com/adamczhang/Agent-vs-Agent/releases): [0.1.1](https://github.com/adamczhang/Agent-vs-Agent/releases/tag/v0.1.1) · [0.1.0](https://github.com/adamczhang/Agent-vs-Agent/releases/tag/v0.1.0)
-- [Changelog](CHANGELOG.md) · [Release notes for 0.1.0](docs/release-v0.1.0.md)
+- [Releases](https://github.com/adamczhang/Agent-vs-Agent/releases): [0.1.2](https://github.com/adamczhang/Agent-vs-Agent/releases/tag/v0.1.2) · [0.1.1](https://github.com/adamczhang/Agent-vs-Agent/releases/tag/v0.1.1) · [0.1.0](https://github.com/adamczhang/Agent-vs-Agent/releases/tag/v0.1.0)
+- [Changelog](CHANGELOG.md) · [Release notes for 0.1.2](docs/release-v0.1.2.md) · [0.1.0](docs/release-v0.1.0.md)
 
 ## Development
 
@@ -114,7 +116,7 @@ npm test            # builds first; offline, no provider calls
 ```
 
 - `npm run dev:sim` opens a room with simulated agents, at no quota cost.
-- `node --import tsx scripts/live-validate.ts` runs the live test suites on every installed CLI. They use your provider quota, and Gateway credit for Vercel.
+- Use the focused live suites and request ceilings in [Contributing](CONTRIBUTING.md). They use your provider quota, and Gateway credit for Vercel.
 
 ## License and credits
 

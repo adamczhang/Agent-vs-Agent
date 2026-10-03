@@ -203,6 +203,17 @@ test('delayed timers after simulated sleep do not cause a catch-up dispatch burs
   await f.clock.advance(1000000);
   assert.equal(f.store.run(f.run.id).status,'completed');assert.equal(f.store.run(f.run.id).requests,2);assert.equal(f.participants.cli1.calls.length,1);f.store.close();
 });
+test('expiry observed by a paced wake before the deadline callback ends normally without another admission',async()=>{
+  const store=new Store(':memory:'),pair=store.createPair('late-deadline'),agents={cli1:new FakeParticipant('a'),cli2:new FakeParticipant('b')};
+  for(const seat of SEATS)store.mutateSlot(pair.id,seat,s=>{s.state='ready';s.generation=1;s.sessionId=agents[seat].sessionId;});
+  let now=0;const timers:Array<{fn:()=>void;ms:number;active:boolean}>=[];
+  const clock={now:()=>now,timer:(fn:()=>void,ms:number)=>{const t={fn,ms,active:true};timers.push(t);return()=>{t.active=false;};}};
+  const engine=new ConversationController(store,clock),run=engine.start(pair.id,conversationConfig('topic',{completion:'duration',durationMs:1000,paceMs:500,perTurnMs:5000}),'start',agents);
+  await flush();agents.cli1.answer('a');agents.cli2.answer('b');await flush();
+  now=1001;timers.find(t=>t.active&&t.ms===500)!.fn();await flush();
+  assert.deepEqual([store.run(run.id).status,store.run(run.id).reason,store.run(run.id).requests],['completed','duration_reached',2]);
+  assert.equal(agents.cli1.calls.length,1);assert.equal(agents.cli2.calls.length,1);store.close();
+});
 test('a submitted call with lost acknowledgement is not blindly resent',async()=>{
   const store=new Store(':memory:'),pair=store.createPair('lost-ack'),clock=new FakeClock();let calls=0;
   const lost={sessionId:'lost',request:()=>{calls++;return new Promise<never>(()=>{});},close:async()=>{}};

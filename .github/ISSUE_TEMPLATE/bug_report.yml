@@ -1,0 +1,28 @@
+name: Bug report
+description: Report a reproducible AvA problem.
+body:
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: AvA version, Windows and Node versions, host (Codex or Claude Code), provider and mode. Redacted /ava doctor output can help.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Include the smallest example and whether it also happens with simulated agents.
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Expected and actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Redacted evidence
+      description: Omit room URLs, bearer tokens, credentials and private conversation text. Report security vulnerabilities privately using SECURITY.md.

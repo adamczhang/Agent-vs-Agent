@@ -5,9 +5,10 @@ import { join,resolve,extname } from 'node:path';
 import { AvAService } from './service.js';
 import { ZodError } from 'zod';
 import { AvAError } from './types.js';
+import { writePrivateFile } from './private-files.js';
 
 export async function listen(service:AvAService,webRoot:string,requestedPort=0):Promise<{server:Server;port:number;token:string;lastRequestAt():number;close():Promise<void>}>{
-  const token=randomBytes(32).toString('hex');let port=0,lastRequest=Date.now();
+  const token=randomBytes(32).toString('hex');let port=0,lastRequest=Date.now(),pendingRequests=0;
   const server=createServer(async(req,res)=>{
     const host=`127.0.0.1:${port}`;
     const json=(status:number,value:unknown)=>{res.writeHead(status,{'Content-Type':'application/json','Cache-Control':'no-store'});res.end(JSON.stringify(value));};
@@ -16,7 +17,7 @@ export async function listen(service:AvAService,webRoot:string,requestedPort=0):
     if(req.url==='/api'&&req.method==='POST'){
       const supplied=req.headers.authorization?.replace(/^Bearer /,'')??'';
       if(!/^[a-f0-9]{64}$/.test(supplied)||!timingSafeEqual(Buffer.from(supplied),Buffer.from(token))){json(401,{error:'Authentication required'});return;}
-      lastRequest=Date.now();
+      lastRequest=Date.now();pendingRequests++;
       try{
         const chunks:Buffer[]=[];let size=0;
         for await(const chunk of req){const bytes=Buffer.isBuffer(chunk)?chunk:Buffer.from(chunk);size+=bytes.length;if(size>12_500_000)throw new AvAError('BODY_TOO_LARGE','Request too large.');chunks.push(bytes);}
@@ -29,7 +30,7 @@ export async function listen(service:AvAService,webRoot:string,requestedPort=0):
         // A refusal AvA explains (409), a malformed request (400), or a failure of AvA itself (500), each said as such.
         const known=error instanceof AvAError,invalid=error instanceof ZodError||error instanceof SyntaxError;
         json(known?409:invalid?400:500,{error:error instanceof Error?error.message:'Request failed',code:known?error.code:invalid?'INVALID_REQUEST':'INTERNAL'});
-      }return;
+      }finally{pendingRequests--;lastRequest=Date.now();}return;
     }
     if(req.method!=='GET'){json(405,{error:'Method not allowed'});return;}
     let pathname:string;try{pathname=new URL(req.url??'/',`http://${host}`).pathname;}catch{json(400,{error:'Invalid URL'});return;}
@@ -44,7 +45,9 @@ export async function listen(service:AvAService,webRoot:string,requestedPort=0):
   await new Promise<void>((resolve,reject)=>{server.once('error',reject);server.listen(requestedPort,'127.0.0.1',resolve);});
   const addr=server.address();if(!addr||typeof addr==='string')throw new Error('No local address');port=addr.port;
   mkdirSync(service.dataRoot,{recursive:true});
-  const runtimeFile=join(service.dataRoot,'server.json');writeFileSync(runtimeFile,JSON.stringify({pid:process.pid,port,token,mode:service.mode}),{mode:0o600});
-  return {server,port,token,lastRequestAt:()=>lastRequest,async close(){await service.shutdown();await new Promise<void>(resolve=>server.close(()=>resolve()));try{const current=JSON.parse(readFileSync(runtimeFile,'utf8'));if(current.pid===process.pid&&current.token===token)unlinkSync(runtimeFile);}catch{/* Another owner may already have replaced the rendezvous. */}}};
+  const runtimeFile=join(service.dataRoot,'server.json');
+  try{writePrivateFile(runtimeFile,JSON.stringify({pid:process.pid,port,token,mode:service.mode}));}
+  catch(error){await new Promise<void>(resolve=>server.close(()=>resolve()));throw error;}
+  return {server,port,token,lastRequestAt:()=>pendingRequests?Date.now():lastRequest,async close(){await service.shutdown();await new Promise<void>(resolve=>server.close(()=>resolve()));try{const current=JSON.parse(readFileSync(runtimeFile,'utf8'));if(current.pid===process.pid&&current.token===token)unlinkSync(runtimeFile);}catch{/* Another owner may already have replaced the rendezvous. */}}};
 }
 function requireSeparator(){return process.platform==='win32'?'\\':'/';}

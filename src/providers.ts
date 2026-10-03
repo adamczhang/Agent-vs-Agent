@@ -1,11 +1,13 @@
-import { createAcpRuntime, createAgentRegistry, createFileSessionStore, type AcpxRuntime, type AcpRuntimeHandle } from 'acpx/runtime';
+import { createAcpRuntime, createAgentRegistry, createFileSessionStore, type AcpxRuntime, type AcpRuntimeHandle, type AcpRuntimeSessionUsage, type AcpRuntimeUsageBreakdown } from 'acpx/runtime';
 import { existsSync, mkdirSync, readFileSync,writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, isAbsolute, join, relative, resolve } from 'node:path';
 import { isInside, participantWorkspace } from './workspace.js';
 import { GATEWAY, gatewayKey, gatewayModels } from './gateway.js';
 import { installedCli, type InstalledCli } from './clis.js';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { CODEX_ISOLATION_FLAGS, codexMcpNames, disabledMcpNames } from './isolation.js';
+import { doctor,cliWarnings } from './doctor.js';
 import { AvAError, PROVIDERS, type AgentRequest, type AgentResult, type AgentUsage, type Provider, type ProviderConfig, type Seat } from './types.js';
 import type { ConfiguredParticipant, ParticipantFactory } from './activation.js';
 import type { ProcessLedger } from './census.js';
@@ -39,6 +41,8 @@ export class NativeFactory implements ParticipantFactory {
     return registry.inspect(provider);
   }
   list(){return PROVIDERS.map(provider=>({provider,inspection:this.inspect(adapterOf(provider))}));}
+  doctor(){return doctor(this.dataRoot,p=>this.inspect(p));}
+  cliWarnings(){return cliWarnings(p=>this.inspect(p));}
   private argv(provider:Provider){
     const inspected=this.inspect(adapterOf(provider));
     if(!inspected||inspected.launch.kind!=='installed')throw new AvAError('MISSING_PROVIDER',`${provider}: install the required CLI/ACP adapter first.`);
@@ -68,6 +72,7 @@ export class NativeFactory implements ParticipantFactory {
     // Codex (and the Gateway, which runs on it) and Claude Code run as the user's installed CLI, at the version the adapter needs.
     const cli=CODEX_HARNESS.has(config.provider)?await installedCli('codex'):config.provider==='claude'?await installedCli('claude'):undefined;
     const cwd=participantWorkspace(this.dataRoot,scope);mkdirSync(cwd,{recursive:true});
+    const mcpNames=CODEX_HARNESS.has(config.provider)?await codexMcpNames(cli!,cwd,{...process.env,...this.setups[config.provider]?.env},signal):[];
     // A Gateway model's catalog entry: its context window goes to Codex (which has no metadata for it) and its vision tag
     // says whether it takes images.
     const listed=config.provider==='vercel'?(await gatewayModels(this.dataRoot).catch(()=>[])).find(m=>m.id===config.model):undefined;
@@ -79,7 +84,7 @@ export class NativeFactory implements ParticipantFactory {
     const runtime=createAcpRuntime({cwd,sessionStore:createFileSessionStore({stateDir}),agentRegistry:createAgentRegistry({overrides:{[config.provider]:argv}}),
       permissionMode:'deny-all',nonInteractivePermissions:'deny',fs:false,terminal:false,timeoutMs:60_000,
       agentProcessEnv:participantEnvironment(config.provider,this.setups[config.provider]?.env,this.dataRoot,launchedWithInternet,
-        config.provider==='vercel'?{model:config.model,effort:config.effort?.value,key:gatewayKey(this.dataRoot)!.key,...(listed?.context?{context:listed.context}:{})}:undefined,cli),
+        config.provider==='vercel'?{model:config.model,effort:config.effort?.value,key:gatewayKey(this.dataRoot)!.key,...(listed?.context?{context:listed.context}:{})}:undefined,cli,mcpNames),
       processLifecycle:{onBeforeSpawn(){signal.throwIfAborted();},onSpawned(event){processes.add(event.pid);ledger?.spawned({pid:event.pid,...scope});signal.throwIfAborted();},onExit(event){processes.delete(event.pid);record(()=>ledger?.exited(event.pid));}},
     });
     let handle:AcpRuntimeHandle|undefined;
@@ -124,11 +129,16 @@ export class NativeFactory implements ParticipantFactory {
 }
 // gateway: for a Vercel AI Gateway agent, its model, effort and key (all fixed when it starts). cli: the installed CLI the
 // agent runs (Codex for Codex and the Gateway, Claude Code for Claude), from installedCli.
-export function participantEnvironment(provider:Provider,configured:Record<string,string>={},dataRoot?:string,internet=false,gateway?:{model:string;effort?:string;key:string;context?:number},cli?:Pick<InstalledCli,'command'|'args'|'path'>){
+export function participantEnvironment(provider:Provider,configured:Record<string,string>={},dataRoot?:string,internet=false,gateway?:{model:string;effort?:string;key:string;context?:number},cli?:Pick<InstalledCli,'command'|'args'|'path'>,discoveredMcp:string[]=[]){
   // Agents inherit the service's environment; the Gateway key goes only to a Gateway agent (set below), never another.
   const env:Record<string,string>={...configured,AVA_PARTICIPANT:'1',AI_GATEWAY_API_KEY:''};
   if(CODEX_HARNESS.has(provider)){
     const inherited=JSON.parse(configured.CODEX_CONFIG??process.env.CODEX_CONFIG??'{}') as Record<string,unknown>;
+    const names=disabledMcpNames(discoveredMcp);
+    // Drop session-supplied servers, then disable disk servers with leaf overrides. A new table containing only
+    // enabled:false lacks a transport and is invalid, even when disabled (especially for plugin-owned servers).
+    for(const key of Object.keys(inherited))if(key==='mcp_servers'||key.startsWith('mcp_servers.'))delete inherited[key];
+    for(const name of names)inherited[`mcp_servers.${name}.enabled`]=false;
     // Codex's web search runs inside Codex with no per-call approval, so it is set when the process starts:
     // "live" with the agent's internet switch on, "disabled" with it off. Commands in a Build session (workspace-write)
     // may reach the network on the same switch, to clone a repository or install packages.
@@ -144,8 +154,9 @@ export function participantEnvironment(provider:Provider,configured:Record<strin
       // the child process itself so it cannot boot the parent plugin first.
       if(!cli)throw new AvAError('MISSING_PROVIDER','Codex isn’t installed.');
       const dir=join(dataRoot,'wrappers');mkdirSync(dir,{recursive:true});
-      const wrapper=join(dir,process.platform==='win32'?'codex-child.cmd':'codex-child.sh');
-      const flags='--disable plugins --disable apps --disable remote_plugin --disable hooks';
+      const signature=createHash('sha256').update(JSON.stringify([cli,names])).digest('hex').slice(0,16);
+      const wrapper=join(dir,`codex-child-${signature}.${process.platform==='win32'?'cmd':'sh'}`);
+      const flags=CODEX_ISOLATION_FLAGS.join(' ')+names.map(name=>` -c mcp_servers.${name}.enabled=false`).join('');
       const quote=(s:string)=>'"'+s.replaceAll('%','%%')+'"';
       const shellQuote=(s:string)=>"'"+s.replaceAll("'","'\\''")+"'";
       const source=process.platform==='win32'?`@echo off\r\nsetlocal DisableDelayedExpansion\r\n${[cli.command,...cli.args].map(quote).join(' ')} ${flags} %*\r\n`:`#!/bin/sh\nexec ${[cli.command,...cli.args].map(shellQuote).join(' ')} ${flags} "$@"\n`;
@@ -154,7 +165,19 @@ export function participantEnvironment(provider:Provider,configured:Record<strin
     }
   }
   // Claude Code's adapter starts the CLI it is given (a native binary, or a .js entry with Node).
-  if(provider==='claude'&&cli)env.CLAUDE_CODE_EXECUTABLE=cli.path;
+  if(provider==='claude'&&cli){
+    if(!dataRoot)env.CLAUDE_CODE_EXECUTABLE=cli.path;
+    else{
+      const dir=join(dataRoot,'wrappers');mkdirSync(dir,{recursive:true});
+      const signature=createHash('sha256').update(JSON.stringify(cli)).digest('hex').slice(0,16);
+      const wrapper=join(dir,`claude-child-${signature}.mjs`);
+      // The SDK launches .mjs entries with Node. Keep stdio and exit status intact and use no shell.
+      // Strict MCP config keeps the adapter's own in-process MCP tools but excludes the user's servers.
+      const source=`import {spawn} from 'node:child_process';\nconst child=spawn(${JSON.stringify(cli.command)},[...${JSON.stringify(cli.args)},'--strict-mcp-config',...process.argv.slice(2)],{stdio:'inherit',windowsHide:true});\nchild.on('error',()=>{process.stderr.write('Claude Code failed to start.\\n');process.exitCode=1;});\nchild.on('exit',(code)=>{process.exitCode=code??1;});\nfor(const signal of ['SIGINT','SIGTERM'])process.on(signal,()=>child.kill(signal));\n`;
+      if(!existsSync(wrapper)||readFileSync(wrapper,'utf8')!==source)writeFileSync(wrapper,source,{mode:0o700});
+      env.CLAUDE_CODE_EXECUTABLE=wrapper;
+    }
+  }
   return env;
 }
 // workspace: while a Build run is active for this agent, the folder it may work in (its workspace, which holds its copy).
@@ -261,11 +284,14 @@ export class NativeParticipant implements ConfiguredParticipant {
   // The agent's latest usage report (for the room's context ring): its context window from usage_update events, and the
   // session's token totals and cost from its session record.
   private report?:AgentUsage;
+  private requestUsage?:Record<string,AcpRuntimeUsageBreakdown>;
   usage(){return this.report;}
-  noteSessionUsage(usage:{cumulative?:{inputTokens?:number;outputTokens?:number;cachedReadTokens?:number;totalTokens?:number};cost?:{amount?:number;currency?:string}}|undefined){
+  noteSessionUsage(usage:AcpRuntimeSessionUsage|undefined){
+    if(usage?.perRequest)this.requestUsage={...usage.perRequest};
     const c=usage?.cumulative;
-    if(!c&&!usage?.cost)return;
-    this.report={...this.report,...(c?{tokens:{input:c.inputTokens,output:c.outputTokens,cachedRead:c.cachedReadTokens,total:c.totalTokens}}:{}),...(usage?.cost?{cost:usage.cost}:{}),at:Date.now()};
+    const tokens=usage?.perRequest?sumUsage(Object.values(usage.perRequest)):c?sumUsage([c]):undefined;
+    if(!tokens&&!usage?.cost)return;
+    this.report={...this.report,...(tokens?{tokens}:{}),...(usage?.cost?{cost:usage.cost}:{}),at:Date.now()};
   }
   async setBuildAccess(on:boolean){
     const mode=this.bypass()?'agent-full-access':on?'workspace-write':'read-only';
@@ -280,6 +306,8 @@ export class NativeParticipant implements ConfiguredParticipant {
   }
   async request(request:AgentRequest):Promise<AgentResult>{
     request.signal.throwIfAborted();
+    const usageBefore=this.report?.tokens;
+    const requestsBefore=this.requestUsage;
     if(this.accepted.provider==='claude'&&!this.noticeShown){this.noticeShown=true;const notice=claudeSettingsNotice();if(notice)request.onEvent({type:'status',text:notice});}
     // Codex's sandbox follows the agent's state at this moment (bypass, a Build run or a Build 1:1 line, or neither), so
     // a permissions change mid-run applies from its next turn.
@@ -323,7 +351,9 @@ export class NativeParticipant implements ConfiguredParticipant {
         this.sessionId=currentId;
       }
       this.identitySealed=true;
-      return {status:result.status,text:messages.get(last)??'',stopReason:result.stopReason};
+      // ACPX's field named cumulative can be the latest turn, not a monotonic total. Its perRequest map is authoritative.
+      const usage=status.usage?.perRequest?requestUsageSince(requestsBefore,status.usage.perRequest):usageDelta(usageBefore,this.report?.tokens);
+      return {status:result.status,text:messages.get(last)??'',stopReason:result.stopReason,usage};
     }catch(error){
       await turn.cancel({reason:'request_failed'}).catch(()=>{});await turn.result.catch(()=>{});await drain.catch(()=>{});
       // The Gateway refusing the key reaches Codex as a 401: say what to do about it.
@@ -341,6 +371,29 @@ export class NativeParticipant implements ConfiguredParticipant {
     this.closeAttempt=(async()=>{try{await this.runtime.close({handle:this.handle,reason:'ava-close'});}finally{await this.runtime.shutdown();}})();
     return this.closeAttempt;
   }
+}
+function sumUsage(rows:AcpRuntimeUsageBreakdown[]):AgentUsage['tokens']{
+  if(!rows.length)return undefined;
+  const tokens:NonNullable<AgentUsage['tokens']>={};
+  for(const [out,key] of [['input','inputTokens'],['output','outputTokens'],['cachedRead','cachedReadTokens'],['total','totalTokens']] as const){
+    const values=rows.map(r=>r[key]);
+    if(values.every((n):n is number=>typeof n==='number'&&Number.isFinite(n)&&n>=0))tokens[out]=values.reduce((a,b)=>a+b,0);
+  }
+  return Object.keys(tokens).length?tokens:undefined;
+}
+export function requestUsageSince(before:Record<string,AcpRuntimeUsageBreakdown>|undefined,after:Record<string,AcpRuntimeUsageBreakdown>):AgentUsage['tokens']{
+  if(!before)return undefined;
+  return sumUsage(Object.entries(after).filter(([id])=>!Object.hasOwn(before,id)).map(([,usage])=>usage));
+}
+// Session totals include activation, direct messages, and earlier runs. Persist only this request's delta.
+// Missing baselines or a counter reset are unknown, not zero and not a negative token count.
+export function usageDelta(before:AgentUsage['tokens'],after:AgentUsage['tokens']):AgentUsage['tokens']{
+  const delta:NonNullable<AgentUsage['tokens']>={};
+  for(const key of ['input','output','cachedRead','total'] as const){
+    const a=before?.[key],b=after?.[key];
+    if(a!==undefined&&b!==undefined&&Number.isFinite(a)&&Number.isFinite(b)&&a>=0&&b>=a)delta[key]=b-a;
+  }
+  return Object.keys(delta).length?delta:undefined;
 }
 export function loadProviderSetups(dataRoot:string):Partial<Record<Provider,ProviderSetup>>{
   const file=join(dataRoot,'providers.json');if(!existsSync(file))return {};

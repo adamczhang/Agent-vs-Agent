@@ -7,6 +7,7 @@ import { execFile } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { AvAError } from './types.js';
+import { writePrivateFile } from './private-files.js';
 
 export const GATEWAY = {
   codexBaseUrl: 'https://ai-gateway.vercel.sh/codex/v1',
@@ -38,7 +39,7 @@ export function gatewayKeyStatus(dataRoot: string) {
 export function forgetGatewayKey(dataRoot: string) { rmSync(keyFile(dataRoot), { force: true }); }
 export function saveGatewayKey(dataRoot: string, key: string, meta: { name: string; budget: string; id?: string }) {
   const file = keyFile(dataRoot); mkdirSync(dirname(file), { recursive: true });
-  writeFileSync(file, JSON.stringify({ key, ...meta, createdAt: new Date().toISOString() }), { mode: 0o600 });
+  writePrivateFile(file, JSON.stringify({ key, ...meta, createdAt: new Date().toISOString() }), true);
 }
 // The key in an API response: the one string that looks like a Gateway key (a field named like one, or the vck_ prefix).
 export function findKey(value: unknown): string | undefined {

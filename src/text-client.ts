@@ -1,9 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import type { Menu } from './menus.js';
 import type { Pair,Seat } from './types.js';
+import { formatDoctor,type DoctorReport } from './doctor.js';
 
 export type Rpc=(method:string,params:unknown)=>Promise<unknown>;
-const SUBCOMMANDS=['cli1','cli2','start','status','reconcile'];
+const SUBCOMMANDS=['cli1','cli2','start','status','reconcile','doctor'];
 // Strict grammar for typed commands. hooks/route.mjs applies the same rule before routing, so no other text reaches a tool.
 export function normalizeCommand(command:string):string|null{
   const words=command.trim().split(/\s+/),sub=words[1]?.toLowerCase(),choice=words[2]?.toLowerCase();
@@ -18,11 +19,12 @@ export interface TextCommand{rpc:Rpc;thread:string;command:string;roomUrl(roomId
 export async function runCommand({rpc,thread,command:typed,roomUrl}:TextCommand):Promise<string>{
   // Every entry point (MCP tool, terminal, legacy hook request file) goes through the same strict grammar.
   const command=normalizeCommand(typed);
-  if(!command)throw new Error('Use /ava, /ava CLI1, /ava CLI2, /ava start, /ava status, or /ava reconcile (menu choices look like /ava CLI1 2).');
+  if(!command)throw new Error('Use /ava, /ava doctor, /ava CLI1, /ava CLI2, /ava start, /ava status, or /ava reconcile (menu choices look like /ava CLI1 2).');
   if(!/^[\w-]{1,200}$/.test(thread))throw new Error('Agent vs Agent could not identify this chat.');
-  const pair=await rpc('pair.create',{thread}) as Pair;
   const words=command.trim().split(/\s+/).slice(1),first=words[0]?.toLowerCase();
-  if(!first)return 'Agent vs Agent\n/ava CLI1 — configure and activate the first agent\n/ava CLI2 — configure and activate the second agent\n/ava start — open the room (agents not yet active can be activated there)\n/ava status — inspect the pair\n/ava reconcile — release a pair whose conversation needs attention';
+  if(!first)return 'Agent vs Agent\n/ava doctor — check installation, sign-in and Gateway credit (no model requests)\n/ava CLI1 — configure and activate the first agent\n/ava CLI2 — configure and activate the second agent\n/ava start — open the room (agents not yet active can be activated there)\n/ava status — inspect the pair\n/ava reconcile — release a pair whose conversation needs attention';
+  if(first==='doctor')return formatDoctor(await rpc('doctor',{}) as DoctorReport);
+  const pair=await rpc('pair.create',{thread}) as Pair;
   if(first==='status')return JSON.stringify(await rpc('pair.get',{pairId:pair.id}),null,2);
   if(first==='reconcile'){
     const view=await rpc('pair.get',{pairId:pair.id}) as Pair&{activeRun:{id:string;status:string}|null};

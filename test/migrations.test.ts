@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { copyFileSync, existsSync, readdirSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { Store, SCHEMA_VERSION } from '../src/store.js';
@@ -36,18 +36,25 @@ test('data written by a newer schema is refused and left untouched', () => {
   assert.throws(() => new Store(path), /written by a newer Agent vs Agent/);
   const check = new DatabaseSync(path, { readOnly: true }); assert.equal(version(check), SCHEMA_VERSION + 7); assert.deepEqual(tables(check), []); check.close();
 });
-// Uses a real pilot database when the (gitignored) private evidence is present on this machine.
-const pilotDir = join('pilot-evidence', 'p2', 'private'), pilotDb = existsSync(pilotDir) ? readdirSync(pilotDir).find(f => f.endsWith('.sqlite')) : undefined;
-test('a copy of a real pilot database migrates and stays readable through the service', { skip: pilotDb ? false : 'private pilot database not present' }, async () => {
-  const dir = tempDir('ava-mig-pilot-');
-  copyFileSync(join(pilotDir, pilotDb!), join(dir, 'ava.sqlite'));
+test('synthetic schema-v1 history migrates and stays readable through the service', async () => {
+  const dir = tempDir('ava-mig-v1-'), old = new DatabaseSync(join(dir, 'ava.sqlite'));
+  old.exec(readFileSync(new URL('./fixtures/schema-v1.sql', import.meta.url), 'utf8'));
+  assert.equal(version(old), 1);
+  assert.ok(!old.prepare('PRAGMA table_info(turns)').all().some(c => c.name === 'phase_id'));
+  old.close();
   const service = new AvAService(dir, new TestFactory(), 'simulation');
   try {
     assert.equal(version(service.store.db), SCHEMA_VERSION);
     const runId = String(service.store.db.prepare('SELECT id FROM runs').get()!.id);
     const view = await service.call('run.get', { runId }) as { messages: unknown[] };
     const exported = await service.call('run.export', { runId }) as { json: { messages: unknown[] }; markdown: string };
-    assert.equal(view.messages.length, 11); assert.equal(exported.json.messages.length, 11); assert.ok(exported.markdown.length > 0);
+    assert.equal(view.messages.length, 3); assert.equal(exported.json.messages.length, 3);
+    assert.match(exported.markdown, /Blue\./); assert.match(exported.markdown, /Green\./);
+    assert.deepEqual(service.store.db.prepare('SELECT text FROM messages ORDER BY seq').all().map(r => r.text), ['Choose a color.', 'Blue.', 'Green.']);
+    assert.equal(service.store.db.prepare('SELECT COUNT(*) n FROM deliveries').get()!.n, 2);
+    assert.equal(service.store.db.prepare('SELECT result FROM commands').get()!.result, '{"runId":"fixture-run"}');
+    assert.deepEqual(service.store.db.prepare('PRAGMA foreign_key_check').all(), []);
+    assert.equal(service.store.db.prepare('PRAGMA integrity_check').get()!.integrity_check, 'ok');
     assert.ok(((await service.call('runs.list', {})) as { runs: unknown[] }).runs.length === 1);
   } finally { await service.shutdown(); service.store.close(); }
 });

@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    env:
+      AVA_DATA_DIR: ${{ runner.temp }}\ava-ci-data
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run package -- --out "${{ runner.temp }}\ava-marketplace"
+      - name: Smoke test Codex plugin (no provider requests)
+        run: node --import tsx scripts/package-smoke.ts "${{ runner.temp }}\ava-marketplace\plugins\agent-vs-agent"
+      - name: Smoke test Claude Code plugin (no provider requests)
+        run: node --import tsx scripts/package-smoke.ts "${{ runner.temp }}\ava-marketplace\plugins\agent-vs-agent-claude"

@@ -28,7 +28,7 @@ export class Menus {
   // The menus table comes from schema migration 5. setPermissions applies the permissions choice (the service's).
   constructor(private store:Store,private activation:ActivationManager,private catalog:(provider:Provider,model:string,auth:ProviderConfig['auth'])=>Promise<Catalog>,
     private setPermissions:(pairId:string,seat:Seat,level:'ask'|'bypass')=>Promise<unknown>=async(pairId,seat,level)=>store.setSlotPermissions(pairId,seat,level),
-    private gateway?:GatewayMenus){}
+    private gateway?:GatewayMenus,private warnings?:()=>Promise<Partial<Record<Provider,string>>>){}
   private save(menu:Menu){this.store.db.prepare('INSERT INTO menus VALUES(?,?,?) ON CONFLICT(pair_id,seat) DO UPDATE SET data=excluded.data').run(menu.pairId,menu.seat,JSON.stringify(menu));return menu;}
   current(pairId:string,seat:Seat):Menu|undefined{const row=this.store.db.prepare('SELECT data FROM menus WHERE pair_id=? AND seat=?').get(pairId,seat);return row?JSON.parse(String(row.data)) as Menu:undefined;}
   private keyLine(){
@@ -39,6 +39,7 @@ export class Menus {
     const slot=this.store.pair(pairId).slots[seat],config=slot.config;
     let choices:MenuChoice[]=[],title='Settings',search=false;
     if(!config&&phase==='home')phase='provider';
+    const warnings=(phase==='home'||phase==='provider')?await this.warnings?.()??{}:{};
     if(phase==='provider'){title='Choose a CLI';choices=PROVIDERS.map(p=>({label:p==='vercel'?`${LABELS[p]} (hundreds of models; API key)`:LABELS[p],value:p}));}
     else if(phase==='home'&&config){
       const bypass=slot.permissions==='bypass',vercel=config.provider==='vercel';
@@ -97,6 +98,8 @@ export class Menus {
       }
     }
     const current=this.store.pair(pairId).slots[seat];if(current.generation!==slot.generation)throw new AvAError('STALE_MENU','Slot changed while the menu loaded. Open it again.');
+    if(phase==='provider')choices=choices.map(c=>{const warning=warnings[c.value==='vercel'?'codex':c.value as Provider];return {...c,label:c.label+(warning?` — ${warning}`:'')};});
+    else if(config&&warnings[config.provider==='vercel'?'codex':config.provider])title+=' — '+warnings[config.provider==='vercel'?'codex':config.provider];
     const id=randomUUID();
     const text=[`Agent vs Agent · ${seat.toUpperCase()}`,title,`Status: ${slot.state}`,...choices.map((c,i)=>`${i+1}. ${c.label}`),'B. Back    X. Cancel',`Reply: /ava ${seat.toUpperCase()} <number>`].join('\n');
     return this.save({id,pairId,seat,generation:slot.generation,phase,title,choices,text,...(Object.keys(context).length?{context}:{}),...(search?{search}:{})});

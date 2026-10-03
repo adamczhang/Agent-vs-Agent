@@ -25,26 +25,26 @@ if(process.argv.includes('--mcp')){
   const server=new McpServer({name:'agent-vs-agent',version:packageVersion});
   const reply=(value:unknown)=>({content:[{type:'text' as const,text:JSON.stringify(value)}]});
   // Each host passes its chat identity: Codex its thread ID (from the prompt hook), Claude Code its session ID (the /ava
-  // skill passes claude-<session ID>). A missing thread falls back to the host process that launched this MCP server.
-  const hostThread=`session-${process.ppid}`,threadArg=z.string().min(1).max(200).optional();
+  // skill passes claude-<session ID>). Missing identities are refused, never shared by a host process.
+  const threadArg=z.string().trim().min(1).max(200);
   // The tool always receives "/ava …", and both hosts take /ava as typed. A host whose users had to type the command
   // under another name could set AVA_COMMAND_NAME, so menus and errors show what to type there; none does now.
   const commandName=process.env.AVA_COMMAND_NAME,forHost=(text:string)=>commandName?text.replace(/(?<![\w.\/\\-])\/ava(?![\w.\/\\-])/g,commandName):text;
   // Typed /ava commands arrive here: from the Codex prompt hook, or from the Claude Code /ava skill.
-  server.registerTool('ava_command',{description:'Run a typed Agent vs Agent control command (/ava, /ava CLI1 [choice], /ava CLI2 [choice], /ava start, /ava status, /ava reconcile) for this chat and return the text to show. Opening menus sends no model prompt; choosing "Activate and verify" sends one short access check. Omit thread in Claude Code.',inputSchema:{thread:threadArg,command:z.string().min(1).max(40)}},async({thread=hostThread,command})=>{
+  server.registerTool('ava_command',{description:'Run a typed Agent vs Agent control command for this chat and return the text to show. Always pass the chat identity: Codex thread ID or claude-<session ID>. Opening menus sends no model prompt; choosing "Activate and verify" sends one short access check.',inputSchema:{thread:threadArg,command:z.string().min(1).max(40)}},async({thread,command})=>{
     const normalized=normalizeCommand(command);
-    if(!normalized)return reply({error:forHost('Not an Agent vs Agent command. Use /ava, /ava CLI1, /ava CLI2, /ava start, /ava status, or /ava reconcile.')});
+    if(!normalized)return reply({error:forHost('Not an Agent vs Agent command. Use /ava, /ava doctor, /ava CLI1, /ava CLI2, /ava start, /ava status, or /ava reconcile.')});
     try{
       const text=await runCommand({rpc:(method,params)=>rpc(method,params),thread,command:normalized,roomUrl:roomId=>'http://127.0.0.1:'+address.port+'/#token='+address.token+'&room='+roomId});
       return {content:[{type:'text' as const,text:forHost(text)}]};
     }catch(error){throw new Error(forHost(error instanceof Error?error.message:String(error)));}
   });
   server.registerTool('ava_providers',{description:'Inspect installed AvA CLI providers without starting model work.',inputSchema:{}},async()=>reply(await rpc('providers.list',{})));
-  server.registerTool('ava_activation_menu',{description:'Open the CLI1 or CLI2 activation menu for this chat. Does not send a model prompt.',inputSchema:{thread:threadArg,seat:z.enum(['cli1','cli2'])}},async({thread=hostThread,seat})=>{
+  server.registerTool('ava_activation_menu',{description:'Open the CLI1 or CLI2 activation menu for this chat. Does not send a model prompt.',inputSchema:{thread:threadArg,seat:z.enum(['cli1','cli2'])}},async({thread,seat})=>{
     const pair=await rpc<Pair>('pair.create',{thread});return reply(await rpc('menu.show',{pairId:pair.id,seat}));
   });
   server.registerTool('ava_choose',{description:'Apply an exact choice from the displayed activation menu. Activate and verify sends one short model-access probe.',inputSchema:{pairId:z.string(),seat:z.enum(['cli1','cli2']),menuId:z.string(),choice:z.string()}},async args=>reply(await rpc('menu.choose',args)));
-  server.registerTool('ava_start',{description:'Open the GUI room for this chat; agents that are not yet active can be activated there. Refocusing an existing room sends no model work.',inputSchema:{thread:threadArg}},async({thread=hostThread})=>{
+  server.registerTool('ava_start',{description:'Open the GUI room for this chat; agents that are not yet active can be activated there. Refocusing an existing room sends no model work.',inputSchema:{thread:threadArg}},async({thread})=>{
     const pair=await rpc<Pair>('pair.create',{thread});
     const prepared=await rpc<{ticket?:string;roomId?:string}>('room.prepare',{pairId:pair.id});
     const opened=prepared.roomId?prepared:await rpc<{roomId:string}>('room.open',{ticket:prepared.ticket});

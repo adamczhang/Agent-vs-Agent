@@ -1,7 +1,7 @@
 ---
 name: ava
-description: Agent vs Agent control command, typed by the user as /ava (CLI1, CLI2, start, status, reconcile). Same commands as in Codex.
-argument-hint: "[CLI1|CLI2 [choice] | start | status | reconcile]"
+description: Agent vs Agent control command, typed by the user as /ava (doctor, CLI1, CLI2, start, status, reconcile). Same commands as in Codex.
+argument-hint: "[doctor | CLI1|CLI2 [choice] | start | status | reconcile]"
 allowed-tools: mcp__plugin_agent-vs-agent_ava__ava_command
 disable-model-invocation: true
 ---

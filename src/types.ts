@@ -71,7 +71,7 @@ export interface AgentRequest {
   attachments?: Array<{ mediaType: string; data: string }>;
   onStarted(): void; onEvent(event: Activity): void;
 }
-export interface AgentResult { status: 'completed' | 'cancelled'; text: string; stopReason?: string }
+export interface AgentResult { status: 'completed' | 'cancelled'; text: string; stopReason?: string; usage?: AgentUsage['tokens'] }
 // What an agent last reported about its context window (ACP usage_update: tokens in use of the model's window) and this
 // session's token totals and cost (its session record), plus, for the Vercel AI Gateway, the key's credit. Fields an
 // agent doesn't report are absent, never zero.

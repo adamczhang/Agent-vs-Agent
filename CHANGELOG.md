@@ -2,6 +2,21 @@
 
 All notable changes to Agent vs Agent. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.1.2](https://github.com/adamczhang/Agent-vs-Agent/releases/tag/v0.1.2) - 2026-10-02
+
+- Refreshed banner and plugin artwork, with the same new logo used in the listing and composer, plus clearer README wording.
+- A paced Debate that reaches its deadline finishes as `duration_reached`, even when its wake or per-turn timer runs before the deadline callback.
+- Token reports use the adapters' per-request records, including when their field named cumulative contains only the latest turn; smaller replies no longer make Stats unavailable.
+- Windows / Node 24 CI builds and tests both plugins without provider requests.
+- Migration tests use a committed synthetic schema-v1 fixture, so a clean checkout runs every test.
+- Agent launches exclude inherited MCP servers: Codex disables configured servers before startup, and Claude Code uses strict MCP configuration. The installed host profiles are unchanged.
+- Build project preparation runs in a worker so the room stays responsive; conflicting pair changes wait until preparation finishes.
+- Windows secret files and the rendezvous token get owner-only ACLs before secret bytes are written. Existing Gateway keys are protected when the service starts.
+- Stats uses reported per-request input/output tokens for Codex, Claude Code and Gateway agents. Only Grok Build and Antigravity use labeled estimates; missing historical reports stay unavailable.
+- Chat-scoped MCP tools require a chat identity instead of falling back to a pair shared by the host process.
+- `/ava` shows help without creating a pair. `/ava doctor` checks CLI installation, version and supported sign-in status plus Gateway credit, with no model requests; activation menus flag required updates. Both hosts support the command. The changed Codex hook requires the user's review when installed.
+- Contributor and security guides, issue and pull-request templates, and refreshed usage documentation. The owner confirmed retaining the existing banner and icon; artwork remains excluded from the MIT license.
+
 ## [0.1.1](https://github.com/adamczhang/Agent-vs-Agent/releases/tag/v0.1.1) - 2026-10-02
 
 ### Changed

@@ -12,7 +12,7 @@ They are separate folders because Claude Code auto-loads `hooks/hooks.json` and 
 
 - **Codex:** a `UserPromptSubmit` hook validates a typed `/ava …` and tells Codex to call `ava_command` with the chat's thread ID.
 - **Claude Code:** the same `/ava` commands, from a plugin skill named `ava` (`skills/ava/SKILL.md`). A plugin skill answers to its bare name unless another command claims it, and its full name `/agent-vs-agent:ava` always works.
-  - The skill passes `/ava $ARGUMENTS` to `ava_command` with thread `claude-${CLAUDE_SESSION_ID}`, so each Claude Code conversation has its own pair, as each Codex chat does, and resuming it brings the pair back. The operating skill passes the same thread to the read-only tools. A call with no thread (an older wrapper) falls back to `session-<parent PID>`.
+  - The skill passes `/ava $ARGUMENTS` to `ava_command` with thread `claude-${CLAUDE_SESSION_ID}`, so each Claude Code conversation has its own pair, as each Codex chat does, and resuming it brings the pair back. The operating skill passes the same thread to the read-only tools. A call without a chat identity is refused; both wrappers supply it.
   - `allowed-tools` pre-approves only that tool, only during that turn. `disable-model-invocation` keeps Claude from running the skill itself.
   - Menus read `/ava …` in both hosts. The server still supports `AVA_COMMAND_NAME` for a host that needs another name, but none sets it.
 
@@ -25,7 +25,7 @@ Not AppData: packaged Windows apps such as the Claude desktop app redirect AppDa
 
 `npm run serve` (`--standalone`) is the exception: without `AVA_DATA_DIR` it uses `.ava-serve` in the checkout, so a development server never opens the shared pool.
 
-Every host therefore resolves the same folder. `ensureService` finds or starts the single owner there: whichever plugin starts it, the others connect to it, and the owner lock keeps it to one. Pairs stay per chat (Codex thread ID, or `session-<ppid>` in Claude Code); runs, History, search, and Stats are pool-wide. The folder is outside AppData because MSIX apps (the Claude desktop app) redirect AppData writes into private storage. `scripts/shared-pool-check.ts` runs both packaged plugins against one folder.
+Every host therefore resolves the same folder. `ensureService` finds or starts the single owner there: whichever plugin starts it, the others connect to it, and the owner lock keeps it to one. Pairs stay per chat (Codex thread ID, or `claude-<session ID>` in Claude Code); runs, History, search, and Stats are pool-wide. The folder is outside AppData because MSIX apps (the Claude desktop app) redirect AppData writes into private storage. `scripts/shared-pool-check.ts` runs both packaged plugins against one folder.
 
 ## Threads and 1:1 lines
 
@@ -69,7 +69,7 @@ Every host therefore resolves the same folder. `ensureService` finds or starts t
 
 **Folders (`src/workspace.ts`).**
 - `checkProject` accepts only an absolute, existing folder that is not a drive root and not AvA's data. A review needs one; a build may start without (`source=''`).
-- `copyProject` copies the working tree into `<workspace>/<folder>` for each seat. A git source contributes `git ls-files -co --exclude-standard` (uncommitted work in, ignored output out); otherwise everything except generated folders, capped at 20,000 files and 500 MB. `startProject` makes an empty folder instead. Either way the folder gets a baseline commit.
+- `prepareProject` runs enumeration, copying and baseline git commands in a worker, keeping the service responsive and refusing conflicting pair/history changes until it finishes. `copyProject` copies the working tree into `<workspace>/<folder>` for each seat. A git source contributes `git ls-files -co --exclude-standard` (uncommitted work in, ignored output out); otherwise everything except generated folders, capped at 20,000 files and 500 MB. `startProject` makes an empty folder instead. Either way the folder gets a baseline commit.
 - `folder` is derived from the request ID, so a retried start finds the same run (`previousStart`) and copies nothing twice. The file count is recorded in a `build_copied` event, outside the config.
 - The workspace is the agent's session folder (`participantWorkspace`, also used by `NativeFactory.open`), so the folder is right there for the agent with no new session. Anything a Build session's 1:1 lines set up (a cloned repository) sits beside it.
 
@@ -104,6 +104,8 @@ Every host therefore resolves the same folder. `ensureService` finds or starts t
 
 ## Activation in the room, permissions, and new threads
 
+**Diagnostics.** Bare `/ava` returns help without creating a pair. `/ava doctor` checks installed versions and documented login-status commands, and reads Gateway credit without a model call. Unknown versions or unsupported sign-in checks stay unknown. The activation menu flags missing or outdated required CLIs before discovery. An in-flight HTTP request keeps the service busy so a slow diagnostic cannot trigger idle shutdown.
+
 **Activation.** The room opens whether or not its agents are active; `room.prepare` and `room.open` only bind the opening to the slot generations (`STALE_TICKET`).
 - Each agent pane shows **Activate** in place of its name until the agent is ready, then the name itself opens setup.
 - Setup is the same menu the hosts print for `/ava CLI1` (`menu.show` / `menu.choose`, `src/menus.ts`), shown as text in `ui/agent-setup.tsx`. Each numbered line is a button, typed numbers work, and B goes back. Closing the window cancels nothing.
@@ -124,8 +126,8 @@ AvA drives the user's own installed CLIs for every provider. Grok Build and Anti
 
 - **Finding them:** `findOnPath` looks for `codex` or `claude` on PATH. `launchOf` starts a native executable directly. An npm shim (`.cmd`, `.ps1` or a script) is resolved to the package's own entry file, which runs with Node, because a `.cmd` can't start without a shell.
 - **Versions:** `installedCli` reads `--version` once per file and requires each adapter's own minimum: Codex 0.159.1 (codex-acp depends on `@openai/codex ^0.159.1`) and Claude Code 2.1.286 (the Agent SDK's `claudeCodeVersion`). `test/clis.test.ts` keeps `MINIMUM` equal to those package fields. A missing CLI is `MISSING_PROVIDER` and an old one is `PROVIDER_TOO_OLD`, each with the install or update command.
-- **Codex** (and the Gateway, which runs on it): the generated launcher (`<data>/wrappers/codex-child.cmd`, `CODEX_PATH`) starts the installed Codex with `--disable plugins --disable apps --disable remote_plugin --disable hooks`. Without an installed Codex, `participantEnvironment` refuses rather than let the adapter fall back to a copy.
-- **Claude Code:** `CLAUDE_CODE_EXECUTABLE` names the installed binary or `.js` entry; the SDK runs a `.js` path with Node.
+- **Codex** (and the Gateway, which runs on it): the generated launcher (`<data>/wrappers/codex-child-<signature>.cmd`, `CODEX_PATH`) starts the installed Codex with `--disable plugins --disable apps --disable remote_plugin --disable hooks`. MCP discovery uses those same switches; every remaining disk server is disabled with a leaf config override at process startup, and session MCP overrides are removed. Discovery failure refuses startup. Without an installed Codex, `participantEnvironment` refuses rather than let the adapter fall back to a copy.
+- **Claude Code:** `CLAUDE_CODE_EXECUTABLE` names a child `.mjs` launcher that runs the installed CLI with `--strict-mcp-config`. Only the adapter-supplied MCP configuration is loaded; the host profile is unchanged.
 - **Packaging:** `scripts/package.ts` removes the adapters' platform packages (`@openai/codex-<platform>`, `@anthropic-ai/claude-agent-sdk-<platform>`) wherever npm placed them, and `package-smoke.ts` checks none ship. The plugin is about 76 MB. `npm run package -- --out <dir>` builds a staging copy, because the Claude desktop app runs the plugin straight from `release/marketplace`.
 - **Activation evidence** names the CLI and version used (`Installed codex 0.159.3.`).
 ## Vercel AI Gateway (fifth provider)
@@ -143,7 +145,7 @@ AvA drives the user's own installed CLIs for every provider. Grok Build and Anti
 - **Efforts:** named efforts are filtered to the values Codex accepts. A token budget or an on/off switch becomes low, medium and high.
 - **Menu:** the menu's model phase has a `context` (`maker`, `page`, `query`): makers by size, then a maker's models newest first, 20 per page, or a search (`menu.search`, up to 40 results; the room shows a search box when `menu.search` is true). B from a maker or a search returns to the makers.
 
-**Key.** `gatewayKey`: `AI_GATEWAY_API_KEY` from the environment, else `<data>/secrets/ai-gateway.json`. The file is written with mode 0600, which Windows ignores: there it is protected only by the data folder's own permissions, so keep that folder somewhere only you can read. Menus and RPCs see only `gatewayKeyStatus` (source, last four characters, budget).
+**Key.** `gatewayKey`: `AI_GATEWAY_API_KEY` from the environment, else `<data>/secrets/ai-gateway.json`. Before writing secret bytes, `private-files.ts` gives `secrets/`, the key and `server.json` an explicit current-user-only Windows ACL with inheritance disabled (0700 directories / 0600 files on other platforms). Service startup also secures an existing Gateway key. Failure refuses the write; linked private paths are refused. Menus and RPCs see only `gatewayKeyStatus` (source, last four characters, budget).
 - The menu's **Gateway key** page can create one: `vercel ai-gateway api-keys create --name agent-vs-agent --limit <25|100> --refresh-period monthly --non-interactive` (fixed arguments, run through the user's Vercel CLI login). It reads the key from the output.
 - `src/gateway-key.ts` (`npm run gateway-key -- …`, shipped as `dist/src/gateway-key.js`) stores, creates, checks or forgets the key from a terminal. It checks against `/v1/credits`, which uses no model.
 - The Vercel CLI's own login token is refused by the Gateway (checked: 401), so a key is required.
@@ -153,7 +155,8 @@ AvA drives the user's own installed CLIs for every provider. Grok Build and Anti
 
 Each active agent's pane header has a ring (`ui/usage-ring.tsx`), after Claude's usage ring next to its model picker. Claude fills its ring with plan usage and shows the context window in the popover. The CLIs don't pass plan limits through ACP, and context is what changes during a run, so AvA's ring fills with **context**.
 
-- **Source:** ACPX turns each ACP `usage_update` into a status event with `used` and `size` (tokens in use, the model's window), plus `cost` when the agent reports one. `NativeParticipant` keeps the latest as its usage report instead of logging it as an activity line. After each turn it adds the session's totals from `getStatus().usage` (cumulative input, output and cached tokens, and cost).
+- **Source:** ACPX turns each ACP `usage_update` into a status event with `used` and `size` (tokens in use, the model's window), plus `cost` when the agent reports one. `NativeParticipant` keeps the latest as its usage report instead of logging it as an activity line. Session token totals are summed from `getStatus().usage.perRequest`; the field named `cumulative` can contain only the latest turn (verified for both Codex and Claude Code).
+- **Stats:** each settled request saves the new entries in the provider's per-request usage map as a `usage_reported` event. This excludes activation, 1:1 messages and earlier prompts without guessing from output length. For runtimes without that map, monotonic before/after totals are a fallback; missing baselines or reset counters stay unknown. Stats sums the saved request reports across runs; only Grok Build and Antigravity use character estimates.
 - **Seen live:** Claude Code reported 35.2k of a 1M window, with a cost estimate at API prices. Codex reported 17.1k of 828.4k. Grok Build and Antigravity send no usage updates.
 - **Room:** `pairView.usage[seat]` is the live agent's report (`null` before the first, or when the agent isn't the slot's current session). For a Gateway agent it adds the key's credit (`gatewayCredit`: `GET /v1/credits`, read in the background at most once a minute, never on the polling path).
 - **Plan limits aren't available:** Claude Code attaches its rate-limit info to `usage_update` `_meta`, which ACPX drops; Codex keeps its limits for `/status`. AvA doesn't read the users' credentials to fetch them, so the popover says where to look.
@@ -234,9 +237,6 @@ Known and accepted in 0.1.x, deliberately or for later. Fixes are planned in the
 - **Build commands aren't confined.** The Build gate checks the paths a tool request names, not what a command does: a command runs in the agent's copy but can read and write anywhere the user can. Only Codex runs commands in its own sandbox. For the other agents the internet switch governs web tools, not a command's network access (`curl`, `git clone`). Under **bypass** everything is allowed.
 - **Claude Code's own settings come first.** Allow rules or a permissive `defaultMode` in the user's Claude Code settings approve tools before AvA's gate is asked, and ACPX can't turn those settings off for one session. The agent's screen says so once.
 - **Leftover processes are found by process tree and start time.** A process that left the tree (started through a service or re-parented by a launcher) isn't found or stopped. A server listening on the port an agent named is kept even if something outside its tree started it during the run.
-- **The Build copy is synchronous.** Copying a large project (up to 20,000 files or 500 MB) holds the service until it finishes; other requests wait.
-- **Codex agents inherit your own MCP servers.** Agents start with plugins, apps and hooks off, but MCP servers configured in your Codex `config.toml` (say `node_repl`) still start with them.
-- **Windows file permissions.** Files AvA writes with mode 0600 (`server.json`, the Gateway key) are protected on Windows only by the data folder's own permissions.
 - **CLI versions.** Codex and Claude Code must meet the adapters' minimum versions; AvA refuses an older one with the update command rather than fall back. Moving to a newer adapter can raise the minimum.
 - **Gateway models.** Model and effort are fixed when the agent starts. Some models answer only in their reasoning through the Codex agent and fail activation (seen: Kimi K2.6, K2.7 Code). Codex's warning about a model it has no metadata for is shown as a status line.
 - **No automatic crash recovery.** A run interrupted by a crash needs the user to release it (see Recovery); nothing is resent.

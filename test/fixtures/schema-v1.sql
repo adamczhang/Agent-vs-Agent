@@ -1,0 +1,20 @@
+-- Synthetic, frozen schema-v1 history; never derived from private data.
+PRAGMA user_version=1;
+CREATE TABLE pairs(id TEXT PRIMARY KEY, thread TEXT NOT NULL UNIQUE, data TEXT NOT NULL);
+CREATE TABLE runs(id TEXT PRIMARY KEY, pair_id TEXT NOT NULL REFERENCES pairs(id), data TEXT NOT NULL);
+CREATE TABLE commands(key TEXT PRIMARY KEY, hash TEXT NOT NULL, result TEXT NOT NULL);
+CREATE TABLE messages(seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT UNIQUE NOT NULL, run_id TEXT NOT NULL REFERENCES runs(id), sender TEXT NOT NULL, text TEXT NOT NULL, state TEXT NOT NULL, turn_id TEXT);
+CREATE TABLE turns(id TEXT PRIMARY KEY, run_id TEXT NOT NULL, seat TEXT NOT NULL, inputs TEXT NOT NULL, status TEXT NOT NULL, text TEXT NOT NULL, error TEXT);
+CREATE TABLE deliveries(run_id TEXT NOT NULL, seat TEXT NOT NULL, message_id TEXT NOT NULL, turn_id TEXT NOT NULL, PRIMARY KEY(run_id,seat,message_id));
+CREATE TABLE events(seq INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL, type TEXT NOT NULL, data TEXT NOT NULL, time TEXT NOT NULL);
+INSERT INTO pairs VALUES('fixture-pair','fixture-thread','{"id":"fixture-pair","thread":"fixture-thread","activeRunId":null,"lastRunId":"fixture-run","slots":{"cli1":{"seat":"cli1","generation":1,"state":"empty","config":null,"sessionId":null,"verifiedAt":null,"error":null},"cli2":{"seat":"cli2","generation":1,"state":"empty","config":null,"sessionId":null,"verifiedAt":null,"error":null}}}');
+INSERT INTO runs VALUES('fixture-run','fixture-pair','{"id":"fixture-run","pairId":"fixture-pair","status":"completed","config":{"topic":"Choose a color.","instructions":{"cli1":"","cli2":""},"stopWhen":{"cli1":"","cli2":""},"completion":"both","durationMs":60000,"maxRequests":2,"perTurnMs":30000,"paceMs":0,"lead":"cli1"},"generations":{"cli1":1,"cli2":1},"sessions":{"cli1":"fixture-a","cli2":"fixture-b"},"requests":2,"elapsedMs":1000,"nextSeat":"cli1","stopFlags":{"cli1":true,"cli2":true},"reason":"both_stopped"}');
+INSERT INTO commands VALUES('fixture-command','fixture-hash','{"runId":"fixture-run"}');
+INSERT INTO messages VALUES(1,'prompt','fixture-run','user','Choose a color.','admitted',NULL);
+INSERT INTO messages VALUES(2,'answer-a','fixture-run','cli1','Blue.','committed','turn-a');
+INSERT INTO messages VALUES(3,'answer-b','fixture-run','cli2','Green.','committed','turn-b');
+INSERT INTO turns VALUES('turn-a','fixture-run','cli1','["prompt"]','completed','Blue.',NULL);
+INSERT INTO turns VALUES('turn-b','fixture-run','cli2','["prompt"]','completed','Green.',NULL);
+INSERT INTO deliveries VALUES('fixture-run','cli1','prompt','turn-a');
+INSERT INTO deliveries VALUES('fixture-run','cli2','prompt','turn-b');
+INSERT INTO events VALUES(1,'fixture-run','run.completed','{"reason":"both_stopped"}','2026-01-01T00:00:01.000Z');

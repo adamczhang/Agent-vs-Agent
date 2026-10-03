@@ -16,20 +16,20 @@ export function StatsView({ stats, names, loading }: { stats: ThreadStats | null
     { label: 'Agents in parallel', value: String(stats.maxParallel), sub: `of ${stats.agents} · ${stats.processesSpawned ? `${stats.processesSpawned} processes spawned` : 'no processes recorded'}` },
     { label: 'First token', value: ms(stats.avgFirstActivityMs), sub: 'average, to first visible activity' },
     { label: 'Reply time', value: ms(stats.avgDurationMs), sub: `average over ${completed} ${completed === 1 ? 'reply' : 'replies'}` },
-    { label: 'Output speed', value: stats.estimatedTokensPerSec === null ? '—' : `${num(stats.estimatedTokensPerSec)} tok/s`, sub: 'estimated, characters ÷ 4' },
+    { label: 'Output speed', value: stats.tokensPerSec === null ? '—' : `${num(stats.tokensPerSec)} tok/s`, sub: stats.tokensEstimated ? 'includes estimates (characters ÷ 4)' : 'from provider reports, when available' },
   ];
   const timed = stats.turns.filter((t): t is TurnStat & { prompt: number; startMs: number; durationMs: number } => t.startMs !== null && t.durationMs !== null);
   const span = Math.max(1, ...timed.map(t => t.startMs + t.durationMs));
   const multi = stats.prompts > 1;
   const label = (t: TurnStat & { prompt: number }) => `${multi ? `P${t.prompt} · ` : ''}${seatName(t.seat)} · ${t.phase === 'paired' ? 'opening' : 'reply'}`;
-  const detail = (t: TurnStat) => `started ${ms(t.startMs)} in · first activity after ${ms(t.firstActivityMs)} · finished in ${ms(t.durationMs)} · ${num(t.outputChars)} characters (≈${num(Math.round(t.outputChars / 4))} tokens)${t.charsPerSec ? ` · ≈${num(t.charsPerSec / 4)} tok/s` : ''} · ${t.status}`;
+  const detail = (t: TurnStat) => `started ${ms(t.startMs)} in · first activity after ${ms(t.firstActivityMs)} · finished in ${ms(t.durationMs)} · ${num(t.outputChars)} characters · ${t.tokenSource === 'estimated' ? '≈' : ''}${num(t.outputTokens)} tokens${t.tokensPerSec !== null ? ` · ${num(t.tokensPerSec)} tok/s` : ''} · ${t.status}`;
   return <div className="stats">
     <div className="stat-row">{tiles.map(t => <div className="stat" key={t.label}><span className="stat-label">{t.label}</span><strong className="stat-value">{t.value}</strong><span className="stat-sub">{t.sub}</span></div>)}</div>
     <section className="stats-section">
       <h2>By agent</h2>
       <table className="stats-table">
         <thead><tr><th scope="col">Agent</th><th scope="col">Requests</th><th scope="col">First token</th><th scope="col">Reply time</th><th scope="col">Output</th><th scope="col">Speed</th></tr></thead>
-        <tbody>{stats.seats.map(s => <tr key={s.seat}><th scope="row"><span className="swatch" style={{ background: SEAT_COLOR[s.seat] }} />{seatName(s.seat)}<small>{s.model ?? 'model not recorded'}</small></th><td>{s.completed}<small>{s.unsuccessful ? ` of ${s.requests}` : ''}</small></td><td>{ms(s.avgFirstActivityMs)}</td><td>{ms(s.avgDurationMs)}</td><td>≈{num(s.estimatedTokens)} tokens</td><td>{s.estimatedTokensPerSec === null ? '—' : `${num(s.estimatedTokensPerSec)} tok/s`}</td></tr>)}</tbody>
+        <tbody>{stats.seats.map(s => <tr key={s.seat}><th scope="row"><span className="swatch" style={{ background: SEAT_COLOR[s.seat] }} />{seatName(s.seat)}<small>{s.model ?? 'model not recorded'}</small></th><td>{s.completed}<small>{s.unsuccessful ? ` of ${s.requests}` : ''}</small></td><td>{ms(s.avgFirstActivityMs)}</td><td>{ms(s.avgDurationMs)}</td><td>{s.tokenSource === 'estimated' || s.tokenSource === 'mixed' ? '≈' : ''}{num(s.outputTokens)} tokens<small>{s.tokenSource}{s.inputTokens !== null ? ` · ${num(s.inputTokens)} input` : ''}</small></td><td>{s.tokensPerSec === null ? '—' : `${num(s.tokensPerSec)} tok/s`}</td></tr>)}</tbody>
       </table>
     </section>
     <section className="stats-section">
@@ -45,10 +45,10 @@ export function StatsView({ stats, names, loading }: { stats: ThreadStats | null
       })}<div className="timeline-axis"><span /><span>0</span><span>{ms(span)}</span></div></div> : <p className="stats-note">No timed requests yet.</p>}
     </section>
     <details className="stats-section stats-details"><summary>Every request</summary>
-      <table className="stats-table"><thead><tr><th scope="col">#</th>{multi && <th scope="col">Prompt</th>}<th scope="col">Agent</th><th scope="col">Kind</th><th scope="col">Start</th><th scope="col">First token</th><th scope="col">Duration</th><th scope="col">Characters</th><th scope="col">≈ tok/s</th><th scope="col">Status</th></tr></thead>
-        <tbody>{stats.turns.map((t, i) => <tr key={t.turnId}><td>{i + 1}</td>{multi && <td>{t.prompt}</td>}<td>{seatName(t.seat)}</td><td>{t.phase === 'paired' ? 'opening' : t.phase}</td><td>{ms(t.startMs)}</td><td>{ms(t.firstActivityMs)}</td><td>{ms(t.durationMs)}</td><td>{num(t.outputChars)}</td><td>{t.charsPerSec ? num(t.charsPerSec / 4) : '—'}</td><td>{t.status}</td></tr>)}</tbody>
+      <table className="stats-table"><thead><tr><th scope="col">#</th>{multi && <th scope="col">Prompt</th>}<th scope="col">Agent</th><th scope="col">Kind</th><th scope="col">Start</th><th scope="col">First token</th><th scope="col">Duration</th><th scope="col">Characters</th><th scope="col">tok/s</th><th scope="col">Status</th></tr></thead>
+        <tbody>{stats.turns.map((t, i) => <tr key={t.turnId}><td>{i + 1}</td>{multi && <td>{t.prompt}</td>}<td>{seatName(t.seat)}</td><td>{t.phase === 'paired' ? 'opening' : t.phase}</td><td>{ms(t.startMs)}</td><td>{ms(t.firstActivityMs)}</td><td>{ms(t.durationMs)}</td><td>{num(t.outputChars)}</td><td>{t.tokenSource === 'estimated' ? '≈' : ''}{num(t.tokensPerSec)}</td><td>{t.status}</td></tr>)}</tbody>
       </table>
     </details>
-    <p className="stats-note">Token figures are estimates (characters ÷ 4) because the agent CLIs don’t report token usage, and usage or cost isn’t available from them either. First token is the first activity a CLI exposed: thinking, a tool call, or text. Prompts are placed back to back, so time between your prompts isn’t counted. Everything comes from the saved event log, so past threads keep their stats.</p>
+    <p className="stats-note">Codex, Claude Code and Gateway token counts use saved provider reports. Only Grok Build and Antigravity use estimates (characters ÷ 4), marked ≈. Missing reports stay unavailable. First token is the first activity a CLI exposed: thinking, a tool call, or text. Prompts are placed back to back, so time between your prompts isn’t counted. Everything comes from the saved event log, so past threads keep their stats.</p>
   </div>;
 }

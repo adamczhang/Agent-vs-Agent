@@ -108,6 +108,25 @@ test('changes since the baseline list new, edited and deleted files, without tou
 const raw = (port: number, path: string, headers: Record<string, string>) => new Promise<number>((done, fail) => {
   request({ host: '127.0.0.1', port, path, headers }, res => { res.resume(); done(res.statusCode!); }).on('error', fail).end();
 });
+
+test('Build preparation leaves the event loop and health responsive, and locks conflicting pair changes',async()=>{
+  const service=new AvAService(tempDir('ava-copy-responsive-'),new TestFactory(),'simulation');
+  try{
+    const pair=await service.call('pair.create',{thread:'copy-responsive'}) as Pair;
+    for(const seat of ['cli1','cli2']){
+      await service.call('slot.configure',{pairId:pair.id,seat,config:{provider:'codex',model:'model',auth:'provider-login'}});
+      await service.call('slot.activate',{pairId:pair.id,seat});
+    }
+    let finished=false;
+    const copy=service.call('run.start',{pairId:pair.id,text:'Review',requestId:'async-copy',options:{mode:'build'},build:{kind:'review',path:project(false)}}).then(result=>{finished=true;return result;});
+    await new Promise<void>(resolve=>setImmediate(resolve));
+    assert.equal(finished,false,'copy and git work run off the service thread');
+    assert.equal((await service.call('health',{}) as {mode:string}).mode,'simulation');
+    await assert.rejects(service.call('history.clear',{requestId:'clear-during-copy'}),/being prepared/);
+    await assert.rejects(service.call('slot.cancel',{pairId:pair.id,seat:'cli1'}),/being prepared/);
+    await copy;
+  }finally{await service.shutdown();service.store.close();}
+});
 test('a preview serves an agent\'s copy on its own port, only through the room\'s link, and nothing outside the copy', async () => {
   const dir = tempDir('ava-site-'); mkdirSync(join(dir, 'dist', 'assets'), { recursive: true }); mkdirSync(join(dir, 'dist', '.git'));
   writeFileSync(join(dir, 'dist', 'index.html'), '<script src="/assets/app.js"></script>'); writeFileSync(join(dir, 'dist', 'assets', 'app.js'), '1');

@@ -19,6 +19,8 @@ const sharedDataDir=(JSON.parse(readFileSync(join(plugin,'package.json'),'utf8')
 const local=mkdtempSync(join(tmpdir(),'ava-pkg-localappdata-')),dataRoot=join(local,'AgentVsAgent');
 if(flag('--copy')){const file=join(plugin,'package.json'),runtime=JSON.parse(readFileSync(file,'utf8'));runtime.config={...runtime.config,dataDir:dataRoot};writeFileSync(file,JSON.stringify(runtime,null,2));}
 const env=Object.fromEntries(Object.entries({...process.env,LOCALAPPDATA:local,AVA_IDLE_TIMEOUT_MS:'1500',PLUGIN_ROOT:plugin,AVA_DATA_DIR:flag('--copy')?undefined:dataRoot}).filter((e):e is [string,string]=>e[1]!==undefined));
+// Diagnostic smoke checks must never consult the user's real Gateway key.
+env.AI_GATEWAY_API_KEY='';env.AVA_GATEWAY_KEY_DIR='';
 
 // 1. No file outside node_modules may point back into the development checkout.
 const walk=(dir:string):string[]=>readdirSync(dir,{withFileTypes:true}).flatMap(e=>e.name==='node_modules'?[]:e.isDirectory()?walk(join(dir,e.name)):[join(dir,e.name)]);
@@ -58,11 +60,18 @@ const client=new Client({name:'ava-package-smoke',version:'1'});
 await client.connect(new StdioClientTransport({command:process.execPath,args:[join(plugin,'dist','src','server.js'),'--mcp'],env,stderr:'pipe',cwd:tmpdir()}));
 const tools=(await client.listTools()).tools.map(t=>t.name);
 check('MCP tools include ava_command and ava_reconcile',tools.includes('ava_command')&&tools.includes('ava_reconcile'),tools);
+const help=await client.callTool({name:'ava_command',arguments:{thread:'pkg-smoke',command:'/ava'}});
+check('bare /ava returns concise help including doctor',(help.content as Array<{text?:string}>).some(c=>(c.text??'').includes('/ava doctor')));
+const diagnostics=await client.callTool({name:'ava_command',arguments:{thread:'pkg-smoke',command:'/ava doctor'}});
+check('/ava doctor works through this host wrapper without model work',!diagnostics.isError&&(diagnostics.content as Array<{text?:string}>).some(c=>/0 model requests/.test(c.text??'')&&/Vercel AI Gateway/.test(c.text??'')));
 const menu=await client.callTool({name:'ava_command',arguments:{thread:'pkg-smoke',command:'/ava CLI1'}});
 check('ava_command serves the CLI1 menu without model work',(menu.content as Array<{text?:string}>).some(c=>/Choose a CLI/.test(c.text??'')));
 check(`menus tell the user to reply with ${commandName}`,(menu.content as Array<{text?:string}>).some(c=>(c.text??'').includes(`Reply: ${commandName} CLI1 <number>`)));
 const sessionMenu=await client.callTool({name:'ava_command',arguments:{command:'/ava CLI2'}});
-check('ava_command without a thread falls back to a pair for this host process',(sessionMenu.content as Array<{text?:string}>).some(c=>/Choose a CLI/.test(c.text??'')));
+check('ava_command refuses a missing chat identity',sessionMenu.isError===true);
+for(const [name,args] of [['ava_start',{}],['ava_activation_menu',{seat:'cli1'}]] as const){
+  const missing=await client.callTool({name,arguments:args});check(`${name} refuses a missing chat identity`,missing.isError===true);
+}
 const server=existsSync(join(dataRoot,'server.json'))?JSON.parse(readFileSync(join(dataRoot,'server.json'),'utf8')):null;
 check(flag('--copy')?'data lives in the folder set by the plugin\'s config.dataDir':'data lives in the AVA_DATA_DIR override',!!server&&existsSync(join(dataRoot,'ava.sqlite')),{dataRoot});
 const health=server?await (await fetch(`http://127.0.0.1:${server.port}/api`,{method:'POST',headers:{Authorization:`Bearer ${server.token}`},body:JSON.stringify({method:'health',params:{}})})).json() as {result:{version:string;databaseVersion:number}}:null;

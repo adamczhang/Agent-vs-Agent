@@ -1,9 +1,9 @@
 {
   "name":"agent-vs-agent",
-  "version":"0.1.1",
+  "version":"0.1.2",
   "description":"Activate two CLI agents and run controlled conversations in a shared room.",
   "skills":"./skills/",
   "mcpServers":"./.mcp.json",
   "hooks":"./hooks/hooks.json",
-  "interface":{"displayName":"Agent vs Agent","shortDescription":"Two agents. One controlled conversation.","developerName":"Adam Zhang","websiteURL":"https://github.com/adamczhang/Agent-vs-Agent","brandColor":"#630385","logo":"./assets/logo.jpg","composerIcon":"./assets/composer-icon.png","defaultPrompt":["/ava CLI1","/ava CLI2","/ava start"]}
+  "interface":{"displayName":"Agent vs Agent","shortDescription":"Two agents. One controlled conversation.","developerName":"Adam Zhang","websiteURL":"https://github.com/adamczhang/Agent-vs-Agent","brandColor":"#630385","logo":"./assets/logo.jpg","composerIcon":"./assets/logo.jpg","defaultPrompt":["/ava CLI1","/ava CLI2","/ava start"]}
 }
