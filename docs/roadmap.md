@@ -259,7 +259,8 @@ The owner is going through the modes one at a time, Debate first. In their tests
 | G10 | The prompt builder: a guided Debate form (with hints that disappear as you type), simple Prompt and Build forms, saving to the library and editing saved prompts | offline | done |
 | G11 | Each debate is its own thread, kept with its ballot; the thread list shows the result | offline | done |
 | G12 | Delete one thread from history (a button shown on hover) | offline | done |
-| G13 | Publish v0.4.3 (0.4.0 to 0.4.3) | user | in progress |
+| G13 | Publish v0.4.3 (0.4.0 to 0.4.3) | user | done |
+| G14 | Install 0.4.3 in both hosts (the running 0.4.1 service steps aside for it once idle) | user | done |
 
 - **G1:** the agents still answer with stop_requested, but with rounds only a stop condition the operator wrote ends the debate early. An hour is the time limit's backstop, and the request limit is two per round plus the briefing.
 - **G2:** the template lives in `debate.json` beside `prompt.md`, so versions before it still read a debate prompt (as its topic alone). Internet is chosen per agent, so one agent can have the web and the other not. It's applied through each agent's own switch when the debate starts, because Codex and Grok Build restart to change it.
@@ -280,8 +281,29 @@ The owner is going through the modes one at a time, Debate first. In their tests
   - **The fall of Rome,** Claude Code for and Codex against: judged by Codex (its strongest model, max effort) in 5 minutes, 13/15 to 15/15, with 3 claims questioned.
   - **The run:** briefs were answered READY in under half a minute, and speeches averaged about 530 words.
   - **Evidence:** pilot-evidence/stage-d/g7-formal-debate-judge-live.json.
+- **G14:** both hosts run 0.4.3. The idle 0.4.1 service stepped aside on the first 0.4.3 call (the handover's first real use), and the library holds the ten formal debates. Codex couldn't move its old 0.4.1 folder aside while its open sessions use it; it loads 0.4.3 and drops the old folder after a restart.
 - **G9:** the CLIs can't separate thinking from writing, so the limit covers the whole speech: wall-clock time from the request to the answer. The request is cancelled at the limit; a settled cancel commits a forfeit message in that seat's place.
 - **G4:** 0.4.0 is installed in both hosts and verified: both smoke tests, both installed copies match, Codex's hook is trusted, and doctor answers through each. The service on AvA-Data is still 0.3.1, started by a Claude Code session opened at 7:03 PM, and new installs connect to the service already running. Closing that session didn't help: each host's heartbeat kept it from idling out. 0.4.1 (E14) adds the handover for future updates. With the owner's OK, the 0.3.1 service was stopped (Stop all, then its process), and 0.4.1 now serves AvA-Data: doctor shows Cursor, and the library has the ten debates (both old starters were unedited and were upgraded).
+
+## Phase P — Prompt mode (owner, 2026-10-04)
+
+The owner moved on from Debate to Prompt mode.
+- **What Prompt mode is for:** prompts that are short to write but intensive to answer, with one exact answer (challenges), and races, where the same kind of question is judged on speed.
+- **Runs and threads:** every run is its own thread. A new prompt clears context but keeps the same agents.
+- **Debate, aligned:** a judged debate stays in history, the agents stay loaded, and the next debate is a new thread.
+
+| ID | Item | Gate | Status |
+| --- | --- | --- | --- |
+| P1 | Resources becomes **Settings** (gear icon), at the right of the tools row | offline | done |
+| P2 | Answer keys for challenges and races: each agent's final ANSWER line checked, with a result card (answer, right or wrong, time, winner) | offline | done |
+| P3 | Ten built-in challenge and race prompts, every answer computed by program | offline | done |
+| P4 | One thread per Prompt run: fresh sessions, same agents | offline | done |
+| P5 | New threads without closing the agents: fresh sessions start beside the current ones (Prompt and Debate) | offline | done |
+| P6 | The Prompt builder: task, answer form and hidden expected answer; the library editor gets the answer key | offline | done |
+| P7 | Live check of the challenges and races with Codex and Claude Code | live | next |
+
+- **P3:** the logic puzzle was brute-forced to make sure it has exactly one solution, and the code-tracing answer was taken from running the code. The two earlier Prompt starters are retired (set 4) where unedited.
+- **P5:** before, the next thread closed and reactivated both agents, so they briefly showed as not active. Now each fresh session runs its readiness check beside the current one and takes over in one write. A fresh session that fails leaves the agent as it was.
 
 ## Phase D — reach (later; versions assigned when scope is accepted)
 

@@ -1,9 +1,10 @@
 import type { DebateSetup, SavedPrompt } from './prompt-types.js';
+import type { AnswerCheck } from './types.js';
 
 // Built-in Debate prompts (G8): formal motions, each side assigned, as in competitive debate. Every debater gets a private
 // brief (through its 1:1 line before the debate starts) with its strongest lines of argument, the evidence to find, and
 // what the other side will say. Motions are real trade-offs with evidence on both sides, so seven rounds hold up.
-export type Starter = Pick<SavedPrompt, 'id' | 'name' | 'mode' | 'buildKind' | 'text'> & { debate?: DebateSetup };
+export type Starter = Pick<SavedPrompt, 'id' | 'name' | 'mode' | 'buildKind' | 'text'> & { debate?: DebateSetup; check?: AnswerCheck };
 
 const debate = (proposition: string, opposition: string, internet = true, rounds = 7): DebateSetup =>
   ({ rounds, agents: { cli1: { stance: 'for', context: proposition, internet }, cli2: { stance: 'against', context: opposition, internet } } });

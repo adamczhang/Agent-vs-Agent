@@ -60,6 +60,8 @@ export interface RunConfig {
   // A formal debate's time limit per speech (thinking, searches and writing together). A speech that runs over is cut
   // off and forfeited, and the debate goes on.
   speechMs?: number;
+  // A Prompt run's answer key (owner, 2026-10-04): checked against each agent's final ANSWER line when both have answered.
+  check?: AnswerCheck;
   durationMs: number;
   maxRequests: number;
   perTurnMs: number;
@@ -75,7 +77,13 @@ export interface Run {
   participants?: Record<Seat, ProviderConfig>; createdAt?: string;
   // A formal debate's ballot from its judge (G7).
   judgment?: Judgment;
+  // A Prompt run's checked answers, when it had an answer key.
+  result?: PromptResult;
 }
+// Prompt mode's answer key: a challenge (a hard question with one exact answer) or a race (the same, judged on speed),
+// with the accepted answers. The agents never see it.
+export interface AnswerCheck { kind: 'challenge' | 'race'; answers: string[] }
+export interface PromptResult { kind: AnswerCheck['kind']; seats: Record<Seat, { answer: string | null; correct: boolean; ms: number | null }>; winner?: Seat }
 export type Stance = 'for' | 'against';
 export type JudgeProvider = 'claude' | 'codex';
 // The judge's three categories, each scored 1 to 5 for each debater (owner's criteria, 2026-10-03).
@@ -165,6 +173,8 @@ export function conversationConfig(topic: string, overrides: Partial<RunConfig> 
     if (overrides.durationMs === undefined) config.durationMs = 3_600_000;
   } else { delete config.rounds; if (config.completion === 'rounds') config.completion = 'either'; }
   if (benchmark) { delete config.stances; delete config.judge; delete config.speechMs; }
+  if (config.mode !== 'benchmark') delete config.check;
+  else if (config.check && (!config.check.answers.length || config.check.answers.some(a => !a.trim()))) throw new AvAError('INVALID_CONFIG', 'An answer key needs at least one answer.');
   if (config.speechMs !== undefined) {
     if (!config.stances) delete config.speechMs;
     else if (!Number.isFinite(config.speechMs) || config.speechMs < 30_000 || config.speechMs > 1_800_000) throw new AvAError('INVALID_CONFIG', 'A speech time limit must be from 30 seconds to 30 minutes.');

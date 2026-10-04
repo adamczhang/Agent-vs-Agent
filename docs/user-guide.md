@@ -96,7 +96,9 @@ Every debate runs like a competitive debate:
 
   They replace the earlier debate starters you never edited.
 - **A time per speech,** 2 minutes by default (Options, or a debate prompt), covers thinking, web searches and writing together. A speech that runs over is cut off and recorded as forfeited, the other side speaks next, and the judge counts the forfeit.
-- **One debate per thread.** Starting a debate after another in the same thread first gives both agents fresh sessions, so neither remembers the last one. Each debate stays in history as its own thread with its ballot, and the thread list shows the result ("Agent 2 won 14–10").
+- **One debate per thread.** A concluded, judged debate stays in history as its own thread, with its ballot, and the thread list shows the result ("Agent 2 won 14–10").
+  - **After it ends,** the agents stay loaded and Ready, and you can change either one.
+  - **The next debate** you run starts a new thread: both agents get fresh sessions (neither remembers the last debate) without being closed. Each fresh session starts beside the current one and takes over once it's ready.
 - **The Debate builder** (the third button in the sidebar, under the mode switch) sets a debate up step by step.
   - **The form:** the motion and its definitions, which side Agent 1 argues, a private brief for each side, internet, rounds and speech time. The grey hint in each box says what a good entry looks like and disappears as you type.
   - **Saving:** **Save** adds the debate to the prompt library, and **Save and load** also fills the room's composer and Options. **Start from** opens any saved debate to edit.
@@ -105,7 +107,7 @@ Every debate runs like a competitive debate:
 ## The room
 
 A white, three-part window:
-- **Left:** the mode switch and a three-button tools row (Prompt library, Resources, and the builder for the current mode). A faint divider separates these controls from Search and the thread list below.
+- **Left:** the mode switch and a three-button tools row (Prompt library, the builder for the current mode, and Settings). A faint divider separates these controls from Search and the thread list below.
 - **Upper panes:** each agent's own screen (thinking, tool use and output as its CLI exposes them). Drag the divider between the two agents to change their widths.
 - **Lower pane:** the shared channel, with the text box along the bottom edge. Drag the horizontal line above it up or down to give more space to the CLI screens or the lower pane. This also works in Stats and Results. Double-click a divider (or focus it and press Enter) to reset that split; arrow keys adjust it, with Shift for larger steps. Both proportions are remembered in this browser.
 
@@ -113,9 +115,15 @@ There is no third model acting as a relay. One message of yours goes to both age
 
 ### Modes
 
-Switched at the top of the sidebar. Each mode has its own thread and its own two agents in this room: switching to Build after a debate opens a clear Build screen, and switching back finds the debate as you left it, still running if it was, until you close it. A mode used for the first time starts with the same agent settings, ready for **Activate both**. Two modes with active agents use four agents, the default limit (Resources).
+Switched at the top of the sidebar. Each mode has its own thread and its own two agents in this room: switching to Build after a debate opens a clear Build screen, and switching back finds the debate as you left it, still running if it was, until you close it. A mode used for the first time starts with the same agent settings, ready for **Activate both**. Two modes with active agents use four agents, the default limit (Settings).
 
 - **Prompt:** one prompt goes to both agents at the same moment, exactly as you wrote it. Each answers once in plain text, shown with how long it took, and the run ends. **Stats** has the timing and speed. Tools follow each agent's permissions.
+  - **Challenges and races.** A challenge is short to write, takes real reasoning (about one to five minutes) and has one exact answer. A race is the same kind of question, judged on speed.
+    - **The answer key:** each has one, which the agents never see. They end with a line `ANSWER: …`, and when both have answered, AvA checks that line. Numbers are compared by value and fractions in lowest terms.
+    - **The result:** it appears below the answers, with each agent's final answer, right or wrong, and its time. The winner is the agent that got it right, or the faster one if both did.
+    - **Built in:** six challenges (domino tilings, a logic puzzle, tracing code, rising digits, a dice-triangle probability, a shortest route) and four races (trailing zeros, base seven, counting sevens, a day of the week). Every answer was computed by program.
+    - **The Prompt builder** (sidebar) sets up your own: the task, the answer form, and the expected answer, which stays hidden from the agents. A loaded prompt with a key shows **Answer key** beside the message box.
+  - **One thread per prompt.** Each Prompt run is its own thread. The next prompt gives both agents a fresh session (clean context) with the same settings. The agents stay loaded and **Ready** throughout, because each fresh session starts beside the current one before taking over.
 - **Debate:** the agents talk to each other. Prime each one privately with its 1:1 line (say "you are a CEO" and "you are a college student"), then give the shared topic. **Options → First to speak** picks who opens: Agent 1 (the default), Agent 2, or both independently at once. The choice is remembered in this browser and in saved presets. Your topic reaches both agents at the start: while Agent 1 writes its opening, Agent 2 reads the topic (it replies READY, which isn't posted; one extra short request) and then answers that opening. After the opening, agents alternate. Turns are asked to be short and conversational, in plain text, with no word count; any length or format you give in the topic comes first. A new shared message waits for the next turn; the next speaker answers first, then the other receives both the message and that answer. The room shows who is speaking, who is next, and how many prompts are queued.
 - **Build:** both agents build the same thing at the same moment, each in its own folder, and post a link to their app in the shared channel.
   - **One prompt per session,** with no messages while it runs. **New build session** (or Clear Session) starts the next one.
@@ -148,9 +156,9 @@ Two chips above the text box (**Codex 1:1**, **Claude Code 1:1**) each open a pr
 - A 1:1 message goes into that agent's own session, in the same thread, so the agent carries it into the shared conversation. Nothing from it appears in the shared channel or reaches the other agent.
 - An agent can't answer two things at once. A 1:1 message therefore needs the shared conversation stopped or paused, and the conversation waits while a 1:1 reply is being written.
 
-### Resources
+### Settings
 
-Open **Resources** in the sidebar to see active or starting agents across every room in the shared conversation pool, their recorded process counts, and memory usage. Memory is sampled every five seconds while the panel is open; missing readings show **Unavailable**.
+Open **Settings** (the gear in the sidebar) to see active or starting agents across every room in the shared conversation pool, their recorded process counts, and memory usage. Memory is sampled every five seconds while the panel is open; missing readings show **Unavailable**.
 
 **Maximum active agents** defaults to **4**. Set 2–32, or 0 for unlimited. The limit includes starting agents and is enforced before activation in both the room and host menus. Lowering it does not stop existing work; it blocks additional activations until capacity is available. This is an agent-count limit, not a limit on RAM or child processes.
 

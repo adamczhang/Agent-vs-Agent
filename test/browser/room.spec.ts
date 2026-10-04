@@ -108,9 +108,9 @@ test('a formal debate: each agent is briefed in its 1:1 line, then the judge\'s 
   expect(room.service.store.db.prepare("SELECT count(*) n FROM direct_messages WHERE sender='user' AND text LIKE '%formal debate%'").get()).toEqual({n:2});
 });
 
-test('Resources saves a lower limit without stopping work, then stops all with confirmation',async({page,room},info)=>{
-  await page.goto(room.url);await page.getByRole('button',{name:'Resources',exact:true}).click();
-  const panel=page.getByRole('dialog',{name:'Resources',exact:true});
+test('Settings saves a lower agent limit without stopping work, then stops all with confirmation',async({page,room},info)=>{
+  await page.goto(room.url);await page.getByRole('button',{name:'Settings',exact:true}).click();
+  const panel=page.getByRole('dialog',{name:'Settings',exact:true});
   await expect(panel.locator('.resource-totals')).toContainText('4 active or starting agents');
   await panel.getByLabel('Maximum active agents',{exact:true}).fill('2');await panel.getByRole('button',{name:'Save limit'}).click();
   await expect(panel.getByRole('status')).toHaveText('Activation limit saved. Existing work continues.');

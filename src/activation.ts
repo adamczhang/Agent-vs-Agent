@@ -110,6 +110,31 @@ export class ActivationManager {
     }
     finally{timeout();if(this.pending.get(key)===abort)this.pending.delete(key);}
   }
+  // A fresh session for an active agent without taking it down (owner, 2026-10-04): the new session starts and passes
+  // its check beside the current one, and only then replaces it, so the agent stays Ready with the same settings
+  // throughout. Each new Prompt run and each new debate starts its own thread this way. If the fresh session fails,
+  // the agent keeps the session it has.
+  private renewals=new Map<string,AbortController>();
+  async renew(pairId:string,seat:Seat){
+    this.assertNoDirect(pairId,seat);
+    const key=this.key(pairId,seat),slot=this.store.pair(pairId).slots[seat],old=this.live.get(key);
+    if(slot.state!=='ready'||!old||!slot.config)throw new AvAError('NOT_READY',`Agent ${seat==='cli1'?1:2} isn't active. Activate it first.`);
+    const abort=new AbortController(),timeout=this.clock.timer(()=>abort.abort(new AvAError('ACTIVATION_TIMEOUT','The fresh session did not start in time.')),this.deadlineMs);
+    let next:ConfiguredParticipant|undefined,adopted=false;
+    this.renewals.set(key,abort);
+    try{
+      next=await this.factory.open(slot.config,{pairId,seat,generation:slot.generation+1},abort.signal,this.options(pairId,seat));
+      const nonce=`AVA_READY_${randomUUID()}`;
+      const result=await next.request({id:randomUUID(),text:`Reply exactly ${nonce}. Do not use tools or perform other work.`,signal:abort.signal,onStarted(){},onEvent(){}});
+      if(result.status!=='completed'||result.text.trim()!==nonce)throw new AvAError('ACCESS_NOT_VERIFIED','The fresh session did not answer its check.');
+      if(this.store.pair(pairId).slots[seat].generation!==slot.generation||this.live.get(key)!==old)throw new AvAError('SUPERSEDED','The agent changed while its fresh session started.');
+      this.store.mutateSlot(pairId,seat,s=>{s.generation=slot.generation+1;s.sessionId=next!.sessionId;s.config=next!.accepted;s.verifiedAt=Date.now();s.error=null;});
+      this.live.set(key,next);adopted=true;
+      try{this.onActivated?.(pairId,seat);}catch{/* remembering is a convenience */}
+    }catch(error){if(next&&!adopted)await next.close().catch(()=>{});throw error;}
+    finally{timeout();if(this.renewals.get(key)===abort)this.renewals.delete(key);}
+    await old.close().catch(()=>{/* the old session's process is gone or going; the new one is in place */});
+  }
   cancel(pairId:string,seat:Seat){
     if(!this.pending.has(this.key(pairId,seat)))return;
     this.store.mutateSlot(pairId,seat,s=>{s.generation++;s.state='configuring';s.sessionId=null;s.verifiedAt=null;});
@@ -131,7 +156,7 @@ export class ActivationManager {
     if(results.some(r=>r.status==='rejected'))throw new AvAError('CLEANUP_FAILED','An owned provider did not confirm cleanup. Recovery is required.');
   }
   async closeAll(){
-    for(const pending of this.pending.values())pending.abort(new AvAError('SHUTDOWN','Service shutting down.'));
+    for(const pending of [...this.pending.values(),...this.renewals.values()])pending.abort(new AvAError('SHUTDOWN','Service shutting down.'));
     const results=await Promise.allSettled([...this.live.entries()].map(async([key,p])=>{await p.close();if(this.live.get(key)===p)this.live.delete(key);}));
     if(results.some(r=>r.status==='rejected'))throw new AvAError('CLEANUP_FAILED','An owned provider did not confirm cleanup. Recovery is required.');
   }

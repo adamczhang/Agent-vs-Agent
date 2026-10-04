@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Challenge and race prompts** in Prompt mode. Each comes with an answer key the agents never see; AvA checks each agent's final `ANSWER:` line when both have answered.
+  - **Result card:** each agent's answer, right or wrong, and its time. The winner is the right answer, or the faster one if both are right.
+  - **Ten built-in prompts** replace the earlier two Prompt starters (unedited copies are removed): six challenges and four races, every answer computed by program.
+  - **The Prompt builder** sets up your own: the task, the answer form, and the hidden expected answer. The library editor has an Answer key section too.
+- **One thread per Prompt run.** The next prompt gives both agents fresh sessions (clean context) with the same settings.
+
+### Changed
+
+- **Settings.** The Resources button is now **Settings**, with a gear icon, at the right of the sidebar's tools row.
+- **No visible restart between threads.** A new Prompt run or debate no longer closes and reactivates the agents. Each fresh session starts beside the current one and takes over once it's ready, so the agents stay loaded and Ready, and a fresh session that fails leaves the current one in place.
+- **Thread titles** use a prompt's heading ("Day of the week", or a debate's motion) instead of the raw Markdown.
+
 ## [0.4.3](https://github.com/adamczhang/Agent-vs-Agent/releases/tag/v0.4.3) - 2026-10-03
 
 ### Added

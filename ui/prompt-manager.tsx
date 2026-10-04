@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import type { Stance } from '../src/types.js';
+import type { AnswerCheck, Stance } from '../src/types.js';
 import { DEFAULT_SPEECH_MINUTES, debateMarkdown, defaultDebate, parseDebateMarkdown, type DebateSetup, type PromptFile, type PromptFileInput, type PromptMode, type PromptSave, type PromptSummary, type SavedPrompt } from '../src/prompt-types.js';
 import { rpc } from './api.js';
 import { CommandClient } from './commands.js';
@@ -8,7 +8,7 @@ import { bytes, type AttachmentRef, type Mode } from './model.js';
 
 const labels: Record<PromptMode, string> = { all: 'Any mode', benchmark: 'Prompt', conversation: 'Debate', build: 'Build' };
 interface EditorFile extends PromptFileInput { mediaType: string; kind: 'text' | 'image'; size: number }
-interface Editor extends Omit<PromptSave, 'files' | 'debate'> { files: EditorFile[]; debate?: DebateSetup }
+interface Editor extends Omit<PromptSave, 'files' | 'debate' | 'check'> { files: EditorFile[]; debate?: DebateSetup; check?: AnswerCheck }
 export interface PreparedPrompt { prompt: SavedPrompt; attachments: AttachmentRef[] }
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
 const readBase64 = (file: File) => new Promise<string>((resolve, reject) => {
@@ -19,8 +19,8 @@ function download(name: string, data: Blob) {
 }
 // A Debate prompt always carries the debate template (G2): its own setup, or the default one.
 const blank = (mode: Mode, buildKind: 'build' | 'review', debate?: DebateSetup): Editor => ({ id: crypto.randomUUID(), revision: null, name: '', text: '', mode, buildKind, files: [], ...(mode === 'conversation' ? { debate: debate ?? defaultDebate() } : {}) });
-const edit = (prompt: SavedPrompt): Editor => ({ id: prompt.id, revision: prompt.revision, name: prompt.name, text: prompt.text, mode: prompt.mode, buildKind: prompt.buildKind, files: prompt.files, ...(prompt.mode === 'conversation' ? { debate: prompt.debate ?? defaultDebate() } : {}) });
-const payload = ({ files, debate, ...data }: Editor): PromptSave => ({ ...data, files: files.map(({ id, name, attachmentId }) => ({ id, name, ...(attachmentId ? { attachmentId } : {}) })), ...(data.mode === 'conversation' && debate ? { debate } : {}) });
+const edit = (prompt: SavedPrompt): Editor => ({ id: prompt.id, revision: prompt.revision, name: prompt.name, text: prompt.text, mode: prompt.mode, buildKind: prompt.buildKind, files: prompt.files, ...(prompt.mode === 'conversation' ? { debate: prompt.debate ?? defaultDebate() } : {}), ...(prompt.check ? { check: prompt.check } : {}) });
+const payload = ({ files, debate, check, ...data }: Editor): PromptSave => ({ ...data, files: files.map(({ id, name, attachmentId }) => ({ id, name, ...(attachmentId ? { attachmentId } : {}) })), ...(data.mode === 'conversation' && debate ? { debate } : {}), ...(data.mode === 'benchmark' && check?.answers.some(a => a.trim()) ? { check: { kind: check.kind, answers: check.answers.map(a => a.trim()).filter(Boolean) } } : {}) });
 const roundsValid = (editor: Editor) => editor.mode !== 'conversation' || !!editor.debate && Number.isInteger(editor.debate.rounds) && editor.debate.rounds >= 1 && editor.debate.rounds <= 100;
 
 export function PromptManager({ mode, buildKind, draft, draftFiles, draftDebate, draftBlocked, startWithDraft, runBlocked, onUse, onClose }: {
@@ -134,6 +134,11 @@ export function PromptManager({ mode, buildKind, draft, draftFiles, draftDebate,
         <label className="library-field"><span>Name</span><input aria-label="Prompt name" placeholder="Give this prompt a name" maxLength={120} value={editor.name} disabled={!!busy} onChange={e => setEditor(p => ({ ...p, name: e.target.value }))}/></label>
         <div className="library-mode"><label className="library-field"><span>Mode</span><select aria-label="Saved prompt mode" value={editor.mode} disabled={!!busy} onChange={e => { const next = e.target.value as PromptMode; setEditor(p => ({ ...p, mode: next, ...(next === 'conversation' && !p.debate ? { debate: draftDebate ?? defaultDebate() } : {}) })); }}>{Object.entries(labels).map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></label>{editor.mode === 'build' && <label className="library-field"><span>Task</span><select aria-label="Saved build task" value={editor.buildKind} disabled={!!busy} onChange={e => setEditor(p => ({ ...p, buildKind: e.target.value as 'build' | 'review' }))}><option value="build">Build</option><option value="review">Review</option></select></label>}</div>
         <label className="library-field library-text"><span>{debate ? 'Motion · both debaters see it' : 'Prompt'} <small>Markdown · {editor.text.length.toLocaleString()} / 16,000</small></span><textarea aria-label="Saved prompt text" placeholder={debate ? 'This house would…, then any definitions both sides should use' : 'Write the instructions for both agents…'} value={editor.text} disabled={!!busy} maxLength={16000} spellCheck={false} onChange={e => setEditor(p => ({ ...p, text: e.target.value }))}/></label>
+        {/* A Prompt-mode answer key (owner, 2026-10-04): a challenge or race, with the accepted answers the agents never see. */}
+        {editor.mode === 'benchmark' && <section className="library-check-key" aria-label="Answer key">
+          <label className="library-field"><span>Answer key <small>checked against each agent’s final ANSWER line; the agents never see it</small></span><select aria-label="Answer key kind" value={editor.check?.kind ?? 'none'} disabled={!!busy} onChange={e => { const kind = e.target.value; setEditor(p => ({ ...p, check: kind === 'none' ? undefined : { kind: kind as AnswerCheck['kind'], answers: p.check?.answers ?? [] } })); }}><option value="none">None (compare the answers yourself)</option><option value="challenge">Challenge: the right answer wins</option><option value="race">Race: the fastest right answer wins</option></select></label>
+          {editor.check && <label className="library-field"><span>Expected answer <small>one per line if several are right</small></span><textarea aria-label="Expected answer" rows={2} maxLength={2000} placeholder="The exact answer, for example 2131" value={editor.check.answers.join('\n')} disabled={!!busy} onChange={e => setEditor(p => p.check ? { ...p, check: { ...p.check, answers: e.target.value.split('\n') } } : p)}/></label>}
+        </section>}
         {/* The debate template (G2, G6): each agent's side, its private brief and internet, and the rounds. */}
         {debate && <section className="library-debate" aria-label="Debate setup">
           <div className="library-debate-agents">{(['cli1', 'cli2'] as const).map((seat, i) => <div key={seat} className="library-debate-agent">

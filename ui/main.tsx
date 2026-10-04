@@ -1,6 +1,6 @@
 import { useEffect,useRef,useState,type CSSProperties,type KeyboardEvent,type PointerEvent as ReactPointerEvent,type ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
-import { DEFAULT_ROUNDS,DEFAULT_SPEECH_MINUTES,type JudgeProvider,type RunConfig,type Seat,type Stance } from '../src/types';
+import { DEFAULT_ROUNDS,DEFAULT_SPEECH_MINUTES,type AnswerCheck,type JudgeProvider,type RunConfig,type Seat,type Stance } from '../src/types';
 import type { ThreadStats } from '../src/stats';
 import { describeQuick } from '../src/quick';
 import { activityProjection,readableOutput,type ActivityLine,type Event } from './projection';
@@ -16,6 +16,7 @@ import { UsageRing } from './usage-ring';
 import { PromptManager,type PreparedPrompt } from './prompt-manager';
 import type { DebateSetup,PromptMode } from '../src/prompt-types';
 import { Ballot } from './ballot';
+import { PromptResult } from './prompt-result';
 import { PromptBuilder } from './prompt-builder';
 import { Icon } from './icons';
 import { IMAGE_TYPES,TERMINAL,TEXT_NAME,bytes,clock,dayLabel,delivery,directStates,duration,fullDate,initials,internetEnforcement,names,plural,reasonText,seats,shortTime,statusNames,
@@ -182,6 +183,9 @@ function App(){
     document.addEventListener('mousedown',close);return()=>document.removeEventListener('mousedown',close);
   },[roundsOpen]);
   const [library,setLibrary]=useState<'browse'|'draft'|null>(null),[builderOpen,setBuilderOpen]=useState(false);
+  // A loaded Prompt-mode prompt's answer key: sent with that prompt (while the composer still holds its text) and never
+  // shown to the agents.
+  const [answerKey,setAnswerKey]=useState<{text:string;check:AnswerCheck}|null>(null);
   const [resourcesOpen,setResourcesOpen]=useState(false);
   const [benchmarksOpen,setBenchmarksOpen]=useState(false);
   const [settings,setSettings]=useState<PresetData>(DEFAULT_SETTINGS),[presets,setPresets]=useState<Preset[]>([]),[presetId,setPresetId]=useState(''),[presetName,setPresetName]=useState<string|null>(null);
@@ -349,7 +353,7 @@ function App(){
   const canClear=!!pair&&seats.every(s=>!!pair.slots[s].config)&&pair.activeRun?.status!=='needs_attention';
   const runById=new Map((shown?.runs??[]).map(r=>[r.id,r]));
 
-  async function send(saved?:{text:string;attachments:string[];buildKind:'build'|'review';debate?:DebateSetup}){
+  async function send(saved?:{text:string;attachments:string[];buildKind:'build'|'review';debate?:DebateSetup;check?:AnswerCheck}){
     const text=(saved?.text??draft).trim();if(!pair||!text||!canSend||busy||uploading)return;
     const attachments=saved?.attachments??files.filter(f=>f.status==='ready'&&f.ref).map(f=>f.ref!.id);
     const kind=saved?.buildKind??buildKind;
@@ -361,8 +365,10 @@ function App(){
         const path=project.trim(),options:Partial<RunConfig>={mode:'build',...(settings.minutes?{durationMs:Number(settings.minutes)*60000}:{})},build={kind,...(path?{path}:{})};
         await commands.execute(JSON.stringify(['send',pair.id,text,attachments,'build',kind,path]),'run.start',{pairId:pair.id,text,options,attachments,build},rpc);
       }else if(benchmark){
-        // Prompt: it goes to both agents at once, as written; only a time limit applies.
-        const options:Partial<RunConfig>={mode:'benchmark',...(settings.minutes?{durationMs:Number(settings.minutes)*60000}:{})};
+        // Prompt: it goes to both agents at once, as written; only a time limit applies. A loaded challenge or race brings
+        // its answer key, which AvA checks the answers against.
+        const check=saved?.check??(answerKey&&answerKey.text.trim()===text?answerKey.check:undefined);
+        const options:Partial<RunConfig>={mode:'benchmark',...(settings.minutes?{durationMs:Number(settings.minutes)*60000}:{}),...(check?{check}:{})};
         await commands.execute(JSON.stringify(['send',pair.id,text,attachments,'benchmark']),'run.start',{pairId:pair.id,text,options,attachments},rpc);
       }else{
         // A debate prompt run from the library brings its own setup; otherwise the Options apply.
@@ -380,7 +386,7 @@ function App(){
         if(s.requests)options.maxRequests=Number(s.requests);
         await commands.execute(JSON.stringify(['send',pair.id,text,attachments]),'run.start',{pairId:pair.id,text,options,attachments},rpc);
       }
-      setDraft('');setFiles([]);setOptionsOpen(false);liveRef.current=true;
+      setDraft('');setFiles([]);setOptionsOpen(false);setAnswerKey(null);liveRef.current=true;
     });
   }
   function promptRunBlocked(savedMode:PromptMode,kind:'build'|'review'){
@@ -400,7 +406,8 @@ function App(){
     if(prompt.debate&&mode==='conversation'&&live)throw new Error('A debate is running. Stop it or close the thread, then load this debate prompt.');
     setDraft(prompt.text);setFiles(attachments.map(ref=>({key:ref.id,name:ref.name,size:ref.size,status:'ready',ref})));setBuildKind(prompt.buildKind);
     if(prompt.debate){const setup=prompt.debate;setSettings(s=>debateSettings(setup,s));setPresetId('');}
-    if(run)await send({text:prompt.text,attachments:attachments.map(f=>f.id),buildKind:prompt.buildKind,...(prompt.debate?{debate:prompt.debate}:{})});
+    setAnswerKey(prompt.check?{text:prompt.text,check:prompt.check}:null);
+    if(run)await send({text:prompt.text,attachments:attachments.map(f=>f.id),buildKind:prompt.buildKind,...(prompt.debate?{debate:prompt.debate}:{}),...(prompt.check?{check:prompt.check}:{})});
     else{if(prompt.mode!=='all')switchMode(prompt.mode);select('');setPanel('chat');setOptionsOpen(false);setTimeout(()=>composerRef.current?.focus(),0);}
   }
   // Direct (1:1) lines. A send waits while the agent is busy in the shared conversation (the service enforces it too).
@@ -474,7 +481,8 @@ function App(){
   }
   function control(which:'pause'|'resume'|'step'|'stop'){const runId=pair?.activeRunId;if(runId)void action(which,async()=>{await commands.execute(JSON.stringify(['control',runId,which]),'run.control',{runId,action:which},rpc);});}
   // A judged debate's result in the thread list (C).
-  const verdictText=(v?:ThreadSummary['verdict'])=>!v?'':v.status==='judging'?' · judging':v.status==='failed'?' · not judged':` · Agent ${v.winner==='cli1'?1:2} won ${v.totals![v.winner!]}–${v.totals![v.winner==='cli1'?'cli2':'cli1']}`;
+  const verdictText=(v?:ThreadSummary['verdict'])=>!v?'':v.kind==='challenge'||v.kind==='race'?(v.winner?` · Agent ${v.winner==='cli1'?1:2} won the ${v.kind}`:` · no right answer`)
+    :v.status==='judging'?' · judging':v.status==='failed'?' · not judged':` · Agent ${v.winner==='cli1'?1:2} won ${v.totals![v.winner!]}–${v.totals![v.winner==='cli1'?'cli2':'cli1']}`;
   // Delete one thread from history (D): its prompts, replies, 1:1 messages and ballot. A thread whose agents are still
   // active must be closed first.
   function deleteThread(t:ThreadSummary){
@@ -679,6 +687,7 @@ function App(){
   {
     let prev:ThreadMessage|undefined,lastDay='';
     const endNote=(runId:string)=>{const run=runById.get(runId);if(run&&TERMINAL.has(run.status)&&replayDone){feed.push(<div className="run-end" key={'end'+run.id}><span>{reasonText(run.reason)||statusNames[run.status]}</span><span>{duration(run.elapsedMs)}</span></div>);
+      if(run.config.check)feed.push(<PromptResult key={'result'+run.id} run={run}/>);
       if(run.config.stances)feed.push(<Ballot key={'ballot'+run.id} run={run} canJudge={isRoomThread} busy={!!busy} onJudge={()=>void action('Asking the judge',async()=>{await rpc('debate.judge',{runId:run.id});})}/>);}};
     for(const m of messages){
       const day=m.time?new Date(m.time).toDateString():lastDay;
@@ -747,9 +756,10 @@ function App(){
       </div>
       <div className="sidebar-tools" role="group" aria-label="Room tools">
         <button className="library-open" onClick={()=>setLibrary('browse')}><Icon.folder/><span>Prompt library</span></button>
-        <button className="library-open" onClick={()=>setResourcesOpen(true)}><Icon.chart/><span>Resources</span></button>
-        {/* The builder for this mode's prompts: Debate's guided setup, simple forms for Prompt and Build. */}
+        {/* The builder for this mode's prompts: Debate's and Prompt's guided setups, a simple form for Build. */}
         <button className="library-open" onClick={()=>setBuilderOpen(true)}><Icon.pencil/><span>{mode==='conversation'?'Debate builder':mode==='build'?'Build builder':'Prompt builder'}</span></button>
+        {/* Settings (owner, 2026-10-04): the agent limit and Stop all, for every room. */}
+        <button className="library-open" onClick={()=>setResourcesOpen(true)}><Icon.gear/><span>Settings</span></button>
       </div>
       <div className="sidebar-search">
         <label className="search"><Icon.search/><input type="search" placeholder="Search" aria-label="Search every thread" maxLength={200} value={query} onChange={e=>setQuery(e.target.value)} onKeyDown={e=>{if(e.key==='Escape')setQuery('');}}/></label>
@@ -883,6 +893,7 @@ function App(){
             <button ref={optionsButton} type="button" className={`icon-btn${optionsOpen?' pressed':''}`} aria-label="Options for the next prompt" title="Options for the next prompt" aria-expanded={optionsOpen} disabled={mismatch} onClick={()=>{setOptionsOpen(o=>!o);void loadPresets();}}><Icon.sliders/>{customized||opening!=='cli1'&&!benchmark?<span className="badge"/>:null}</button>
             <button type="button" className="icon-btn" aria-label="Attach files or images" title={seats.some(s=>pair?.images?.[s]===false)?`Attach text files (${seats.filter(s=>pair?.images?.[s]===false).map(agentName).join(' and ')} can’t read images)`:'Attach images or text files (or paste or drop them here)'} disabled={!canSend||files.length>=8} onClick={()=>fileInput.current?.click()}><Icon.attach/></button>
             <button type="button" className="icon-btn" aria-label="Save draft to prompt library" title="Save this prompt and its files" disabled={!draft.trim()||!!busy||uploading||files.some(f=>f.status==='error')} onClick={()=>setLibrary('draft')}><Icon.folder/></button>
+            {benchmark&&isRoomThread&&answerKey&&answerKey.text.trim()===draft.trim()&&<span className="key-chip" title="AvA checks each agent’s final ANSWER line against this key when both have answered. The agents never see it.">Answer key · {answerKey.check.kind==='race'?'Race':'Challenge'}</span>}
             {/* The debate's length at a glance (rounds, or the time or agents' choice that ends it instead), changed here or in Options. */}
             {!benchmark&&!building&&isRoomThread&&!live&&<div className="rounds-chip" ref={roundsRef}>
               <button type="button" className={`chip${roundsOpen?' pressed':''}`} aria-haspopup="dialog" aria-expanded={roundsOpen} disabled={mismatch} title="How long the debate runs. Each agent speaks once a round." onClick={()=>setRoundsOpen(o=>!o)}>{endsLabel}</button>

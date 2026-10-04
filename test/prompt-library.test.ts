@@ -23,13 +23,13 @@ test('library preloads all three modes once, preserves edits/deletions across re
   const { service, factory, library, root } = fixture(t);
   const first = library.list(); assert.equal(first.directory, join(root, 'prompts'));
   assert.deepEqual(new Set(first.prompts.map(p => p.mode)), new Set(['benchmark', 'conversation', 'build']));
-  assert.equal(first.prompts.length, 14); assert.equal(factory.agents.length, 0);
-  const starter = library.get('starter-state-tracking');
+  assert.equal(first.prompts.length, 22); assert.equal(factory.agents.length, 0);
+  const starter = library.get('prompt-domino-tiling');
   library.save({ ...input(), id: starter.id, revision: starter.revision, name: 'Edited starter' });
   const removed = library.get('starter-snake'); library.delete(removed.id, removed.revision);
   const reopened = new PromptLibrary(root, service.store);
   assert.equal(reopened.get(starter.id).name, 'Edited starter');
-  assert.equal(reopened.list().prompts.length, 13); assert.equal(factory.agents.length, 0);
+  assert.equal(reopened.list().prompts.length, 21); assert.equal(factory.agents.length, 0);
 });
 
 // G2: a debate prompt carries the debate template in debate.json beside prompt.md, so older versions still read the topic.
@@ -82,12 +82,12 @@ test('built-in debates are formal motions, and replace earlier debate starters o
   assert.ok(!ids.includes('starter-debate-hot-dog'), 'the starter as shipped is retired');
   assert.ok(ids.includes('starter-debate-mammoth') && ids.includes('my-debate'), 'edited and own prompts stay');
   assert.ok(DEBATE_STARTERS.every(s => ids.includes(s.id)), 'the formal debates are added');
-  assert.equal(readFileSync(join(prompts, '.initialized'), 'utf8'), '3\n');
+  assert.equal(readFileSync(join(prompts, '.initialized'), 'utf8'), '4\n');
   // Once only: a formal debate the user deletes isn't added again, and a newer marker stays.
   const removed = library.get('debate-fall-of-rome'); library.delete(removed.id, removed.revision);
   assert.ok(!new PromptLibrary(old, service.store).list().prompts.some(p => p.id === 'debate-fall-of-rome'));
-  writeFileSync(join(prompts, '.initialized'), '4\n'); new PromptLibrary(old, service.store).list();
-  assert.equal(readFileSync(join(prompts, '.initialized'), 'utf8'), '4\n');
+  writeFileSync(join(prompts, '.initialized'), '5\n'); new PromptLibrary(old, service.store).list();
+  assert.equal(readFileSync(join(prompts, '.initialized'), 'utf8'), '5\n');
 });
 test('a debate prompt exports to one Markdown file and imports back with its template', () => {
   const debate = { rounds: 5, agents: { cli1: { stance: 'against' as const, context: 'Side A.\n\nWith a blank line.', internet: true }, cli2: { stance: 'for' as const, context: '', internet: false } } };
@@ -178,7 +178,7 @@ test('linked files directories and a linked library root are refused', t => {
 test('corrupt tasks do not hide healthy prompts or get overwritten', t => {
   const { library, root } = fixture(t); library.list();
   const broken = join(root, 'prompts', 'broken'); mkdirSync(broken); writeFileSync(join(broken, 'prompt.json'), 'not JSON'); writeFileSync(join(broken, 'prompt.md'), 'hello');
-  const result = library.list(); assert.equal(result.prompts.length, 14); assert.equal(result.warnings.length, 1);
+  const result = library.list(); assert.equal(result.prompts.length, 22); assert.equal(result.warnings.length, 1);
   assert.throws(() => library.save(input({ id: 'broken' })));
   assert.equal(readFileSync(join(broken, 'prompt.json'), 'utf8'), 'not JSON');
 });

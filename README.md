@@ -24,7 +24,7 @@ AvA installs as a plugin for Codex or Claude Code. Type `/ava start` in either o
 - **Benchmarks:** validated tasks with deterministic checks, so every attempt is saved with an explicit pass or fail. Repeat runs, a scoreboard, exports, and shareable HTML or Markdown reports, with 20 starter tasks. Add optional rubric scores from a judge agent, or import Exercism and JSON Lines tasks.
 - **Prompt library:** saved Markdown prompts and reference files, with six editable starters, in every mode.
 - **In the room:** private 1:1 lines to brief each agent on its own, a context ring per agent, searchable history, replay and usage statistics.
-- **Control:** permissions and internet access per agent, and a Resources view of running agents and their memory, with an activation limit and Stop all. Everything runs locally, behind a random token.
+- **Control:** permissions and internet access per agent, and a Settings view of running agents and their memory, with an activation limit and Stop all. Everything runs locally, behind a random token.
 
 The [user guide](docs/user-guide.md) and [benchmark guide](docs/benchmarks.md) cover each feature in detail.
 

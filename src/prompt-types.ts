@@ -1,6 +1,6 @@
 // Shared by the library service and room. Provider settings and permissions never belong to a prompt; a debate
 // prompt's internet choice (G2) is applied through each agent's own internet switch when the debate starts.
-import { DEFAULT_ROUNDS, MAX_ROUNDS, type Stance } from './types.js';
+import { DEFAULT_ROUNDS, MAX_ROUNDS, type AnswerCheck, type Stance } from './types.js';
 export { DEFAULT_SPEECH_MINUTES } from './types.js';
 export type PromptMode = 'all' | 'benchmark' | 'conversation' | 'build';
 export interface PromptFile { id: string; name: string; mediaType: string; kind: 'text' | 'image'; size: number }
@@ -43,10 +43,12 @@ export interface SavedPrompt {
   files: PromptFile[]; createdAt: string; updatedAt: string;
   // Debate prompts saved with the template. Older debate prompts have none: they leave the room's options as they are.
   debate?: DebateSetup;
+  // Prompt-mode prompts with an answer key (a challenge or a race), kept beside prompt.md in check.json.
+  check?: AnswerCheck;
 }
 export interface PromptSummary extends Omit<SavedPrompt, 'revision'> { excerpt: string }
 export interface PromptFileInput { id: string; name: string; attachmentId?: string }
 export interface PromptSave {
   id: string; revision: string | null; name: string; text: string; mode: PromptMode;
-  buildKind: 'build' | 'review'; files: PromptFileInput[]; debate?: DebateInput;
+  buildKind: 'build' | 'review'; files: PromptFileInput[]; debate?: DebateInput; check?: AnswerCheck;
 }

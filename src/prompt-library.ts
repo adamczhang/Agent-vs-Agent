@@ -7,6 +7,8 @@ import { attachmentKind } from './attachment-files.js';
 import type { Store } from './store.js';
 import { defaultDebate, withStances, type DebateSetup, type PromptFile, type PromptSave, type PromptSummary, type SavedPrompt } from './prompt-types.js';
 import { DEBATE_STARTERS, RETIRED_STARTERS, type Starter } from './debate-starters.js';
+import { PROMPT_STARTERS, RETIRED_PROMPT_STARTERS } from './prompt-starters.js';
+const OLDER_SETS = ['1', '2', '3'];
 
 const key = z.string().regex(/^[a-z0-9][a-z0-9-]{0,79}$/);
 const filename = z.string().min(1).max(160).refine(name =>
@@ -24,7 +26,10 @@ export const promptSaveSchema = z.object({
   id: key, revision: z.string().max(100).nullable(), ...fields,
   files: z.array(z.object({ id: key, name: filename, attachmentId: z.string().min(1).max(200).optional() }).strict()).max(8),
   debate: debateSchema.optional(),
+  check: z.object({ kind: z.enum(['challenge', 'race']), answers: z.array(z.string().trim().min(1).max(500)).min(1).max(10) }).strict().optional(),
 }).strict();
+// A Prompt-mode prompt's answer key lives beside prompt.md in check.json (never sent to the agents).
+const checkFile = z.object({ version: z.literal(1), kind: z.enum(['challenge', 'race']), answers: z.array(z.string().trim().min(1).max(500)).min(1).max(10) }).strict();
 // A debate prompt's template lives beside prompt.md in debate.json, so versions before G2 still read the prompt.
 const debateFile = z.object({ version: z.literal(1), rounds: z.number().int().min(1).max(100), speechMinutes: z.number().min(0).max(30).optional(), agents: z.object({ cli1: debateAgent, cli2: debateAgent }).strict() }).strict();
 export const promptKeySchema = key;
@@ -34,10 +39,9 @@ const metadata = z.object({
   files: z.array(z.object({ id: key, name: filename, mediaType: z.string().max(100), kind: z.enum(['text', 'image']), size: z.number().int().min(0).max(8 * 1024 * 1024) }).strict()).max(8),
 }).strict();
 
-const STARTER_SET = '3';
+const STARTER_SET = '4';
 const STARTERS: Starter[] = [
-  { id: 'starter-state-tracking', name: 'Track the shuffled objects', mode: 'benchmark', buildKind: 'build', text: '# Track the objects\n\nAva has a red ball, Ben has a blue ball, and Cam has a green ball.\n1. Ava and Ben swap balls.\n2. Ben and Cam swap balls.\n3. Ava and Cam swap balls.\n\nReturn one raw JSON object mapping Ava, Ben, and Cam to their final ball colors. Do not use Markdown fences, backticks, or explanatory text.' },
-  { id: 'starter-intervals', name: 'Merge overlapping intervals', mode: 'benchmark', buildKind: 'build', text: '# Merge intervals\n\nWrite a function that merges overlapping closed intervals. Handle empty input, unsorted input, and intervals that share an endpoint. Explain its time complexity and include three tests.' },
+  ...PROMPT_STARTERS,
   ...DEBATE_STARTERS,
   { id: 'starter-snake', name: 'Build a browser Snake game', mode: 'build', buildKind: 'build', text: '# Browser Snake\n\nBuild a polished Snake game that runs in the browser. Include arrow-key controls, score, increasing speed, a game-over screen, and a restart button. Keep it self-contained with no external dependencies. Verify that it works and provide the app link.' },
   { id: 'starter-review', name: 'Review a project for bugs', mode: 'build', buildKind: 'review', text: '# Review this project\n\nFind actionable bugs and risky behavior in the supplied project. Read the relevant code and run existing tests where useful. For each finding, give the file and line, triggering input, expected behavior, actual behavior, and severity. Report only findings supported by evidence. Do not modify the project.' },
@@ -76,26 +80,33 @@ export class PromptLibrary {
     }
     this.initialized = true;
     // The marker records which starters a library has had: 1, the first six; 2, the G3 debate prompts; 3, the formal
-    // debates (G8), which replace every earlier debate starter. Each set is added once, so a starter the user deleted
+    // debates (G8), which replace every earlier debate starter; 4, the Prompt challenges and races, which replace the
+    // first two Prompt starters. Each set is added once, so a starter the user deleted
     // never comes back; a retired starter is removed only while it is exactly as shipped.
     const marker = join(this.directory, '.initialized'), had = existsSync(marker) ? readFileSync(marker, 'utf8').trim() : '';
     if (!had) {
       for (const starter of STARTERS) if (!existsSync(join(this.directory, starter.id))) this.save({ ...starter, revision: null, files: [] });
-    } else if (had === '1' || had === '2') {
-      for (const [id, shipped] of Object.entries(RETIRED_STARTERS)) {
-        if (!existsSync(join(this.directory, id))) continue;
-        try { const current = this.get(id); if (!current.files.length && shipped.includes(this.fingerprint(id))) this.delete(id, current.revision); }
-        catch { /* unreadable: left for the user, like any damaged prompt */ }
-      }
-      for (const starter of DEBATE_STARTERS) if (!existsSync(join(this.directory, starter.id))) this.save({ ...starter, revision: null, files: [] });
+    } else if (OLDER_SETS.includes(had)) {
+      if (had === '1' || had === '2') { this.retire(RETIRED_STARTERS); this.add(DEBATE_STARTERS); }
+      this.retire(RETIRED_PROMPT_STARTERS); this.add(PROMPT_STARTERS);
     }
     // A newer version's marker stays as it is.
-    if (!had || had === '1' || had === '2') writeFileSync(marker, `${STARTER_SET}\n`, { mode: 0o600 });
+    if (!had || OLDER_SETS.includes(had)) writeFileSync(marker, `${STARTER_SET}\n`, { mode: 0o600 });
+  }
+  // A set of starters, each added unless the library already has one with its ID.
+  private add(starters: Starter[]) { for (const starter of starters) if (!existsSync(join(this.directory, starter.id))) this.save({ ...starter, revision: null, files: [] }); }
+  // Retired starters still exactly as shipped are removed; edited ones are the user's and stay.
+  private retire(retired: Record<string, string[]>) {
+    for (const [id, shipped] of Object.entries(retired)) {
+      if (!existsSync(join(this.directory, id))) continue;
+      try { const current = this.get(id); if (!current.files.length && shipped.includes(this.fingerprint(id))) this.delete(id, current.revision); }
+      catch { /* unreadable: left for the user, like any damaged prompt */ }
+    }
   }
   // A starter as shipped: its name, prompt.md and debate.json exactly (see RETIRED_STARTERS).
   private fingerprint(id: string) {
-    const { data, text, debateRaw } = this.read(id);
-    return createHash('sha256').update(data.name).update('\0').update(text).update('\0').update(debateRaw?.toString('utf8') ?? '').digest('hex').slice(0, 24);
+    const { data, text, debateRaw, checkRaw } = this.read(id);
+    return createHash('sha256').update(data.name).update('\0').update(text).update('\0').update((debateRaw ?? checkRaw)?.toString('utf8') ?? '').digest('hex').slice(0, 24);
   }
   private folder(id: string) { this.init(); const path = join(this.directory, key.parse(id)); this.safe(path, true); return path; }
   list() {
@@ -103,17 +114,18 @@ export class PromptLibrary {
     const prompts: PromptSummary[] = [], warnings: string[] = [];
     for (const entry of readdirSync(this.directory).filter(n => !n.startsWith('.'))) {
       // Browsing/searching does not read every image in the library. A specific open/save/load verifies its files.
-      try { const { data, text, debate } = this.read(entry); const { version: _version, ...prompt } = data; prompts.push({ ...prompt, ...(debate ? { debate } : {}), text, excerpt: text.slice(0, 180) }); }
+      try { const { data, text, debate, check } = this.read(entry); const { version: _version, ...prompt } = data; prompts.push({ ...prompt, ...(debate ? { debate } : {}), ...(check ? { check } : {}), text, excerpt: text.slice(0, 180) }); }
       catch { warnings.push(`${entry}: couldn't read this prompt. Its files were left untouched.`); }
     }
     prompts.sort((a, b) => a.name.localeCompare(b.name));
     return { directory: this.directory, prompts, warnings };
   }
   get(id: string): SavedPrompt {
-    const { folder, raw, data, text, debate, debateRaw } = this.read(id), hash = createHash('sha256').update(raw).update(text);
+    const { folder, raw, data, text, debate, debateRaw, check, checkRaw } = this.read(id), hash = createHash('sha256').update(raw).update(text);
     if (debateRaw) hash.update(debateRaw);
+    if (checkRaw) hash.update(checkRaw);
     for (const file of data.files) hash.update(this.readFile(folder, file));
-    return { id, name: data.name, mode: data.mode, buildKind: data.buildKind, files: data.files, createdAt: data.createdAt, updatedAt: data.updatedAt, text, ...(debate ? { debate } : {}), revision: hash.digest('hex').slice(0, 32) };
+    return { id, name: data.name, mode: data.mode, buildKind: data.buildKind, files: data.files, createdAt: data.createdAt, updatedAt: data.updatedAt, text, ...(debate ? { debate } : {}), ...(check ? { check } : {}), revision: hash.digest('hex').slice(0, 32) };
   }
   private read(id: string) {
     const folder = this.folder(id), manifest = join(folder, 'prompt.json'), body = join(folder, 'prompt.md'), sidecar = join(folder, 'debate.json');
@@ -129,7 +141,14 @@ export class PromptLibrary {
       if (lstatSync(sidecar).size > 32000) throw new AvAError('PROMPT_INVALID', 'Prompt files are too large.');
       debateRaw = readFileSync(sidecar); const { version: _version, ...setup } = debateFile.parse(JSON.parse(debateRaw.toString('utf8'))); debate = withStances(setup);
     } else if (data.mode === 'conversation') debate = defaultDebate();
-    return { folder, raw, data, text, debate, debateRaw };
+    let check: SavedPrompt['check'], checkRaw: Buffer | undefined;
+    const checkPath = join(folder, 'check.json');
+    if (data.mode === 'benchmark' && existsSync(checkPath)) {
+      this.safe(checkPath, false);
+      if (lstatSync(checkPath).size > 32000) throw new AvAError('PROMPT_INVALID', 'Prompt files are too large.');
+      checkRaw = readFileSync(checkPath); const { version: _version, ...key } = checkFile.parse(JSON.parse(checkRaw.toString('utf8'))); check = key;
+    }
+    return { folder, raw, data, text, debate, debateRaw, check, checkRaw };
   }
   private unique(files: Array<{ id: string; name: string }>) {
     if (new Set(files.map(f => f.name.toLowerCase())).size !== files.length || new Set(files.map(f => f.id)).size !== files.length) throw new AvAError('PROMPT_FILES', 'File names and IDs must be unique within a prompt.');
@@ -167,6 +186,7 @@ export class PromptLibrary {
       const now = new Date().toISOString();
       writeFileSync(join(stage, 'prompt.md'), p.text, { mode: 0o600 });
       writeFileSync(join(stage, 'prompt.json'), JSON.stringify({ version: 1, id: p.id, name: p.name, mode: p.mode, buildKind: p.buildKind, createdAt: current?.createdAt ?? now, updatedAt: now, files: content.map(f => f.meta) }, null, 2) + '\n', { mode: 0o600 });
+      if (p.check && p.mode === 'benchmark') writeFileSync(join(stage, 'check.json'), JSON.stringify({ version: 1, ...p.check }, null, 2) + '\n', { mode: 0o600 });
       if (p.debate && p.mode === 'conversation') writeFileSync(join(stage, 'debate.json'), JSON.stringify({ version: 1, ...withStances(p.debate) }, null, 2) + '\n', { mode: 0o600 });
       for (const file of content) writeFileSync(join(stage, 'files', file.meta.name), file.bytes, { flag: 'wx', mode: 0o600 });
       if (current) { this.tree(target); renameSync(target, backup); }

@@ -22,7 +22,7 @@ export function ResourcesPanel({onClose}:{onClose:()=>void}){
     setNotice(result.status==='stopped'?'All AvA agents stopped. Activate agents in a room when you want to continue.':`Some work needs attention. ${result.remainingProcesses} processes remain. ${result.errors.join(' ')}`);
   });}
   return <dialog ref={dialog} className="resources-panel" aria-labelledby="resources-title" onCancel={e=>{e.preventDefault();if(!busy)onClose();}}>
-    <header><div><h2 id="resources-title">Resources</h2><p>AvA agents across every room in this conversation pool.</p></div><button className="icon-btn" aria-label="Close Resources" disabled={busy} onClick={onClose}><Icon.close/></button></header>
+    <header><div><h2 id="resources-title">Settings</h2><p>Resources: AvA agents across every room in this conversation pool.</p></div><button className="icon-btn" aria-label="Close Settings" disabled={busy} onClick={onClose}><Icon.close/></button></header>
     {error&&<p role="alert" className="resource-error">{error}</p>}
     {data?<>
       <div className="resource-totals"><span><strong>{data.activeAgents}</strong> active or starting agents</span><span><strong>{data.processCount}</strong> recorded processes</span><span><strong>{data.memoryBytes===null?'Unavailable':bytes(data.memoryBytes)}</strong> memory in use</span></div>

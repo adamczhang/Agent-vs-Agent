@@ -14,6 +14,7 @@ import { NativeFactory,loadProviderSetups,type Catalog } from './providers.js';
 import { LABELS,Menus } from './menus.js';
 import { QuickMemory,highEffort,strongestModel } from './quick.js';
 import { debateBrief,judgePrompt,maxEffort,parseBallot,total } from './debate.js';
+import { promptResult } from './answer-check.js';
 import { listProcesses,survivors,systemCensus,type Census,type ProcessLedger,type SystemProcess } from './census.js';
 import { JobHost,type AgentJobs } from './jobs.js';
 import { combineStats,computeStats } from './stats.js';
@@ -36,7 +37,7 @@ const choice=z.object({key:z.string().min(1).max(100),value:z.string().max(200)}
 const providerConfig=z.object({provider,model:z.string().min(1).max(300),modelName:z.string().max(200).optional(),effort:choice.optional(),speed:choice.optional(),auth:z.enum(['provider-login','api'])}).strict();
 // Preset data mirrors the room's settings form; .strict() keeps provider/model choices out (they belong to Codex activation).
 const presetData=z.object({instructions:z.object({cli1:z.string().max(8000),cli2:z.string().max(8000)}).strict(),stopWhen:z.object({cli1:z.string().max(4000),cli2:z.string().max(4000)}).strict(),completion:z.enum(['auto','duration','either','both','rounds']),rounds:z.string().max(20).optional(),internet:z.object({cli1:z.boolean(),cli2:z.boolean()}).partial().strict().optional(),stances:z.object({cli1:z.enum(['for','against']),cli2:z.enum(['for','against'])}).strict().optional(),judge:z.enum(['claude','codex','off']).optional(),speech:z.string().max(20).optional(),minutes:z.string().max(20),requests:z.string().max(20),pace:z.string().max(20),opening:z.enum(['both','cli1','cli2']).optional()}).strict();
-const runOptions=z.object({instructions:z.object({cli1:z.string().max(8000),cli2:z.string().max(8000)}).optional(),stopWhen:z.object({cli1:z.string().max(4000),cli2:z.string().max(4000)}).optional(),completion:z.enum(['duration','either','both','rounds']).optional(),rounds:z.number().int().min(1).max(100).optional(),stances:z.object({cli1:z.enum(['for','against']),cli2:z.enum(['for','against'])}).strict().optional(),judge:z.object({provider:z.enum(['claude','codex'])}).strict().optional(),speechMs:z.number().min(30_000).max(1_800_000).optional(),durationMs:z.number().positive().max(86400000).optional(),maxRequests:z.number().int().min(2).max(10000).optional(),perTurnMs:z.number().positive().max(3600000).optional(),paceMs:z.number().min(0).max(60000).optional(),lead:seat.optional(),mode:z.enum(['conversation','benchmark','build']).optional(),opening:z.enum(['both','cli1','cli2']).optional()}).strict();
+const runOptions=z.object({instructions:z.object({cli1:z.string().max(8000),cli2:z.string().max(8000)}).optional(),stopWhen:z.object({cli1:z.string().max(4000),cli2:z.string().max(4000)}).optional(),completion:z.enum(['duration','either','both','rounds']).optional(),rounds:z.number().int().min(1).max(100).optional(),stances:z.object({cli1:z.enum(['for','against']),cli2:z.enum(['for','against'])}).strict().optional(),judge:z.object({provider:z.enum(['claude','codex'])}).strict().optional(),speechMs:z.number().min(30_000).max(1_800_000).optional(),check:z.object({kind:z.enum(['challenge','race']),answers:z.array(z.string().trim().min(1).max(500)).min(1).max(10)}).strict().optional(),durationMs:z.number().positive().max(86400000).optional(),maxRequests:z.number().int().min(2).max(10000).optional(),perTurnMs:z.number().positive().max(3600000).optional(),paceMs:z.number().min(0).max(60000).optional(),lead:seat.optional(),mode:z.enum(['conversation','benchmark','build']).optional(),opening:z.enum(['both','cli1','cli2']).optional()}).strict();
 
 // A direct reply is plain text; if the agent answers in the room's JSON envelope out of habit, show just its message.
 function plainReply(text:string){
@@ -47,6 +48,9 @@ function plainReply(text:string){
 // codex-command-runner-<version>.exe), never treated as something an agent left running.
 const AGENT_HELPER=/^(codex|claude|grok|agy|antigravity)([-_.][\w.-]*)?\.exe$/i;
 // Calls that start or change runs, agents or history (refused while Clear history runs).
+// A thread's title from its first prompt: a Markdown heading's text when the prompt starts with one ("# Motion: …" gives
+// the motion), else the prompt as written.
+const topicTitle=(topic:string)=>{const first=topic.trim().split('\n')[0]!;return /^#{1,6}\s/.test(first)?first.replace(/^#{1,6}\s+/,'').replace(/^Motion:\s*/i,''):topic;};
 // The judge's own sessions (G7): kept out of the agent limit and of Quick activate's memory.
 const JUDGE_PAIR='debate-judge-';
 const CHANGING=new Set(['thread.delete','debate.judge','run.start','run.broadcast','run.control','run.reconcile','direct.send','pair.clear','pair.close','pair.reset','slot.configure','slot.activate','slot.quick','slot.cancel','slot.internet','slot.permissions','menu.choose','room.new','history.clear','prompt.save','prompt.delete','prompt.prepare','attachment.add','resources.configure','resources.stop','bench.validate','bench.start','bench.cancel']);
@@ -133,7 +137,11 @@ export class AvAService {
     for(const row of this.store.db.prepare(`SELECT id FROM runs WHERE data LIKE '%"judging"%'`).all())this.store.updateRun(String(row.id),r=>{if(r.judgment?.status==='judging')r.judgment={...r.judgment,status:'failed',finishedAt:new Date().toISOString(),error:'The service stopped while the judge was working.'};});
     this.engine.cleanup=run=>this.stopLeftovers(run);
     // A formal debate with a judge is judged once it completes.
-    this.engine.ended=run=>{if(run.config.stances&&run.config.judge&&run.status==='completed')try{this.startJudging(run.id,run.config.judge.provider);}catch{/* nothing to judge */}};
+    this.engine.ended=run=>{
+      if(run.config.stances&&run.config.judge&&run.status==='completed')try{this.startJudging(run.id,run.config.judge.provider);}catch{/* nothing to judge */}
+      // A Prompt run with an answer key: each agent's answer checked, and its time.
+      if(run.config.check&&run.config.mode==='benchmark')try{this.scorePrompt(run.id);}catch{/* the run stays as it is */}
+    };
     this.activation.keptProcesses=(pairId,seat)=>this.keptServerProcesses(pairId,seat);
     this.engine.reviewFiles=(run,seat)=>run.config.build?inlineProject(join(participantWorkspace(this.dataRoot,{pairId:run.pairId,seat,generation:run.generations[seat]}),run.config.build.folder)):'';
     this.activation.directBusy=(pairId,seat)=>this.direct.has(`${pairId}:${seat}`);
@@ -313,14 +321,12 @@ export class AvAService {
             for(const seat of SEATS)await participants[seat].setBuildAccess?.(!!config.build);
             let debaters=participants;
             // (While a prompt is still running, none of this happens: the start is refused below, as before.)
-            if(config.stances&&(config.mode??'conversation')==='conversation'&&!this.store.pair(p.pairId).activeRunId){
-              // Each formal debate is its own thread (owner, 2026-10-03): after an earlier prompt in this thread, both
-              // agents start fresh sessions first, so neither remembers it and history keeps one debate, with its ballot,
-              // per thread.
-              if(earlier.length){await this.endThread(p.pairId,true);debaters=this.activation.participants(p.pairId);}
-              // G6: each debater is briefed through its 1:1 line, and the debate starts once both are ready.
-              await this.briefDebaters(p.pairId,config);
-            }
+            const mode=config.mode??'conversation',idle=!this.store.pair(p.pairId).activeRunId,formal=!!config.stances&&mode==='conversation';
+            // Each Prompt run and each formal debate is its own thread (owner, 2026-10-03/04): after an earlier prompt in
+            // this thread, both agents get fresh sessions first (clean context, same agents, never shown as closed).
+            if(idle&&earlier.length&&(mode==='benchmark'||formal)){await this.freshThread(p.pairId);debaters=this.activation.participants(p.pairId);}
+            // G6: each debater is briefed through its 1:1 line, and the debate starts once both are ready.
+            if(idle&&formal)await this.briefDebaters(p.pairId,config);
             if(this.shuttingDown||this.stoppingAgents)throw new AvAError('STOPPING_AGENTS','The service is stopping its agents.');
             const run=this.engine.start(p.pairId,config,p.requestId,debaters,attachments);
             if(copied)this.store.event(run.id,'build_copied',{files:copied.files,bytes:copied.bytes,gitSource:copied.gitSource,baseline:copied.baseline});
@@ -495,11 +501,15 @@ export class AvAService {
     const slots=current&&pair&&pair.slots.cli1.config&&pair.slots.cli2.config?{cli1:pair.slots.cli1.config,cli2:pair.slots.cli2.config}:null;
     const named=(this.titles??=this.store.threadTitles()).get(thread.id);
     // A thread's mode is its first prompt's: conversation threads and benchmark threads are listed separately.
-    return {id:thread.id,pairId:thread.pairId,title:named??first?.config.topic.slice(0,300)??'',named:!!named,mode:first?(first.config.mode??'conversation'):null,createdAt:first?.createdAt??direct?.first??times[0]??null,updatedAt:times.at(-1)??null,runIds:thread.runs.map(r=>r.id),
+    return {id:thread.id,pairId:thread.pairId,title:named??(first?topicTitle(first.config.topic).slice(0,300):''),named:!!named,mode:first?(first.config.mode??'conversation'):null,createdAt:first?.createdAt??direct?.first??times[0]??null,updatedAt:times.at(-1)??null,runIds:thread.runs.map(r=>r.id),
       prompts:counts.reduce((n,c)=>n+(c?.prompts??0),0),replies:counts.reduce((n,c)=>n+(c?.replies??0),0),requests:thread.runs.reduce((n,r)=>n+r.requests,0),directMessages:direct?.count??0,
       status:(shown?.status??(current?'ready':'cleared')) as string,reason:shown?.reason??null,live:!!live,current,participants:last?.participants??slots,empty:!first,
       // A judged debate's result, for the thread list (C): who won, and each side's total out of 15.
-      verdict:(()=>{const j=[...thread.runs].reverse().find(r=>r.judgment)?.judgment;return !j?null:j.status!=='done'?{status:j.status}:{status:j.status,winner:j.winner,totals:Object.fromEntries(SEATS.map(s=>[s,total(j.scores![s])]))};})()};
+      verdict:(()=>{
+        const last=[...thread.runs].reverse().find(r=>r.judgment||r.result);if(!last)return null;
+        if(last.result)return {status:'done' as const,kind:last.result.kind,...(last.result.winner?{winner:last.result.winner}:{}),correct:Object.fromEntries(SEATS.map(s=>[s,last.result!.seats[s].correct]))};
+        const j=last.judgment!;return j.status!=='done'?{status:j.status,kind:'debate' as const}:{status:j.status,kind:'debate' as const,winner:j.winner,totals:Object.fromEntries(SEATS.map(s=>[s,total(j.scores![s])]))};
+      })()};
   }
   // Thread names, read once per list or view.
   private titles?:Map<string,string>;
@@ -546,7 +556,7 @@ export class AvAService {
     this.titles=this.store.threadTitles();
     const summary=this.summarize(thread,this.store.runActivity(),pair,this.store.directThreads().find(d=>d.threadId===thread.id));
     const runs=thread.runs.map(r=>{const run=this.engine.snapshot(r.id);return {id:run.id,status:run.status,reason:run.reason,createdAt:run.createdAt??null,elapsedMs:run.elapsedMs,requests:run.requests,
-      config:{topic:run.config.topic,completion:run.config.completion,...(run.config.rounds?{rounds:run.config.rounds}:{}),...(run.config.stances?{stances:run.config.stances}:{}),...(run.config.judge?{judge:run.config.judge}:{}),durationMs:run.config.durationMs,maxRequests:run.config.maxRequests,mode:run.config.mode??'conversation',build:run.config.build??null},participants:run.participants??null,judgment:run.judgment??null};});
+      config:{topic:run.config.topic,completion:run.config.completion,...(run.config.rounds?{rounds:run.config.rounds}:{}),...(run.config.stances?{stances:run.config.stances}:{}),...(run.config.judge?{judge:run.config.judge}:{}),...(run.config.check?{check:run.config.check}:{}),durationMs:run.config.durationMs,maxRequests:run.config.maxRequests,mode:run.config.mode??'conversation',build:run.config.build??null},participants:run.participants??null,judgment:run.judgment??null,result:run.result??null};});
     const messages=thread.runs.flatMap(r=>{const times=this.store.messageTimes(r.id);return this.store.messages(r.id).map((m,i)=>({...m,time:times.get(m.id)??(i===0?r.createdAt??null:null)}));});
     const pending:Partial<Record<Seat,{partial:string;steps:string[]}>>={};
     for(const seat of SEATS){const entry=this.direct.get(`${thread.pairId}:${seat}`);if(entry&&entry.threadId===thread.id)pending[seat]={partial:entry.partial.slice(-4000),steps:entry.steps.slice(-4)};}
@@ -790,6 +800,21 @@ export class AvAService {
     return {...pair,activeRun:active?{id:active.id,status:active.status,reason:active.reason,mode:active.config.mode??'conversation',nextSeat:active.nextSeat,speaking,queued:this.store.queued(active.id).length}:null,connected:Object.fromEntries(SEATS.map(s=>[s,!!this.activation.get(pairId,s)&&this.activation.get(pairId,s)?.isConnected?.()!==false])),
       images:Object.fromEntries(SEATS.map(s=>[s,this.activation.get(pairId,s)?.imageInput!==false])),usage:Object.fromEntries(SEATS.map(s=>[s,this.usageOf(pair,s)])),mode:this.mode,version:packageVersion,
       quick:Object.fromEntries(SEATS.map(s=>[s,this.quick.plan(s,pair.slots[s].config?.provider)]))};
+  }
+  // A Prompt run's answers against its answer key, with each agent's time from its request to its answer.
+  private scorePrompt(runId:string){
+    const run=this.store.run(runId),times=this.store.messageTimes(runId),started=new Map<string,number>();
+    for(const row of this.store.db.prepare("SELECT data,time FROM events WHERE run_id=? AND type='prompt_started' ORDER BY seq").all(runId)){const seat=(JSON.parse(String(row.data)) as {seat:Seat}).seat;if(!started.has(seat))started.set(seat,Date.parse(String(row.time)));}
+    const replies:Partial<Record<Seat,{text:string;ms:number|null}>>={};
+    for(const m of this.store.messages(runId))if(m.sender!=='user'&&!replies[m.sender]){const at=Date.parse(times.get(m.id)??''),from=started.get(m.sender);replies[m.sender]={text:m.text,ms:Number.isFinite(at)&&from!==undefined?Math.max(0,at-from):null};}
+    this.store.updateRun(runId,r=>{r.result=promptResult(run.config.check!,replies);});
+  }
+  // A new thread with the same agents: each gets a fresh session (ActivationManager.renew) without being closed first,
+  // once any 1:1 reply has settled; app servers a Build left running stop, as at Clear Session.
+  private async freshThread(pairId:string){
+    await this.settleDirect(pairId);
+    await this.stopKeptServers(pairId);
+    await Promise.all(SEATS.map(seat=>this.activation.renew(pairId,seat)));
   }
   // A formal debate's briefs (G6), through each debater's 1:1 line: the motion, its side, its private brief, the format and
   // how it will be judged. Both are briefed at once; the debate starts once both have answered.

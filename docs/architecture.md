@@ -253,6 +253,15 @@ A debate (Debate mode) is a formal debate (G6–G8):
   - **On demand:** `debate.judge` judges again, or judges a stopped debate.
 - **Starters.** Starter set 3 adds the ten formal motions and retires earlier debate starters still exactly as shipped, matched by fingerprint (`RETIRED_STARTERS`).
 
+## Prompt challenges and fresh threads
+
+- **Answer key.** A Prompt run may carry one (`RunConfig.check`: challenge or race, accepted answers), saved with a library prompt in `check.json` beside `prompt.md` and never sent to the agents.
+- **Scoring.** When the run ends, `answer-check.ts` reads each agent's last `ANSWER:` line. Whole numbers compare by value, fractions in lowest terms, and anything else as text. The time is from the agent's request start (`prompt_started`) to its committed answer. The result is saved on the run (`Run.result`), and the winner is the right answer, or the faster one.
+- **Fresh threads.** A Prompt run or a formal debate after an earlier prompt in the same thread first calls `freshThread`. It waits for any 1:1 reply, stops kept app servers, and calls `ActivationManager.renew` for both seats.
+  - **What renew does:** it opens a new session (next generation) and passes its readiness check while the old session keeps serving. It then swaps the slot's session and generation in one write and closes the old process.
+  - **Effect:** the slot never leaves Ready. A failed fresh session leaves the old one in place.
+- **Starter set 4.** It adds the ten Prompt challenges and races, and retires the two earlier Prompt starters still exactly as shipped.
+
 ## Updates, Quick activate and thread deletion
 
 - **Service handover (E14).** `health` reports the service's version. A plugin newer than the running service asks it to step aside (`service.retire`). The service agrees only when no conversation, 1:1 reply, activation, preparation or benchmark is running, then closes its agents and exits, and the plugin starts its own. An older plugin uses a newer service as it is. Services from before 0.4.1 can't be asked.
