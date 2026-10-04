@@ -34,7 +34,10 @@ export function pageIn(folder: string) {
 // workspace, a missing file) is ignored.
 export type AppTarget = { kind: 'page'; path: string } | { kind: 'server'; url: string; port: number };
 export function appTarget(text: string, workspace: string): AppTarget | undefined {
-  const named = [...text.matchAll(/^[\s>*_-]*APP[*_\s]*:[*_\s]*(.+?)\s*$/gim)].at(-1)?.[1];
+  // Line by line, from the end, and only short lines: one pattern over the whole reply backtracks quadratically on a
+  // long run of spaces or blank lines, which would stall the service.
+  let named: string | undefined;
+  for (const line of text.split(/\r?\n/).reverse()) if (line.length <= 2000 && (named = /^[\s>*_-]*APP[*_\s]*:[*_\s]*(.*)$/i.exec(line)?.[1]?.trim())) break;
   if (!named) return undefined;
   let value = named.replace(/^[\s`'"<*_]+|[\s`'">*_.]+$/g, '').replace(/^\[[^\]]*\]\((.*)\)$/, '$1').trim();
   if (/^https?:\/\//i.test(value)) {
@@ -51,7 +54,8 @@ export function appTarget(text: string, workspace: string): AppTarget | undefine
 // Never served: the copy's git data, and Windows names that reach the same file another way (a trailing dot or space,
 // or an alternate data stream after a colon).
 const HIDDEN = /(^|[\\/])\.git[. ]*([\\/]|$)|:/i;
-const same = (a: string, b: string) => a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b));
+// Compared as bytes: two strings of the same length can differ in byte length, and timingSafeEqual throws on that.
+const same = (a: string, b: string) => { const x = Buffer.from(a), y = Buffer.from(b); return x.length === y.length && timingSafeEqual(x, y); };
 const escape = (s: string) => s.replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
 const within = (child: string, parent: string) => process.platform === 'win32' ? isInside(child.toLowerCase(), parent.toLowerCase()) : isInside(child, parent);
 
@@ -85,8 +89,9 @@ export class Previews {
   }
   closeAll() { for (const id of [...this.open_.keys()]) this.close(id); }
   private async serve(root: string): Promise<Preview> {
-    const preview: Preview = { server: createServer(), port: 0, key: randomBytes(32).toString('hex'), root, realRoot: realpathSync(root), used: Date.now() };
-    preview.server.on('request', (req, res) => this.handle(preview, req, res));
+    const preview: Preview = { server: createServer(), port: 0, key: randomBytes(32).toString('hex'), root, realRoot: realpathSync.native(root), used: Date.now() };
+    // A request that fails unexpectedly fails alone: an error thrown here would otherwise stop the whole service.
+    preview.server.on('request', (req, res) => { try { this.handle(preview, req, res); } catch { if (res.headersSent) res.destroy(); else { res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' }); res.end('Preview error'); } } });
     await new Promise<void>((done, fail) => { preview.server.once('error', fail); preview.server.listen(0, '127.0.0.1', done); });
     const address = preview.server.address();
     if (!address || typeof address === 'string') throw new Error('No local address');
@@ -112,15 +117,18 @@ export class Previews {
     if (path.includes('\0')) return send(400, 'Invalid URL');
     let file = resolve(p.root, `.${path}`);
     if (!within(file, p.root) || HIDDEN.test(relative(p.root, file))) return send(404, 'Not found');
+    // Checked on the real path, before anything is listed or read: a link or junction inside the copy that leads outside
+    // it isn't followed, and a short (8.3) name such as GIT~1 doesn't reach the git data.
+    const hidden = (path: string) => { const real = realpathSync.native(path); return !within(real, p.realRoot) || HIDDEN.test(relative(p.realRoot, real)); };
     try {
       let stat = statSync(file);
+      if (hidden(file)) return send(404, 'Not found');
       if (stat.isDirectory()) {
         if (!url.pathname.endsWith('/')) { res.writeHead(301, { Location: `${url.pathname}/`, 'Cache-Control': 'no-store' }); res.end(); return; }
         if (!existsSync(join(file, 'index.html'))) return this.listing(file, url.pathname, send);
         file = join(file, 'index.html'); stat = statSync(file);
+        if (hidden(file)) return send(404, 'Not found');
       }
-      // A link inside the copy that points outside it isn't followed.
-      if (!within(realpathSync(file), p.realRoot)) return send(404, 'Not found');
       res.writeHead(200, {
         'Content-Type': TYPES[extname(file).toLowerCase()] ?? 'application/octet-stream', 'Content-Length': stat.size, 'Cache-Control': 'no-store',
         'X-Content-Type-Options': 'nosniff', 'Cross-Origin-Resource-Policy': 'same-site', 'Content-Security-Policy': 'frame-ancestors http://127.0.0.1:*',

@@ -73,6 +73,8 @@ export class PromptLibrary {
     this.safe(this.directory, true);
     if (this.initialized) return;
     for (const entry of readdirSync(this.directory)) {
+      // A save that stopped part-way, or a delete whose folder couldn't be removed: neither is a prompt (Q6).
+      if (entry.startsWith('.pending-') || entry.startsWith('.deleting-')) { try { this.remove(join(this.directory, entry)); } catch { /* next time */ } continue; }
       if (!entry.startsWith('.previous-')) continue;
       const id = key.parse(entry.slice(10)), backup = join(this.directory, entry), target = join(this.directory, id);
       this.tree(backup);
@@ -161,8 +163,9 @@ export class PromptLibrary {
     if (bytes.length !== file.size || attachmentKind(file.name, file.mediaType, bytes) !== file.kind) throw new AvAError('PROMPT_FILES', 'A saved file changed on disk. Remove it and attach the updated file.');
     return bytes;
   }
+  // Only the manifest and the one file are read (not every file, to compute the revision) (Q6).
   file(id: string, fileId: string) {
-    const prompt = this.get(id), file = prompt.files.find(f => f.id === fileId);
+    const file = this.read(id).data.files.find(f => f.id === fileId);
     if (!file) throw new AvAError('NOT_FOUND', 'Prompt file not found.');
     return { ...file, data: this.readFile(this.folder(id), file).toString('base64') };
   }
@@ -204,7 +207,12 @@ export class PromptLibrary {
     if (prompt.revision !== revision) throw new AvAError('PROMPT_CONFLICT', 'This prompt changed in another window. Reload it before deleting.');
     const backup = join(this.directory, `.previous-${id}`);
     if (existsSync(backup)) this.remove(backup);
-    this.remove(this.folder(id)); return { deleted: true };
+    // Moved aside first, then removed: a file that can't go yet (locked) leaves no half-deleted prompt behind, only a
+    // folder the next start removes (Q6).
+    const doomed = join(this.directory, `.deleting-${id}-${randomUUID()}`);
+    this.tree(this.folder(id)); renameSync(this.folder(id), doomed);
+    try { this.remove(doomed); } catch { /* removed at the next start */ }
+    return { deleted: true };
   }
   prepare(id: string, revision: string) {
     const prompt = this.get(id);

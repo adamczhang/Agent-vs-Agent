@@ -29,7 +29,10 @@ export class Store implements ProcessLedger {
       // Never let an older plugin touch data a newer one created: check before any pragma or write changes the file.
       const version = Number(this.db.prepare('PRAGMA user_version').get()!.user_version);
       if (version > SCHEMA_VERSION) throw new AvAError('NEWER_DATA', `This data was written by a newer Agent vs Agent (schema ${version}; this version understands ${SCHEMA_VERSION}). Update the plugin. Nothing was changed.`);
-      this.db.exec('PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;');
+      // NORMAL in WAL mode: a crash of this process loses nothing, and commits no longer wait for the disk (each streamed
+      // chunk is one). Only an OS crash or power loss can drop the last commits, and the next start quarantines what was
+      // running then, without resending it (Q6).
+      this.db.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON;');
       this.migrate();
     } catch (error) { this.db.close(); throw error; }
   }
@@ -81,6 +84,14 @@ export class Store implements ProcessLedger {
     return this.db.prepare('SELECT pid,spawned_at,owner_pid FROM processes WHERE pair_id=? AND exited_at IS NULL').all(pairId).map(r => ({ pid: Number(r.pid), spawnedAt: String(r.spawned_at), ownerPid: Number(r.owner_pid) }));
   }
   recordedProcesses():LedgerProcess[]{return this.db.prepare('SELECT pid,owner_pid,spawned_at,exited_at FROM processes').all().map(r=>({pid:Number(r.pid),ownerPid:Number(r.owner_pid),spawnedAt:String(r.spawned_at),exited:r.exited_at!=null,...(r.exited_at!=null?{exitedAt:String(r.exited_at)}:{})}));}
+  // Records a census has just proved gone get an exit time (at), so a later process that reuses a PID can't pass its
+  // children off as theirs.
+  sealProcesses(rows: LedgerProcess[], at = new Date().toISOString()) {
+    const exit = this.db.prepare('UPDATE processes SET exited_at=? WHERE pid=? AND spawned_at=? AND exited_at IS NULL');
+    for (const p of rows) exit.run(at, p.pid, p.spawnedAt);
+  }
+  // Records from before this logon session: their processes and all their descendants are gone.
+  dropProcessesBefore(at: string) { return this.db.prepare('DELETE FROM processes WHERE spawned_at < ?').run(at).changes; }
   // Clear history: every saved run, message, 1:1 message, thread name and attachment in this data folder. Pairs,
   // rooms, presets and the process ledger stay. The caller makes sure nothing is running.
   clearHistory() {
@@ -92,6 +103,7 @@ export class Store implements ProcessLedger {
       const counts = { runs: count('runs'), directMessages: count('direct_messages'), attachments: attachments.length };
       // The command records stay: they make retried requests idempotent, this very Clear history's included.
       for (const table of ['messages', 'turns', 'deliveries', 'events', 'phases', 'runs', 'direct_messages', 'thread_titles', 'attachments']) this.db.exec(`DELETE FROM ${table}`);
+      this.runsVersion++;
       for (const row of this.db.prepare('SELECT data FROM pairs').all()) { const pair = JSON.parse(String(row.data)) as Pair; delete pair.lastRunId; pair.activeRunId = null; this.savePair(pair); }
       return counts;
     });
@@ -106,7 +118,7 @@ export class Store implements ProcessLedger {
     const result = this.transaction(() => {
       if (runIds.length) {
         for (const table of ['messages', 'turns', 'deliveries', 'events', 'phases']) inRuns(`DELETE FROM ${table} WHERE run_id IN (?)`).run(...runIds);
-        inRuns('DELETE FROM runs WHERE id IN (?)').run(...runIds);
+        inRuns('DELETE FROM runs WHERE id IN (?)').run(...runIds); this.runsVersion++;
       }
       const directMessages = Number(this.db.prepare('DELETE FROM direct_messages WHERE thread_id=?').run(threadId).changes);
       this.db.prepare('DELETE FROM thread_titles WHERE thread_id=?').run(threadId);
@@ -144,6 +156,8 @@ export class Store implements ProcessLedger {
     });
   }
   savePair(pair: Pair) { this.db.prepare('UPDATE pairs SET data=? WHERE id=?').run(JSON.stringify(pair), pair.id); }
+  // A pair that served once and is done (a debate's judge).
+  deletePair(id: string) { this.db.prepare('DELETE FROM pairs WHERE id=?').run(id); }
   // Changes allowed while a run holds the pair: the agent's internet switch, and a failure found while restarting it.
   setSlotInternet(pairId: string, seat: Seat, on: boolean) {
     this.transaction(() => { const pair = this.pair(pairId); pair.slots[seat].internet = on; this.savePair(pair); });
@@ -167,7 +181,7 @@ export class Store implements ProcessLedger {
     if (!row) throw new AvAError('NOT_FOUND', 'Run not found.');
     return JSON.parse(String(row.data)) as Run;
   }
-  saveRun(run: Run) { this.db.prepare('UPDATE runs SET data=? WHERE id=?').run(JSON.stringify(run), run.id); }
+  saveRun(run: Run) { this.db.prepare('UPDATE runs SET data=? WHERE id=?').run(JSON.stringify(run), run.id); this.runsVersion++; }
   updateRun(id: string, action: (run: Run) => void): Run {
     return this.transaction(() => { const run = this.run(id); action(run); this.saveRun(run); return run; });
   }
@@ -223,7 +237,7 @@ export class Store implements ProcessLedger {
         stopFlags: { cli1: false, cli2: false }, reason: null,
         participants: { cli1: pair.slots.cli1.config!, cli2: pair.slots.cli2.config! }, createdAt: new Date().toISOString(),
       };
-      this.db.prepare('INSERT INTO runs VALUES(?,?,?)').run(run.id, pairId, JSON.stringify(run));
+      this.db.prepare('INSERT INTO runs VALUES(?,?,?)').run(run.id, pairId, JSON.stringify(run)); this.runsVersion++;
       pair.activeRunId = run.id; pair.lastRunId=run.id; this.savePair(pair); this.remember(`start:${key}`, input, run.id);
       this.addMessage(run.id, 'user', config.topic, 'queued', null, attachments);
       this.event(run.id, 'run_started', { runId: run.id });
@@ -247,17 +261,21 @@ export class Store implements ProcessLedger {
       this.remember(`broadcast:${key}`, input, id); this.event(runId, 'room_queued', { messageId: id }); return { id, replayed: false };
     });
   }
-  messages(runId: string): RoomMessage[] {
+  // state: only messages in that state (the queued ones, say).
+  messages(runId: string, state?: RoomMessage['state']): RoomMessage[] {
     const delivered=new Map<string,Seat[]>();
     for(const row of this.db.prepare('SELECT seat,message_id FROM deliveries WHERE run_id=?').all(runId)){const key=String(row.message_id),seats=delivered.get(key)??[];seats.push(String(row.seat) as Seat);delivered.set(key,seats);}
-    return this.db.prepare('SELECT * FROM messages WHERE run_id=? ORDER BY seq').all(runId).map(row => ({
+    return this.db.prepare(`SELECT * FROM messages WHERE run_id=?${state ? ' AND state=?' : ''} ORDER BY seq`).all(...(state ? [runId, state] : [runId])).map(row => ({
       id: String(row.id), seq: Number(row.seq), runId: String(row.run_id), sender: String(row.sender) as RoomMessage['sender'],
       text: String(row.text), state: String(row.state) as RoomMessage['state'], turnId: row.turn_id == null ? null : String(row.turn_id),
       deliveredTo:delivered.get(String(row.id))??[],
       ...(row.attachments ? { attachments: JSON.parse(String(row.attachments)) as AttachmentRef[] } : {}),
     }));
   }
-  queued(runId: string) { return this.messages(runId).filter(m => m.state === 'queued'); }
+  queued(runId: string) { return this.messages(runId, 'queued'); }
+  queuedCount(runId: string) { return Number(this.db.prepare("SELECT COUNT(*) n FROM messages WHERE run_id=? AND state='queued'").get(runId)!.n); }
+  // How many messages a sender has posted in a run.
+  sentCount(runId: string, sender: string) { return Number(this.db.prepare('SELECT COUNT(*) n FROM messages WHERE run_id=? AND sender=?').get(runId, sender)!.n); }
   // briefing: a debate briefing (E7), a phase of its own kind that doesn't decide whose turn is next.
   admit(runId: string, seats: readonly Seat[], broadcastId?: string, repairOf?: string, briefing = false): Array<{ id: string; seat: Seat; messages: RoomMessage[] }> {
     return this.transaction(() => {
@@ -301,6 +319,8 @@ export class Store implements ProcessLedger {
       for (const msg of JSON.parse(String(turn.inputs)) as string[]) this.db.prepare('INSERT OR IGNORE INTO deliveries VALUES(?,?,?,?)').run(turn.run_id!, turn.seat!, msg, id);
     }, 'started');
   }
+  // A request that failed before the agent read its messages: they count as not delivered, so the next turn sends them.
+  undeliver(turnId: string) { this.db.prepare('DELETE FROM deliveries WHERE turn_id=?').run(turnId); }
   turnEnd(id: string, status: string, error: string | null = null) {
     this.db.prepare('UPDATE turns SET status=?,error=? WHERE id=?').run(status, error, id);
     // Timing for run statistics: when each request finished, whatever its outcome.
@@ -383,20 +403,29 @@ export class Store implements ProcessLedger {
     };
   }
   // Every run grouped into threads, oldest run first within each thread. Read-only.
+  // Every write to runs bumps this, so the thread groupings are reused until a run changes (the room asks for them a few
+  // times a second while it's open). Callers treat them as read-only (Q6).
+  private runsVersion = 0;
+  private threadCache?: { version: number; groups: Array<{ id: string; pairId: string; runs: Run[] }> };
   threads() {
+    if (this.threadCache?.version === this.runsVersion) return this.threadCache.groups;
     const groups = new Map<string, { id: string; pairId: string; runs: Run[] }>();
     for (const row of this.db.prepare('SELECT data FROM runs ORDER BY rowid').all()) {
       const run = JSON.parse(String(row.data)) as Run, id = threadKey(run.pairId, run.sessions);
       let group = groups.get(id); if (!group) groups.set(id, group = { id, pairId: run.pairId, runs: [] });
       group.runs.push(run);
     }
-    return [...groups.values()];
+    this.threadCache = { version: this.runsVersion, groups: [...groups.values()] };
+    return this.threadCache.groups;
   }
   // Per-run counts and the time of the latest recorded event, for thread summaries.
-  runActivity() {
+  // runIds: only these runs (one thread's). The latest event is found through the (run_id, seq) index, not a scan of every
+  // event's time (Q6).
+  runActivity(runIds?: string[]) {
     const counts = new Map<string, { prompts: number; replies: number; lastAt: string | null }>();
-    for (const row of this.db.prepare("SELECT run_id, SUM(sender='user') prompts, SUM(sender!='user' AND state='committed') replies FROM messages GROUP BY run_id").all()) counts.set(String(row.run_id), { prompts: Number(row.prompts), replies: Number(row.replies), lastAt: null });
-    for (const row of this.db.prepare('SELECT run_id, MAX(time) last FROM events GROUP BY run_id').all()) {
+    const only = runIds ? ` WHERE run_id IN (${runIds.map(() => '?').join(',') || 'NULL'})` : '', args = runIds ?? [];
+    for (const row of this.db.prepare(`SELECT run_id, SUM(sender='user') prompts, SUM(sender!='user' AND state='committed') replies FROM messages${only} GROUP BY run_id`).all(...args)) counts.set(String(row.run_id), { prompts: Number(row.prompts), replies: Number(row.replies), lastAt: null });
+    for (const row of this.db.prepare(`SELECT run_id, time last FROM events WHERE seq IN (SELECT MAX(seq) FROM events${only} GROUP BY run_id)`).all(...args)) {
       const entry = counts.get(String(row.run_id)) ?? { prompts: 0, replies: 0, lastAt: null }; entry.lastAt = row.last === null ? null : String(row.last); counts.set(String(row.run_id), entry);
     }
     return counts;
@@ -421,8 +450,7 @@ export class Store implements ProcessLedger {
       this.db.prepare("UPDATE turns SET status='abandoned' WHERE run_id=? AND status IN ('queued','submitted','uncertain')").run(runId);
       this.db.prepare("UPDATE phases SET status='abandoned' WHERE run_id=? AND status IN ('open','interrupted')").run(runId);
       // The census just proved these recorded processes are gone; close their ledger rows so later checks don't re-test them.
-      const closed = new Date().toISOString(), exit = this.db.prepare('UPDATE processes SET exited_at=? WHERE pid=? AND spawned_at=? AND exited_at IS NULL');
-      for (const p of details.checked) exit.run(closed, p.pid, p.spawnedAt);
+      this.sealProcesses(details.checked);
       this.db.prepare("UPDATE messages SET state='not_delivered' WHERE run_id=? AND state='queued'").run(runId);
       const previousReason = run.reason;
       run.status = 'stopped'; run.reason = 'reconciled'; this.saveRun(run);

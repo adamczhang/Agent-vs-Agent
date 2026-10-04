@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { existsSync,readdirSync,rmSync,statSync } from 'node:fs';
+import { existsSync,readdirSync,statSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import { basename,dirname,join,relative } from 'node:path';
 import { z } from 'zod';
@@ -15,10 +15,10 @@ import { LABELS,Menus } from './menus.js';
 import { QuickMemory,highEffort,strongestModel } from './quick.js';
 import { debateBrief,judgePrompt,maxEffort,parseBallot,total } from './debate.js';
 import { promptResult } from './answer-check.js';
-import { listProcesses,survivors,systemCensus,type Census,type ProcessLedger,type SystemProcess } from './census.js';
+import { START_SLACK_MS,listProcesses,notRunning,sessionStart,survivors,systemCensus,type Census,type ProcessLedger,type SystemProcess } from './census.js';
 import { JobHost,type AgentJobs } from './jobs.js';
 import { combineStats,computeStats } from './stats.js';
-import { checkProject,copyFolder,copyProject,inlineProject,participantWorkspace,projectChanges } from './workspace.js';
+import { checkProject,copyFolder,copyProject,inlineProject,participantBaseline,participantWorkspace,projectChanges } from './workspace.js';
 import { prepareProject } from './prepare-project.js';
 import { Resources } from './resources.js';
 import { BenchmarkRunner } from './bench-runner.js';
@@ -90,6 +90,13 @@ export class AvAService {
   readonly menus:Menus;
   readonly quick:QuickMemory;
   private catalogs=new Map<string,{value:Catalog;at:number}>();
+  // Model-list lookups in flight (each starts a discovery agent): shared by concurrent callers, counted as busy, and
+  // cancelled at shutdown so no discovery agent outlives the service (Q4).
+  private discovering=new Map<string,Promise<Catalog>>();
+  private lifetime=new AbortController();
+  // Pairs whose thread is closing (Clear Session, Close thread): nothing starts on them meanwhile (Q4).
+  private ending=new Set<string>();
+  private changes=new Map<string,ReturnType<typeof projectChanges>>();
   private tickets=new Map<string,{pairId:string;generations:number[];expires:number}>();
   private operations=new Map<string,Promise<unknown>>();
   private pendingStarts=new Map<string,{input:string;task:Promise<Run>}>();
@@ -106,8 +113,11 @@ export class AvAService {
   readonly previews=new Previews();
   // Windows job objects for agents (src/jobs.ts): real agents get them by default; tests can pass their own.
   readonly jobs?:AgentJobs;
+  readonly closeWaitMs:number;
   constructor(readonly dataRoot:string,readonly factory:ServiceFactory=new NativeFactory(dataRoot,loadProviderSetups(dataRoot)),readonly mode:'live'|'simulation'='live',
-    options:{census?:Census;processes?:()=>Promise<SystemProcess[]>;stopProcesses?:(pids:number[])=>Promise<void>;listeners?:(port:number)=>Promise<number[]>;jobs?:AgentJobs}={}){
+    options:{census?:Census;processes?:()=>Promise<SystemProcess[]>;stopProcesses?:(pids:number[])=>Promise<void>;listeners?:(port:number)=>Promise<number[]>;jobs?:AgentJobs;closeWaitMs?:number}={}){
+    // How long Stop all and shutdown wait for the agents to confirm they closed.
+    this.closeWaitMs=options.closeWaitMs??15000;
     // Upgrade the existing key's permissions as well as protecting newly written secrets.
     for(const path of [join(dataRoot,'secrets'),join(dataRoot,'secrets','ai-gateway.json')])if(existsSync(path))protectPrivatePath(path);
     this.store=new Store(join(dataRoot,'ava.sqlite'));this.store.interruptUnfinished();
@@ -116,6 +126,7 @@ export class AvAService {
     this.jobs=options.jobs??(this.factory instanceof NativeFactory?new JobHost(dataRoot):undefined);
     if(this.factory instanceof NativeFactory)this.factory.jobs??=this.jobs;
     this.processes=options.processes??listProcesses;this.stopProcesses=options.stopProcesses??stopTrees;this.listeners=options.listeners??listeningOn;
+    if(this.store.recordedProcesses().some(p=>p.ownerPid!==process.pid))void this.tidyLedger();
     // Persisted receipts describe the old native processes, not this new owner.
     for(const row of this.store.db.prepare('SELECT data FROM pairs').all()){
       const pair=JSON.parse(String(row.data)) as import('./types.js').Pair;
@@ -146,7 +157,7 @@ export class AvAService {
     this.engine.reviewFiles=(run,seat)=>run.config.build?inlineProject(join(participantWorkspace(this.dataRoot,{pairId:run.pairId,seat,generation:run.generations[seat]}),run.config.build.folder)):'';
     this.activation.directBusy=(pairId,seat)=>this.direct.has(`${pairId}:${seat}`);
     // Quick activate remembers each agent's settings when it activates (benchmark sessions aside).
-    this.quick=new QuickMemory(this.store);this.activation.onActivated=(pairId,seat)=>this.rememberQuick(pairId,seat);
+    this.quick=new QuickMemory(this.store);this.activation.onActivated=(pairId,seat)=>{this.freshened(pairId,seat);this.rememberQuick(pairId,seat);};
     this.menus=new Menus(this.store,this.activation,(p,m,a)=>this.catalog(p,m,a),(pairId,seat,level)=>this.setPermissions(pairId,seat,level),{
       models:()=>this.factory.gatewayModels?.()??gatewayModels(this.dataRoot),keyStatus:()=>gatewayKeyStatus(this.dataRoot),
       createKey:budget=>createGatewayKey(this.dataRoot,budget,this.factory.runVercel),forgetKey:()=>forgetGatewayKey(this.dataRoot)},()=>this.factory.cliWarnings?.()??Promise.resolve({}),
@@ -157,7 +168,20 @@ export class AvAService {
   async catalog(provider:Provider,model='',auth:ProviderConfig['auth']='provider-login'){
     const key=JSON.stringify([provider,model,auth]),cached=this.catalogs.get(key);
     if(cached&&Date.now()-cached.at<60000)return cached.value;
-    const value=await this.factory.discover(provider,AbortSignal.timeout(120000),model,auth);this.catalogs.set(key,{value,at:Date.now()});return value;
+    const pending=this.discovering.get(key);if(pending)return pending;
+    const lookup=this.factory.discover(provider,AbortSignal.any([AbortSignal.timeout(120000),this.lifetime.signal]),model,auth)
+      .then(value=>{this.catalogs.set(key,{value,at:Date.now()});return value;}).finally(()=>this.discovering.delete(key));
+    this.discovering.set(key,lookup);return lookup;
+  }
+  // What keeps this service from stepping aside for a newer one, or from exiting when idle (Q4): anything either would cut
+  // off. A run needing attention counts only while this service still has a request registered for it.
+  busyReason(){
+    const pairs=this.resources.pairs(),live=(runId:string)=>{try{const status=this.store.run(runId).status;return status==='needs_attention'?(this.engine.ownership(runId)?.active??0)>0:!['stopped','completed'].includes(status);}catch{return false;}};
+    return pairs.some(p=>p.activeRunId&&live(p.activeRunId))?'a conversation is running'
+      :this.direct.size?'an agent is answering a 1:1 message':this.preparing.size||this.ending.size?'a project or thread is being prepared'
+      :this.benchmarks.busy?'a benchmark is running':this.judging.size?'a judge is scoring a debate'
+      :this.operations.size?'a command is still running':this.restarting.size?'an agent is restarting':this.clearing?'history is being cleared'
+      :this.discovering.size?'a model list is being read':pairs.some(p=>SEATS.some(s=>p.slots[s].state==='verifying'))?'an agent is activating':'';
   }
   async call(method:string,input:unknown):Promise<unknown>{
     if(this.shuttingDown&&CHANGING.has(method))throw new AvAError('SHUTTING_DOWN','The service is shutting down.');
@@ -167,6 +191,7 @@ export class AvAService {
     if(method!=='run.start'&&CHANGING.has(method)&&(method==='history.clear'?this.preparing.size>0:changingPair&&this.preparing.has(changingPair)))throw new AvAError('BUILD_PREPARING','The next prompt is being prepared (a Build project, or a debate’s briefs). Wait for it to finish, then try again.');
     // While history is being cleared nothing may start or change: the clear deletes runs and agents' folders.
     if(this.clearing&&CHANGING.has(method))throw new AvAError('CLEARING','History is being cleared. Try again in a moment.');
+    if(changingPair&&this.ending.has(changingPair)&&CHANGING.has(method))throw new AvAError('THREAD_CLOSING','This thread is closing. Try again in a moment.');
     switch(method){
       case 'health': return {mode:this.mode,pid:process.pid,version:packageVersion,schemaVersion:1,databaseVersion:SCHEMA_VERSION,capabilities:{benchmarks:true,benchmarkResults:true,benchmarkReports:true}};
       // Handover to a newer install: a plugin newer than this service asks it to step aside. It does only when nothing is
@@ -174,9 +199,7 @@ export class AvAService {
       case 'service.retire':{
         const p=z.object({version:z.string().max(40)}).parse(input);
         if(!this.retire||!newerVersion(p.version,packageVersion))return {retiring:false,reason:`This service (${packageVersion}) isn't older than ${p.version}.`};
-        const busy=this.store.db.prepare('SELECT data FROM pairs').all().some(row=>(JSON.parse(String(row.data)) as Pair).activeRunId)?'a conversation is running'
-          :this.direct.size?'an agent is answering a 1:1 message':this.preparing.size?'a project is being prepared':this.benchmarks.busy?'a benchmark is running'
-          :this.store.db.prepare('SELECT data FROM pairs').all().some(row=>SEATS.some(s=>(JSON.parse(String(row.data)) as Pair).slots[s].state==='verifying'))?'an agent is activating':'';
+        const busy=this.busyReason();
         if(busy)return {retiring:false,reason:busy};
         this.shuttingDown=true;setTimeout(()=>this.retire?.(),50);return {retiring:true,version:packageVersion};
       }
@@ -313,8 +336,8 @@ export class AvAService {
               // Each agent gets its own copy (or empty folder), inside its own workspace; then Codex may edit and run commands there.
               const pair=this.store.pair(p.pairId);
               for(const seat of SEATS){
-                const target=join(participantWorkspace(this.dataRoot,{pairId:p.pairId,seat,generation:pair.slots[seat].generation}),config.build.folder);
-                copied=await prepareProject(config.build.source,target);made.push(target);
+                const scope={pairId:p.pairId,seat,generation:pair.slots[seat].generation},target=join(participantWorkspace(this.dataRoot,scope),config.build.folder),history=participantBaseline(this.dataRoot,scope,config.build.folder);
+                copied=await prepareProject(config.build.source,target,history);made.push(target,history);
               }
             }
             // (Codex's sandbox is set again before each request; this spares its first one the switch.)
@@ -324,21 +347,30 @@ export class AvAService {
             const mode=config.mode??'conversation',idle=!this.store.pair(p.pairId).activeRunId,formal=!!config.stances&&mode==='conversation';
             // Each Prompt run and each formal debate is its own thread (owner, 2026-10-03/04): after an earlier prompt in
             // this thread, both agents get fresh sessions first (clean context, same agents, never shown as closed).
+            // A seat whose fresh session didn't take last time (or whose brief failed) still holds the earlier context, even
+            // though the thread looks new: it gets its fresh session now (Q3).
+            const stale=[...(this.stale.get(p.pairId)??[])];
             if(idle&&earlier.length&&(mode==='benchmark'||formal)){await this.freshThread(p.pairId);debaters=this.activation.participants(p.pairId);}
-            // G6: each debater is briefed through its 1:1 line, and the debate starts once both are ready.
-            if(idle&&formal)await this.briefDebaters(p.pairId,config);
+            else if(idle&&stale.length){await this.freshThread(p.pairId,stale);debaters=this.activation.participants(p.pairId);}
+            // G6: each debater is briefed through its 1:1 line, and the debate starts once both are ready. A failed brief
+            // leaves both sessions to be renewed, so a retry (perhaps with the sides swapped) starts clean.
+            if(idle&&formal)try{await this.briefDebaters(p.pairId,config);}catch(error){this.markStale(p.pairId,SEATS);throw error;}
             if(this.shuttingDown||this.stoppingAgents)throw new AvAError('STOPPING_AGENTS','The service is stopping its agents.');
             const run=this.engine.start(p.pairId,config,p.requestId,debaters,attachments);
             if(copied)this.store.event(run.id,'build_copied',{files:copied.files,bytes:copied.bytes,gitSource:copied.gitSource,baseline:copied.baseline});
             return run;
           // A start that fails takes its copies with it, so a retry with the same request starts clean.
-          }catch(error){for(const dir of made)await rm(dir,{recursive:true,force:true});throw error;}
+          }catch(error){for(const dir of made)await rm(dir,{recursive:true,force:true,maxRetries:5,retryDelay:200}).catch(()=>{/* the start's own error matters more */});throw error;}
           finally{this.pendingStarts.delete(p.requestId);this.preparing.delete(p.pairId);this.preparationDone.delete(preparation);preparationFinished();}
         });
         this.pendingStarts.set(p.requestId,{input:startInput,task});return task;
       }
       // Build results: what each agent changed in its copy, and a preview of it served on its own origin.
-      case 'build.changes':{const p=z.object({runId:id,seat}).parse(input);return projectChanges(this.buildCopy(p.runId,p.seat).copy);}
+      // One reading per copy at a time: the room asks every few seconds, and a large copy takes git a while (Q6).
+      case 'build.changes':{
+        const p=z.object({runId:id,seat}).parse(input),{copy,history}=this.buildCopy(p.runId,p.seat),pending=this.changes.get(copy);if(pending)return pending;
+        const reading=projectChanges(copy,history).finally(()=>this.changes.delete(copy));this.changes.set(copy,reading);return reading;
+      }
       // The app the agent named (APP: …), else the page found in its folder. A server it left running opens directly.
       case 'build.preview':{
         const p=z.object({runId:id,seat}).parse(input),{copy,workspace}=this.buildCopy(p.runId,p.seat),app=this.appOf(p.runId,p.seat);
@@ -379,9 +411,10 @@ export class AvAService {
         this.store.setThreadTitle(thread.id,p.title||null);return {threadId:thread.id,title:p.title||null};
       }
       case 'run.get':{
-        const p=z.object({runId:id,after:z.number().int().min(0).optional()}).parse(input),run=this.engine.snapshot(p.runId);
+        // eventsOnly: the room pages events and has the messages from thread.get (Q6).
+        const p=z.object({runId:id,after:z.number().int().min(0).optional(),eventsOnly:z.boolean().optional()}).parse(input),run=this.engine.snapshot(p.runId);
         const attention=run.status==='needs_attention'?{uncertainTurns:Number(this.store.db.prepare("SELECT COUNT(*) n FROM turns WHERE run_id=? AND status IN ('uncertain','queued','submitted')").get(p.runId)!.n),ownedHere:!!this.engine.ownership(p.runId)}:undefined;
-        return {run,messages:this.store.messages(p.runId),events:this.store.events(p.runId,p.after),attention};
+        return {run,...(p.eventsOnly?{}:{messages:this.store.messages(p.runId)}),events:this.store.events(p.runId,p.after),attention};
       }
       case 'run.stats':{const p=z.object({runId:id}).parse(input);return this.runStats(p.runId);}
       // Threads: the room's left panel. The whole pool (every chat, from every host), newest activity first. Read-only.
@@ -517,7 +550,8 @@ export class AvAService {
     this.titles=this.store.threadTitles();
     const activity=this.store.runActivity(),pairs=new Map<string,Pair|undefined>(),pairOf=(id:string)=>{if(!pairs.has(id))pairs.set(id,this.pairOrUndefined(id));return pairs.get(id);};
     const direct=new Map(this.store.directThreads().map(d=>[d.threadId,d]));
-    const groups=this.store.threads();
+    // A copy: the store keeps its groupings for the next call.
+    const groups=[...this.store.threads()];
     // Threads that so far only hold direct messages, plus this room's fresh sessions.
     for(const d of direct.values())if(!groups.some(g=>g.id===d.threadId))groups.push({id:d.threadId,pairId:d.pairId,runs:[]});
     // This room's fresh sessions (one per pair it has: one per mode) are listed too.
@@ -534,14 +568,21 @@ export class AvAService {
     if(current&&pair&&(pair.activeRunId||SEATS.some(s=>this.activation.get(pair.id,s)||this.direct.has(`${pair.id}:${s}`))||this.preparing.has(pair.id)))
       throw new AvAError('THREAD_ACTIVE','This thread’s agents are still active. Close the thread first, then delete it.');
     if(thread.runs.some(r=>this.judging.has(r.id)||r.status==='running'||r.status==='paused'||r.status==='needs_attention'))throw new AvAError('THREAD_BUSY','Something in this thread is still running or needs attention. Let it finish, then delete it.');
-    const counts=this.store.deleteThread(threadId,thread.runs.map(r=>r.id));this.titles=undefined;
-    // Its sessions' folders (workspaces and saved session state), unless a pair is using them now.
+    const runIds=thread.runs.map(r=>r.id);
+    // Its kept app servers stop first (they hold files in its folders), and its debates' judge sessions go too: their
+    // saved state holds the whole debate (Q4).
+    await this.stopKeptServers(thread.pairId,runIds);
+    await this.dropJudges(runIds);
+    const counts=this.store.deleteThread(threadId,runIds);this.titles=undefined;
+    // Its sessions' folders (workspaces, saved session state and Build baselines), unless a pair is using them now. The
+    // records are gone already, so a folder that can't go yet (a locked file) doesn't stop the others.
     const inUse=new Set(this.store.db.prepare('SELECT data FROM pairs').all().flatMap(r=>{const p=JSON.parse(String(r.data)) as Pair;return SEATS.map(s=>`${p.id}/${s}/${p.slots[s].generation}`);}));
+    let kept=0;
     for(const run of thread.runs)for(const seat of SEATS){
       if(inUse.has(`${run.pairId}/${seat}/${run.generations[seat]}`))continue;
-      for(const base of ['workspaces','acpx'])rmSync(join(this.dataRoot,base,run.pairId,seat,String(run.generations[seat])),{recursive:true,force:true,maxRetries:3,retryDelay:200});
+      for(const base of ['workspaces','acpx','baselines'])try{await rm(join(this.dataRoot,base,run.pairId,seat,String(run.generations[seat])),{recursive:true,force:true,maxRetries:3,retryDelay:200});}catch{kept++;}
     }
-    return {deleted:true,...counts};
+    return {deleted:true,...counts,...(kept?{foldersKept:kept}:{})};
   }
   private findThread(threadId:string):{id:string;pairId:string;runs:Run[]}{
     const found=this.store.threads().find(t=>t.id===threadId);if(found)return found;
@@ -554,7 +595,7 @@ export class AvAService {
   private threadView(threadId:string){
     const thread=this.findThread(threadId),pair=this.pairOrUndefined(thread.pairId);
     this.titles=this.store.threadTitles();
-    const summary=this.summarize(thread,this.store.runActivity(),pair,this.store.directThreads().find(d=>d.threadId===thread.id));
+    const summary=this.summarize(thread,this.store.runActivity(thread.runs.map(r=>r.id)),pair,this.store.directThreads().find(d=>d.threadId===thread.id));
     const runs=thread.runs.map(r=>{const run=this.engine.snapshot(r.id);return {id:run.id,status:run.status,reason:run.reason,createdAt:run.createdAt??null,elapsedMs:run.elapsedMs,requests:run.requests,
       config:{topic:run.config.topic,completion:run.config.completion,...(run.config.rounds?{rounds:run.config.rounds}:{}),...(run.config.stances?{stances:run.config.stances}:{}),...(run.config.judge?{judge:run.config.judge}:{}),...(run.config.check?{check:run.config.check}:{}),durationMs:run.config.durationMs,maxRequests:run.config.maxRequests,mode:run.config.mode??'conversation',build:run.config.build??null},participants:run.participants??null,judgment:run.judgment??null,result:run.result??null};});
     const messages=thread.runs.flatMap(r=>{const times=this.store.messageTimes(r.id);return this.store.messages(r.id).map((m,i)=>({...m,time:times.get(m.id)??(i===0?r.createdAt??null:null)}));});
@@ -663,12 +704,22 @@ export class AvAService {
     return files;
   }
   // One agent's folder for a Build run, in the workspace of the session generation that ran it.
+  // The process ledger after a restart (Q2). Records from an earlier logon session are dropped: their processes and every
+  // descendant are gone. An earlier service's record whose own process no longer runs gets an exit time now, so its
+  // orphans (older) still count and a later process that reuses its PID can't pass its children off as the agent's.
+  private async tidyLedger(){
+    try{
+      const all=await this.processes(),since=sessionStart(all);
+      if(Number.isFinite(since))this.store.dropProcessesBefore(new Date(since-START_SLACK_MS).toISOString());
+      this.store.sealProcesses(notRunning(this.store.recordedProcesses().filter(p=>p.ownerPid!==process.pid&&!p.exited),all));
+    }catch{/* the census still applies its own checks */}
+  }
   private buildCopy(runId:string,seat:Seat){
     const run=this.store.run(runId);
     if(run.config.mode!=='build'||!run.config.build)throw new AvAError('NOT_BUILD','That prompt wasn’t a Build run.');
-    const workspace=participantWorkspace(this.dataRoot,{pairId:run.pairId,seat,generation:run.generations[seat]}),copy=join(workspace,run.config.build.folder);
+    const scope={pairId:run.pairId,seat,generation:run.generations[seat]},workspace=participantWorkspace(this.dataRoot,scope),copy=join(workspace,run.config.build.folder);
     if(!existsSync(copy))throw new AvAError('NO_COPY','This agent’s folder is no longer there.');
-    return {workspace,copy};
+    return {workspace,copy,history:participantBaseline(this.dataRoot,scope,run.config.build.folder)};
   }
   // The app an agent named in its build report.
   private appOf(runId:string,seat:Seat){
@@ -679,6 +730,12 @@ export class AvAService {
   // settle, its kept app servers stop, and its agents close, keeping their settings. reactivate: start both again with
   // fresh sessions (Clear Session); otherwise they wait for activation (Close thread).
   private async endThread(pairId:string,reactivate:boolean){
+    // The pair is held for all of it: a prompt from another tab can't start on the old sessions halfway through (Q4).
+    if(this.ending.has(pairId))throw new AvAError('THREAD_CLOSING','This thread is closing. Try again in a moment.');
+    this.ending.add(pairId);
+    try{await this.closeThread(pairId,reactivate);}finally{this.ending.delete(pairId);}
+  }
+  private async closeThread(pairId:string,reactivate:boolean){
     const pair=this.store.pair(pairId);
     if(pair.activeRunId){
       const runId=pair.activeRunId;
@@ -708,8 +765,9 @@ export class AvAService {
   }
   // App servers kept running after a build (recorded as build_server events) are stopped with their session: at Clear
   // Session or Clear history. A recorded PID only counts while its start time still matches.
-  private async stopKeptServers(pairId?:string){
-    const rows=this.store.db.prepare(`SELECT e.data FROM events e JOIN runs r ON r.id=e.run_id WHERE e.type='build_server'${pairId?' AND r.pair_id=?':''}`).all(...(pairId?[pairId]:[]));
+  // runIds: only the servers those runs kept (one thread's).
+  private async stopKeptServers(pairId?:string,runIds?:string[]){
+    const rows=this.store.db.prepare(`SELECT e.data FROM events e JOIN runs r ON r.id=e.run_id WHERE e.type='build_server'${pairId?' AND r.pair_id=?':''}${runIds?` AND r.id IN (${runIds.map(()=>'?').join(',')||'NULL'})`:''}`).all(...(pairId?[pairId]:[]),...(runIds??[]));
     const kept=rows.flatMap(r=>(JSON.parse(String(r.data)) as {processes:Array<{pid:number;started:number}>}).processes);
     if(!kept.length)return;
     const alive=new Map((await this.processes().catch(()=>[] as SystemProcess[])).map(p=>[p.pid,p]));
@@ -734,17 +792,19 @@ export class AvAService {
       for(const s of SEATS)await this.activation.configure(pair.id,s,pair.slots[s].config!);
       for(const s of SEATS)await this.activation.activate(pair.id,s,pair.slots[s].config!);
     }
+    await this.dropJudges();
     const threads=this.threadList().filter(t=>!t.empty).length,counts=this.store.clearHistory();
-    // Agent folders: each session's workspace, and its saved session state (acpx/, which holds that session's messages).
+    // Agent folders: each session's workspace, its saved session state (acpx/, which holds that session's messages), and
+    // AvA's record of its Build baselines (baselines/).
     // Every pair's current session folders stay: their agents may be running in them.
     const live=pairs().flatMap(p=>SEATS.map(s=>[p.id,s,String(p.slots[s].generation)]));
     const dirs=(path:string)=>existsSync(path)?readdirSync(path,{withFileTypes:true}).filter(e=>e.isDirectory()).map(e=>join(path,e.name)):[];
     let removed=0,kept=0;
-    for(const base of ['workspaces','acpx']){
+    for(const base of ['workspaces','acpx','baselines']){
       const root=join(this.dataRoot,base),current=new Set(live.map(parts=>join(root,...parts)));
       for(const pairDir of dirs(root))for(const seatDir of dirs(pairDir))for(const dir of dirs(seatDir)){
         if(current.has(dir))continue;
-        try{rmSync(dir,{recursive:true,force:true,maxRetries:3,retryDelay:200});if(base==='workspaces')removed++;}catch{if(base==='workspaces')kept++;}
+        try{await rm(dir,{recursive:true,force:true,maxRetries:3,retryDelay:200});if(base==='workspaces')removed++;}catch{if(base==='workspaces')kept++;}
       }
     }
     return {threads,...counts,workspacesRemoved:removed,workspacesInUse:kept,pair:pair?this.pairView(pair.id):null};
@@ -797,7 +857,7 @@ export class AvAService {
     const pair=this.store.pair(pairId),active=pair.activeRunId?this.store.run(pair.activeRunId):undefined;
     // An agent reading a debate's topic while its partner opens (E7) isn't speaking.
     const speaking=active?[...new Set(this.store.db.prepare("SELECT t.seat FROM turns t LEFT JOIN phases p ON p.id=t.phase_id WHERE t.run_id=? AND t.status IN ('queued','submitted') AND IFNULL(p.kind,'')!='briefing'").all(active.id).map(r=>String(r.seat) as Seat))]:[];
-    return {...pair,activeRun:active?{id:active.id,status:active.status,reason:active.reason,mode:active.config.mode??'conversation',nextSeat:active.nextSeat,speaking,queued:this.store.queued(active.id).length}:null,connected:Object.fromEntries(SEATS.map(s=>[s,!!this.activation.get(pairId,s)&&this.activation.get(pairId,s)?.isConnected?.()!==false])),
+    return {...pair,activeRun:active?{id:active.id,status:active.status,reason:active.reason,mode:active.config.mode??'conversation',nextSeat:active.nextSeat,speaking,queued:this.store.queuedCount(active.id)}:null,connected:Object.fromEntries(SEATS.map(s=>[s,!!this.activation.get(pairId,s)&&this.activation.get(pairId,s)?.isConnected?.()!==false])),
       images:Object.fromEntries(SEATS.map(s=>[s,this.activation.get(pairId,s)?.imageInput!==false])),usage:Object.fromEntries(SEATS.map(s=>[s,this.usageOf(pair,s)])),mode:this.mode,version:packageVersion,
       quick:Object.fromEntries(SEATS.map(s=>[s,this.quick.plan(s,pair.slots[s].config?.provider)]))};
   }
@@ -811,11 +871,19 @@ export class AvAService {
   }
   // A new thread with the same agents: each gets a fresh session (ActivationManager.renew) without being closed first,
   // once any 1:1 reply has settled; app servers a Build left running stop, as at Clear Session.
-  private async freshThread(pairId:string){
+  private async freshThread(pairId:string,seats:readonly Seat[]=SEATS){
     await this.settleDirect(pairId);
     await this.stopKeptServers(pairId);
-    await Promise.all(SEATS.map(seat=>this.activation.renew(pairId,seat)));
+    // Each seat counts as stale until its renewal succeeds (onActivated clears it), so if one fails, the other doesn't
+    // carry the earlier context into the retry (Q3).
+    this.markStale(pairId,seats);
+    const results=await Promise.allSettled(seats.map(seat=>this.activation.renew(pairId,seat)));
+    const failed=results.find(r=>r.status==='rejected');if(failed)throw failed.reason;
   }
+  // Seats whose sessions still hold an earlier thread's context (Q3).
+  private stale=new Map<string,Set<Seat>>();
+  private markStale(pairId:string,seats:readonly Seat[]){const set=this.stale.get(pairId)??new Set<Seat>();for(const s of seats)set.add(s);this.stale.set(pairId,set);}
+  private freshened(pairId:string,seat:Seat){const set=this.stale.get(pairId);if(set){set.delete(seat);if(!set.size)this.stale.delete(pairId);}}
   // A formal debate's briefs (G6), through each debater's 1:1 line: the motion, its side, its private brief, the format and
   // how it will be judged. Both are briefed at once; the debate starts once both have answered.
   private async briefDebaters(pairId:string,config:RunConfig){
@@ -830,7 +898,8 @@ export class AvAService {
   // The judge (G7): a fresh session of the CLI's strongest model at its highest effort, with web search to check facts.
   // It sees the motion and the speeches, never the debaters' briefs or who they are. It runs in the background and saves
   // its ballot with the run; one judging per debate at a time.
-  private judging=new Set<string>();
+  // Each judging has its token, so a judge that has finished clears only its own entry, never a newer Judge again.
+  private judging=new Map<string,symbol>();
   private startJudging(runId:string,provider?:JudgeProvider){
     const run=this.store.run(runId);
     if(!run.config.stances)throw new AvAError('NOT_DEBATE','Only a formal debate has a judge.');
@@ -838,12 +907,12 @@ export class AvAService {
     if(this.judging.has(runId))return run.judgment;
     if(!SEATS.every(s=>this.store.messages(runId).some(m=>m.sender===s)))throw new AvAError('NOTHING_TO_JUDGE','Each debater needs at least one speech to judge.');
     const chosen=provider??run.config.judge?.provider??'claude',startedAt=new Date().toISOString();
-    this.judging.add(runId);
+    const token=Symbol(runId);this.judging.set(runId,token);
     this.store.updateRun(runId,r=>{r.judgment={status:'judging',judge:{provider:chosen,model:'',auth:'provider-login'},startedAt};});
-    void this.judgeDebate(runId,chosen,startedAt).finally(()=>this.judging.delete(runId));
+    void this.judgeDebate(runId,chosen,startedAt,token);
     return this.store.run(runId).judgment;
   }
-  private async judgeDebate(runId:string,provider:JudgeProvider,startedAt:string){
+  private async judgeDebate(runId:string,provider:JudgeProvider,startedAt:string,token:symbol){
     const save=(judgment:Judgment)=>{try{this.store.updateRun(runId,r=>{r.judgment=judgment;});}catch{/* the run was deleted meanwhile */}};
     let judge:ProviderConfig={provider,model:'',auth:'provider-login'},pairId:string|undefined;
     try{
@@ -861,7 +930,24 @@ export class AvAService {
       if(result.status!=='completed')throw new AvAError('JUDGE_CANCELLED','The judge did not finish.');
       save({status:'done',judge,startedAt,finishedAt:new Date().toISOString(),...parseBallot(result.text,run.config.stances!)});
     }catch(error){save({status:'failed',judge,startedAt,finishedAt:new Date().toISOString(),error:(error instanceof Error?error.message:String(error)).slice(0,500)});}
-    finally{if(pairId)await this.activation.closePair(pairId).catch(()=>{});}
+    // The judging is over once its ballot is saved: Judge again may start while the judge's session is still being removed.
+    finally{if(this.judging.get(runId)===token)this.judging.delete(runId);if(pairId)await this.dropJudge(pairId);}
+  }
+  // A judge's session is closed and forgotten once it has scored (Q4): its pair, and its folders, whose saved session state
+  // holds the whole debate. Delete thread and Clear history drop the judges of the debates they delete.
+  private async dropJudge(pairId:string){
+    await this.activation.closePair(pairId).catch(()=>{});
+    try{this.store.deletePair(pairId);}catch{/* already gone */}
+    for(const base of ['workspaces','acpx'])try{await rm(join(this.dataRoot,base,pairId),{recursive:true,force:true,maxRetries:3,retryDelay:200});}catch{/* removed with history later */}
+  }
+  // The judge pairs for these debates (all of them when none are named), except one still scoring.
+  private async dropJudges(runIds?:string[]){
+    for(const pair of this.resources.pairs()){
+      if(!pair.thread.startsWith(JUDGE_PAIR))continue;
+      const runId=[...this.judging.keys()].find(id=>pair.thread.startsWith(`${JUDGE_PAIR}${id}-`));if(runId)continue;
+      if(runIds&&!runIds.some(id=>pair.thread.startsWith(`${JUDGE_PAIR}${id}-`)))continue;
+      await this.dropJudge(pair.id);
+    }
   }
   // An active agent's settings, remembered for Quick activate: on activation, and when its internet or permissions change.
   private rememberQuick(pairId:string,seat:Seat){
@@ -899,7 +985,7 @@ export class AvAService {
       await Promise.allSettled(this.preparationDone);
       this.previews.closeAll();
       let cleanupTimer:ReturnType<typeof setTimeout>|undefined;
-      try{await Promise.race([this.activation.closeAll(),new Promise<never>((_,reject)=>{cleanupTimer=setTimeout(()=>reject(new Error('A provider did not confirm cleanup within 15 seconds.')),15000);})]);}
+      try{await Promise.race([this.activation.closeAll(),new Promise<never>((_,reject)=>{cleanupTimer=setTimeout(()=>reject(new Error(`A provider did not confirm cleanup within ${Math.round(this.closeWaitMs/1000)} seconds.`)),this.closeWaitMs);})]);}
       catch(e){errors.push(e instanceof Error?e.message:'A provider did not confirm cleanup.');}
       finally{clearTimeout(cleanupTimer);}
       const recorded=this.store.recordedProcesses();
@@ -908,6 +994,8 @@ export class AvAService {
         const owned=survivors(recorded,await this.processes());
         if(owned.length)await this.stopProcesses(owned.map(p=>p.pid));
         remaining=(await this.census(recorded)).map(p=>p.pid);
+        // What the census proved gone gets its exit time (Q2).
+        const left=new Set(remaining);this.store.sealProcesses(recorded.filter(p=>!p.exited&&!left.has(p.pid)));
       }catch{errors.push('Could not verify that all owned processes stopped.');}
       const unfinished=()=>this.resources.pairs().some(p=>p.activeRunId&&['running','pausing','stopping'].includes(this.store.run(p.activeRunId).status));
       for(const end=Date.now()+5000;unfinished()&&Date.now()<end;)await new Promise(r=>setTimeout(r,25));
@@ -948,7 +1036,7 @@ export class AvAService {
     return report||credit?{...report,...(credit?{credit}:{}),at:report?.at??Date.now()}:null;
   }
   async shutdown(){
-    this.shuttingDown=true;await this.benchmarks.shutdown();
+    this.shuttingDown=true;this.lifetime.abort(new AvAError('SHUTDOWN','The service is shutting down.'));await this.benchmarks.shutdown();
     // A debate's briefs are 1:1 replies its start waits for: cancel them first, so that start ends.
     for(const entry of this.direct.values())entry.abort.abort(new AvAError('CANCELLED','The service is shutting down.'));
     await Promise.allSettled(this.preparationDone);
@@ -958,7 +1046,11 @@ export class AvAService {
     }
     for(const entry of this.direct.values())entry.abort.abort(new AvAError('CANCELLED','The service is shutting down.'));
     this.previews.closeAll();
-    await this.activation.closeAll();
+    // Bounded, as in Stop all: a provider whose close never settles mustn't hold the service open (Q4). What doesn't close
+    // is found through the process ledger later.
+    let closing:ReturnType<typeof setTimeout>|undefined;
+    await Promise.race([this.activation.closeAll(),new Promise<void>(done=>{closing=setTimeout(done,this.closeWaitMs);})]).catch(()=>{}).finally(()=>clearTimeout(closing));
+    if(this.discovering.size){let wait:ReturnType<typeof setTimeout>|undefined;await Promise.race([Promise.allSettled([...this.discovering.values()]),new Promise(done=>{wait=setTimeout(done,5000);})]);clearTimeout(wait);}
     // Let stopped runs record their terminal state before the caller closes the store; anything still unsettled is quarantined on restart.
     const unsettled=()=>this.store.db.prepare('SELECT data FROM runs').all().some(row=>['running','pausing','stopping'].includes((JSON.parse(String(row.data)) as {status:string}).status));
     for(const deadline=Date.now()+5000;unsettled()&&Date.now()<deadline;)await new Promise(resolve=>setTimeout(resolve,25));

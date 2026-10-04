@@ -14,13 +14,15 @@ export class Resources {
   get limit(){const saved=this.store.db.prepare("SELECT value FROM app_settings WHERE key='maxActiveAgents'").get();return saved?Number(saved.value):4;}
   configure(limit:number){this.store.db.prepare("INSERT INTO app_settings VALUES('maxActiveAgents',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(String(limit));return {maxActiveAgents:limit};}
   admit(pairId:string,seat:Seat){
-    const limit=this.limit,active=this.active();
+    // A debate's judge (a pair of its own) works in the background and isn't counted against the limit (Q4).
+    const limit=this.limit,active=this.active().filter(a=>!a.pair.thread.startsWith('debate-judge-'));
     if(active.some(a=>a.pair.id===pairId&&a.seat===seat))return;
     if(limit&&active.length>=limit)throw new AvAError('AGENT_LIMIT',`The limit of ${limit} active agents has been reached. Stop an agent or raise the limit in Resources.`);
   }
   async snapshot(stopping=false):Promise<ResourceSnapshot>{
     const active=this.active();
-    if(active.length&&(!this.sample||Date.now()-this.sample.at>=5000)){
+    // A memory sample is a PowerShell process listing, so it's taken every 15 s at most while the panel polls every 5 s (Q6).
+    if(active.length&&(!this.sample||Date.now()-this.sample.at>=15000)){
       this.sampling??=this.list().then(processes=>{this.sample={at:Date.now(),processes};},()=>{this.sample={at:Date.now(),processes:null};}).finally(()=>{this.sampling=undefined;});
       await this.sampling;
     }

@@ -9,8 +9,9 @@ const START_SLACK_MS = 10_000;
 // Whether the process recorded as an owner is still that process. A live PID alone isn't proof: Windows reuses PIDs, often
 // right after a reboot, and a stale record would then block every new service. So a recorded start time must match too.
 // A record without one (older versions), or a start time the system won't tell, falls back to the PID alone.
+// EPERM means the process exists but can't be signalled (an elevated service seen from a normal one): it is running.
 export function ownerAlive(pid: number, started?: number | null) {
-  try { process.kill(pid, 0); } catch { return false; }
+  try { process.kill(pid, 0); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EPERM') return false; }
   if (started == null) return true;
   const actual = startTimeOf(pid);
   return actual === undefined || Math.abs(actual - started) <= START_SLACK_MS;
@@ -29,10 +30,16 @@ function startTimeOf(pid: number): number | undefined {
 // this data folder write and read; their claims (no "@") are judged by PID alone.
 export function claimOwner(dataRoot:string,owner:string){
   const db=new DatabaseSync(join(dataRoot,'owner.sqlite')),token=`${owner}@${processStarted()}`;
-  db.exec('PRAGMA busy_timeout=5000; CREATE TABLE IF NOT EXISTS owner(id INTEGER PRIMARY KEY CHECK(id=1),pid INTEGER NOT NULL,token TEXT NOT NULL); BEGIN IMMEDIATE');
+  db.exec('PRAGMA busy_timeout=5000; CREATE TABLE IF NOT EXISTS owner(id INTEGER PRIMARY KEY CHECK(id=1),pid INTEGER NOT NULL,token TEXT NOT NULL)');
+  // Whether the recorded owner still runs is checked before the write lock (it can take a PowerShell start), so a second
+  // service starting at the same moment doesn't time out waiting for it. Inside the lock, a record that changed
+  // meanwhile is a new owner (Q4).
+  const seen=db.prepare('SELECT pid,token FROM owner WHERE id=1').get(),seenStarted=Number(String(seen?.token??'').split('@')[1]);
+  const seenAlive=!!seen&&ownerAlive(Number(seen.pid),Number.isFinite(seenStarted)&&seenStarted>0?seenStarted:null);
+  db.exec('BEGIN IMMEDIATE');
   try{
-    const old=db.prepare('SELECT pid,token FROM owner WHERE id=1').get(),started=Number(String(old?.token??'').split('@')[1]);
-    if(old&&ownerAlive(Number(old.pid),Number.isFinite(started)&&started>0?started:null))throw new AvAError('OWNER_EXISTS','An AvA service already owns this data directory.');
+    const old=db.prepare('SELECT pid,token FROM owner WHERE id=1').get();
+    if(old&&(seenAlive||String(old.token)!==String(seen?.token)))throw new AvAError('OWNER_EXISTS','An AvA service already owns this data directory.');
     db.prepare('INSERT OR REPLACE INTO owner VALUES(1,?,?)').run(process.pid,token);db.exec('COMMIT');
   }catch(error){db.exec('ROLLBACK');db.close();throw error;}
   db.close();

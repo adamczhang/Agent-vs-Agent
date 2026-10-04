@@ -104,7 +104,7 @@ export class Menus {
         if(control){choices=control.options.map(v=>({label:phase==='speed'?speedName(v.value,v.name):v.name,value:v.value,config:{...config,[phase]:{key:control.id,value:v.value}}})).filter((c,i,all)=>all.findIndex(o=>o.label===c.label)===i);}
         else if(phase==='effort'&&config.provider==='antigravity'){
           const current=data.models.find(m=>m.id===config.model),base=current?.name.replace(/\s*\((?:High|Medium|Low)\)$/,'');
-          choices=data.models.filter(m=>base&&m.name.replace(/\s*\((?:High|Medium|Low)\)$/,'')===base).map(m=>({label:m.name,value:m.id,config:{...config,model:m.id,effort:undefined}}));
+          choices=data.models.filter(m=>base&&m.name.replace(/\s*\((?:High|Medium|Low)\)$/,'')===base).map(m=>({label:m.name,value:m.id,config:{...config,model:m.id,modelName:m.name,effort:undefined}}));
         }
         if(!choices.length){title+=` (${LABELS[config.provider]} has no ${phase} setting)`;choices=[{label:'Default',value:'default',config:{...config,[phase]:undefined}}];}
       }

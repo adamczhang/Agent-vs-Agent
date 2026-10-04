@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { DEFAULT_ROUNDS,DEFAULT_SPEECH_MINUTES,type AnswerCheck,type JudgeProvider,type RunConfig,type Seat,type Stance } from '../src/types';
 import type { ThreadStats } from '../src/stats';
 import { describeQuick } from '../src/quick';
-import { activityProjection,readableOutput,type ActivityLine,type Event } from './projection';
+import { activityProjection,type ActivityLine,type Event } from './projection';
 import { RpcError,initialMode,roomId,roomLink,rpc } from './api';
 import { CommandClient } from './commands';
 import { ResourcesPanel } from './resources-panel';
@@ -24,6 +24,9 @@ import { IMAGE_TYPES,TERMINAL,TEXT_NAME,bytes,clock,dayLabel,delivery,directStat
 import './style.css';
 
 const commands=new CommandClient(sessionStorage,'ava-command:'+roomId);
+// Run controls and the thread's own commands (Close thread, Clear Session) keep their own retry records, so a Pause after an
+// uncertain send can't replace that send's (Q5).
+const controlCommands=new CommandClient(sessionStorage,'ava-control:'+roomId),threadCommands=new CommandClient(sessionStorage,'ava-thread:'+roomId);
 // One retry slot per agent for direct messages: an unacknowledged send is retried with its original request ID.
 const directCommands:Record<Seat,CommandClient>={cli1:new CommandClient(sessionStorage,'ava-direct-cli1:'+roomId),cli2:new CommandClient(sessionStorage,'ava-direct-cli2:'+roomId)};
 const DEFAULT_SETTINGS:PresetData={instructions:{cli1:'',cli2:''},stopWhen:{cli1:'',cli2:''},completion:'auto',rounds:'',minutes:'',requests:'',pace:'5'};
@@ -46,7 +49,9 @@ const RESTARTS_FOR_WEB=new Set(['codex','grok-build','vercel']);
 const QUIET_STATUS=/^(usage updated|available commands updated|current mode updated|config options? updated|session (info )?updated)/i;
 const SEAT_NUMBER:Record<Seat,number>={cli1:1,cli2:2};
 // run.get returns at most this many events per call (Store.events).
-const EVENT_PAGE=300;
+const EVENT_PAGE=300,EVENT_PAGES_PER_TICK=5;
+// Events that change the thread itself (its messages, its run's status): the view is re-read when one arrives.
+const VIEW_EVENTS=new Set(['room_committed','room_queued','run_started','run_ended','paused','duration_changed','reconciled','build_copied','build_server','build_cleanup']);
 const message=(e:unknown)=>e instanceof Error?e.message:String(e);
 
 // Prompt, Debate or Build: which kind of thread the room shows and starts. Remembered in this browser only.
@@ -203,7 +208,7 @@ function App(){
   useEffect(()=>{try{localStorage.setItem(PROJECT_KEY,project);localStorage.setItem(BUILD_KIND_KEY,buildKind);}catch{/* storage unavailable */}},[project,buildKind]);
   // What the page last showed, and whether the last poll lost the connection.
   const pairShown=useRef(''),threadsShown=useRef(''),lost=useRef(false);
-  const polling=useRef(false),selectedRef=useRef(''),shownRef=useRef(''),threadsRef=useRef<ThreadSummary[]>([]),threadsAt=useRef(0),viewAt=useRef(0),liveRef=useRef(false);
+  const polling=useRef<Promise<void>|null>(null),again=useRef(false),stopped=useRef(false),pollFailed=useRef(false),threadGeneration=useRef(0),viewDirty=useRef(false),viewShown=useRef(''),viewRef=useRef<(ThreadView&{id:string})|null>(null),selectedRef=useRef(''),shownRef=useRef(''),threadsRef=useRef<ThreadSummary[]>([]),threadsAt=useRef(0),viewAt=useRef(0),liveRef=useRef(false);
   const cursors=useRef(new Map<string,number>()),finished=useRef(new Set<string>()),rawEvents=useRef(new Map<string,Event[]>()),openTurns=useRef(new Map<string,{seat:Seat;runId:string}>());
   const commandBusy=useRef(false),pendingFocus=useRef(''),agentsRef=useRef<HTMLElement>(null),workspaceRef=useRef<HTMLElement>(null),channelRef=useRef<HTMLElement>(null),composerRef=useRef<HTMLTextAreaElement>(null);
 
@@ -227,47 +232,75 @@ function App(){
   }
   const roomThreadOf=(list:ThreadSummary[],pairId?:string)=>list.find(t=>t.pairId===pairId&&t.current)?.id??'';
   function resetThreadState(){
+    // A poll still reading the thread left behind (A → B → A included) sees the generation change and stops (Q5).
+    threadGeneration.current++;viewRef.current=null;viewShown.current='';viewDirty.current=false;
     cursors.current.clear();finished.current.clear();rawEvents.current.clear();openTurns.current.clear();
     setView(null);setActivity([]);setWorking({cli1:false,cli2:false});setAttention(undefined);setStats(null);setReplay(null);viewAt.current=0;
   }
-  // One polling loop: the room's pair, the thread list (every few seconds), the shown thread, and its runs' events.
-  async function refresh(){
-    if(polling.current)return;polling.current=true;
-    const target=selectedRef.current;
+  // One polling loop: the room's pair, the thread list (every few seconds), the shown thread, and its runs' events. A call
+  // made while a poll is under way runs it once more when that one ends, and resolves after it (Q5): a command's own
+  // refresh used to be dropped, leaving the list and the header stale for a few seconds.
+  function refresh():Promise<void>{
+    if(polling.current){again.current=true;return polling.current;}
+    const run=(async()=>{try{do{again.current=false;await poll();}while(again.current&&!stopped.current);}finally{polling.current=null;}})();
+    return polling.current=run;
+  }
+  async function poll(){
+    const target=selectedRef.current,shownMode=modeRef.current;let generation=threadGeneration.current;
+    const current=(id:string)=>shownRef.current===id&&selectedRef.current===target&&threadGeneration.current===generation;
     try{
       if(!roomId)throw new Error('Open this room with /ava start in Codex or /agent-vs-agent:ava start in Claude Code.');
-      // The room's pair for the mode on screen (E9): each mode keeps its own thread and agents.
-      const room=await rpc<{pair:PairView;pairIds?:string[]}>('room.get',{roomId,mode:modeRef.current});
+      // The room's pair for the mode on screen (E9): each mode keeps its own thread and agents. An answer for a mode
+      // switched away from meanwhile is the other mode's pair, so it's dropped (Q5).
+      const room=await rpc<{pair:PairView;pairIds?:string[]}>('room.get',{roomId,mode:shownMode});
+      if(modeRef.current!==shownMode)return;
       // Only a change re-renders the page (this runs a few times a second).
       const pairJson=JSON.stringify(room.pair);if(pairJson!==pairShown.current){pairShown.current=pairJson;setPair(room.pair);}
       if(Date.now()-threadsAt.current>2500){
-        const list=(await rpc<{threads:ThreadSummary[]}>('threads.list',{pairId:room.pair.id,pairIds:room.pairIds??[]})).threads,listJson=JSON.stringify(list);threadsAt.current=Date.now();
+        // A command that asked for a fresh list while this one was on its way (threadsAt back to 0) still gets one.
+        const asked=threadsAt.current;
+        const list=(await rpc<{threads:ThreadSummary[]}>('threads.list',{pairId:room.pair.id,pairIds:room.pairIds??[]})).threads,listJson=JSON.stringify(list);
+        if(modeRef.current!==shownMode)return;
+        if(threadsAt.current===asked)threadsAt.current=Date.now();
         if(listJson!==threadsShown.current){threadsShown.current=listJson;threadsRef.current=list;setThreads(list);}
       }
       if(selectedRef.current!==target)return;
       const id=target||roomThreadOf(threadsRef.current,room.pair.id);
-      if(id!==shownRef.current){shownRef.current=id;resetThreadState();}
-      setConnected(true);if(lost.current){lost.current=false;setError('');}
+      if(id!==shownRef.current){shownRef.current=id;resetThreadState();generation=threadGeneration.current;}
+      setConnected(true);if(lost.current||pollFailed.current){lost.current=false;pollFailed.current=false;setError('');}
       if(!id)return;
-      // A finished thread changes rarely; a live one is re-read on every tick (as is one where a run just started elsewhere).
-      const startedElsewhere=!!room.pair.activeRunId&&!knownRuns.current.has(room.pair.activeRunId);
-      if(!liveRef.current&&!startedElsewhere&&Date.now()-viewAt.current<2500)return;
-      const data=await rpc<ThreadView>('thread.get',{threadId:id});
-      if(shownRef.current!==id||selectedRef.current!==target)return;
-      viewAt.current=Date.now();setView({...data,id});knownRuns.current=new Set([...data.runs.map(r=>r.id),...(room.pair.activeRunId?[room.pair.activeRunId]:[])]);
-      // Poll quickly while the thread has a running conversation or a direct reply being written.
-      const activeId=room.pair.activeRunId;liveRef.current=!!activeId&&data.runs.some(r=>r.id===activeId)||Object.keys(data.direct.pending).length>0;
-      const fresh:Event[]=[];
+      // A finished thread changes rarely; a live one is read on every tick (as is one where a run just started elsewhere).
+      const activeId=room.pair.activeRunId,startedElsewhere=!!activeId&&!knownRuns.current.has(activeId),due=Date.now()-viewAt.current>=2500;
+      if(!liveRef.current&&!startedElsewhere&&!due)return;
+      // While it's live, the thread itself (messages and 1:1 lines) is re-read only when something in it changed, while a
+      // 1:1 reply is pending, when its run has just ended, or every few seconds; its events are read on every tick (Q5).
+      let data=viewRef.current?.id===id?viewRef.current:null;
+      const directLive=!!data&&Object.keys(data.direct.pending).length>0;
+      if(!data||startedElsewhere||directLive||due||viewDirty.current||(liveRef.current&&!activeId)){
+        viewDirty.current=false;const asked=viewAt.current;
+        const next=await rpc<ThreadView>('thread.get',{threadId:id});
+        if(!current(id))return;
+        if(viewAt.current===asked)viewAt.current=Date.now();
+        const json=JSON.stringify(next);if(json!==viewShown.current||!viewRef.current){viewShown.current=json;viewRef.current={...next,id};setView(viewRef.current);}
+        data=viewRef.current!;
+        knownRuns.current=new Set([...data.runs.map(r=>r.id),...(activeId?[activeId]:[])]);
+        // Poll quickly while the thread has a running conversation or a direct reply being written.
+        liveRef.current=!!activeId&&data.runs.some(r=>r.id===activeId)||Object.keys(data.direct.pending).length>0;
+      }
+      const fresh:Event[]=[];let pages=0;
       for(const run of data.runs){
         if(finished.current.has(run.id))continue;
-        // Every page of a run before the next run, so a long run's activity stays in order.
-        let page:{events:Event[];attention?:{uncertainTurns:number;ownedHere:boolean}};
+        // Every page of a run before the next run, so a long run's activity stays in order; a few pages a tick, so
+        // opening a long finished thread doesn't hold up the room's own state (Q5).
+        let page:{events:Event[];attention?:{uncertainTurns:number;ownedHere:boolean}}|undefined;
         do{
-          page=await rpc<typeof page>('run.get',{runId:run.id,after:cursors.current.get(run.id)??0});
-          if(shownRef.current!==id)return;
+          if(++pages>EVENT_PAGES_PER_TICK){again.current=true;break;}
+          page=await rpc<NonNullable<typeof page>>('run.get',{runId:run.id,after:cursors.current.get(run.id)??0,eventsOnly:true});
+          if(!current(id))return;
           if(run.id===activeId)setAttention(page.attention);
           if(!page.events.length)break;
-          cursors.current.set(run.id,page.events.at(-1)!.seq);rawEvents.current.set(run.id,[...(rawEvents.current.get(run.id)??[]),...page.events]);fresh.push(...page.events);
+          cursors.current.set(run.id,page.events.at(-1)!.seq);fresh.push(...page.events);
+          let raw=rawEvents.current.get(run.id);if(!raw)rawEvents.current.set(run.id,raw=[]);raw.push(...page.events);
           for(const e of page.events){
             const turnId=typeof e.data.turnId==='string'?e.data.turnId:'';
             if(e.type==='prompt_started'&&turnId)openTurns.current.set(turnId,{seat:e.data.seat as Seat,runId:run.id});
@@ -275,32 +308,41 @@ function App(){
             else if(e.type==='run_ended')for(const [key,open] of openTurns.current)if(open.runId===run.id)openTurns.current.delete(key);
           }
         }while(page.events.length>=EVENT_PAGE);
+        if(pages>EVENT_PAGES_PER_TICK)break;
         if(TERMINAL.has(run.status))finished.current.add(run.id);
       }
       if(fresh.length)setActivity(old=>activityProjection(old,fresh));
-      const busySeats=[...openTurns.current.values()].filter(o=>o.runId===activeId);
-      setWorking({cli1:busySeats.some(o=>o.seat==='cli1'),cli2:busySeats.some(o=>o.seat==='cli2')});
+      // Something that changes the thread itself (a message, a status) has it re-read at once.
+      if(fresh.some(e=>VIEW_EVENTS.has(e.type))){viewDirty.current=true;again.current=true;}
+      const busySeats=[...openTurns.current.values()].filter(o=>o.runId===activeId),now={cli1:busySeats.some(o=>o.seat==='cli1'),cli2:busySeats.some(o=>o.seat==='cli2')};
+      setWorking(old=>old.cli1===now.cli1&&old.cli2===now.cli2?old:now);
     }catch(e){
-      // Only an unreachable service means reconnecting; a refusal is shown as it is. A thread that is gone (say after
-      // Clear history) gives way to the room's current one.
+      // Only an unreachable service means reconnecting; a refusal is shown as it is, and cleared by the next good poll. A
+      // thread that is gone (say after Clear history) gives way to the room's current one. An expired room link stops the
+      // polling: every later call would fail the same way, and its message would come back after each dismissal (Q5).
       if(!(e instanceof RpcError)){lost.current=true;setConnected(false);setError(message(e));}
-      else{setConnected(true);if(e.code==='NOT_FOUND'&&target)queueMicrotask(()=>select(''));else setError(message(e));}
+      else{setConnected(true);if(e.code==='AUTH')stopped.current=true;if(e.code==='NOT_FOUND'&&target)queueMicrotask(()=>select(''));else{pollFailed.current=true;setError(message(e));}}
     }
-    finally{polling.current=false;}
   }
-  useEffect(()=>{void refresh();const timer=setInterval(()=>void refresh(),400);return()=>clearInterval(timer);},[]);
+  useEffect(()=>{
+    void refresh();
+    // No polling in a hidden tab (each New thread opens one); a tab shown again catches up at once (Q5).
+    const tick=()=>{if(!document.hidden&&!stopped.current)void refresh();};
+    const timer=setInterval(tick,400);document.addEventListener('visibilitychange',tick);
+    return()=>{clearInterval(timer);document.removeEventListener('visibilitychange',tick);};
+  },[]);
   function select(id:string){
     const next=id&&id===roomThreadOf(threadsRef.current,pair?.id)?'':id;
     selectedRef.current=next;setSelected(next);setOptionsOpen(false);setRenaming(null);
     // Opening a thread (say from search) shows it in its own mode.
-    const target=threadsRef.current.find(t=>t.id===id);if(target?.mode)setMode(target.mode);
+    const target=threadsRef.current.find(t=>t.id===id);if(target?.mode){modeRef.current=target.mode;setMode(target.mode);}
     const resolved=next||roomThreadOf(threadsRef.current,pair?.id);
     if(resolved!==shownRef.current){shownRef.current=resolved;resetThreadState();}
     void refresh();
   }
   async function action(label:string,fn:()=>Promise<void>){
     if(commandBusy.current)return;commandBusy.current=true;setBusy(label);setError('');
-    try{await fn();threadsAt.current=0;viewAt.current=0;await refresh();}catch(e){setError(message(e));}
+    try{await fn();threadsAt.current=0;viewAt.current=0;await refresh();}catch(e){pollFailed.current=false;setError(message(e));}
     finally{commandBusy.current=false;setBusy('');}
   }
 
@@ -363,13 +405,13 @@ function App(){
       }else if(building){
         // Build: each agent gets its own copy of the project (or an empty folder); the time limit is the only option.
         const path=project.trim(),options:Partial<RunConfig>={mode:'build',...(settings.minutes?{durationMs:Number(settings.minutes)*60000}:{})},build={kind,...(path?{path}:{})};
-        await commands.execute(JSON.stringify(['send',pair.id,text,attachments,'build',kind,path]),'run.start',{pairId:pair.id,text,options,attachments,build},rpc);
+        await commands.execute(JSON.stringify(['send',pair.id,text,attachments,'build',options,build]),'run.start',{pairId:pair.id,text,options,attachments,build},rpc);
       }else if(benchmark){
         // Prompt: it goes to both agents at once, as written; only a time limit applies. A loaded challenge or race brings
         // its answer key, which AvA checks the answers against.
         const check=saved?.check??(answerKey&&answerKey.text.trim()===text?answerKey.check:undefined);
         const options:Partial<RunConfig>={mode:'benchmark',...(settings.minutes?{durationMs:Number(settings.minutes)*60000}:{}),...(check?{check}:{})};
-        await commands.execute(JSON.stringify(['send',pair.id,text,attachments,'benchmark']),'run.start',{pairId:pair.id,text,options,attachments},rpc);
+        await commands.execute(JSON.stringify(['send',pair.id,text,attachments,'benchmark',options]),'run.start',{pairId:pair.id,text,options,attachments},rpc);
       }else{
         // A debate prompt run from the library brings its own setup; otherwise the Options apply.
         const s=saved?.debate?debateSettings(saved.debate,settings):settings;
@@ -384,7 +426,8 @@ function App(){
         // The rounds apply when the debate ends by rounds: the default, unless a time is set here or in the prompt.
         if(s.rounds&&(s.completion==='rounds'||s.completion==='auto'&&!s.minutes))options.rounds=Number(s.rounds);
         if(s.requests)options.maxRequests=Number(s.requests);
-        await commands.execute(JSON.stringify(['send',pair.id,text,attachments]),'run.start',{pairId:pair.id,text,options,attachments},rpc);
+        // The signature holds the options, so a retry with other settings (sides, rounds, judge) is a new start (Q5).
+        await commands.execute(JSON.stringify(['send',pair.id,text,attachments,'conversation',options]),'run.start',{pairId:pair.id,text,options,attachments},rpc);
       }
       setDraft('');setFiles([]);setOptionsOpen(false);setAnswerKey(null);liveRef.current=true;
     });
@@ -479,7 +522,7 @@ function App(){
     }
     catch(e){setError(message(e));}finally{setSwitchingNet(n=>({...n,[seat]:false}));}
   }
-  function control(which:'pause'|'resume'|'step'|'stop'){const runId=pair?.activeRunId;if(runId)void action(which,async()=>{await commands.execute(JSON.stringify(['control',runId,which]),'run.control',{runId,action:which},rpc);});}
+  function control(which:'pause'|'resume'|'step'|'stop'){const runId=pair?.activeRunId;if(runId)void action(which,async()=>{await controlCommands.execute(JSON.stringify(['control',runId,which]),'run.control',{runId,action:which},rpc);});}
   // A judged debate's result in the thread list (C).
   const verdictText=(v?:ThreadSummary['verdict'])=>!v?'':v.kind==='challenge'||v.kind==='race'?(v.winner?` · Agent ${v.winner==='cli1'?1:2} won the ${v.kind}`:` · no right answer`)
     :v.status==='judging'?' · judging':v.status==='failed'?' · not judged':` · Agent ${v.winner==='cli1'?1:2} won ${v.totals![v.winner!]}–${v.totals![v.winner==='cli1'?'cli2':'cli1']}`;
@@ -497,7 +540,7 @@ function App(){
     setDialog({title:'Close this thread?',confirm:'Close thread',
       body:`Both agents close, and any app server they left running stops. The thread stays in your history. The next thread keeps both agents' settings, ready to activate.`,
       run:()=>void action('Closing thread',async()=>{
-        await commands.execute(`close:${pair.id}:${pair.activeRunId??pair.lastRunId??'none'}`,'pair.close',{pairId:pair.id},rpc);
+        await threadCommands.execute(`close:${pair.id}:${pair.slots.cli1.generation}:${pair.slots.cli2.generation}:${pair.activeRunId??pair.lastRunId??'none'}`,'pair.close',{pairId:pair.id},rpc);
         selectedRef.current='';setSelected('');setPanel('chat');
       })});
   }
@@ -525,7 +568,7 @@ function App(){
     setDialog({title:'Clear Session?',confirm:'Clear Session',
       body:`${pair.activeRunId?'The running conversation stops first. ':''}Both agents start fresh sessions and forget this thread, and any app server they left running stops. The thread stays in the list. Each agent makes one short access check.`,
       run:()=>void action('Clearing session',async()=>{
-        await commands.execute(`clear:${pair.id}:${pair.activeRunId??pair.lastRunId??'none'}`,'pair.clear',{pairId:pair.id},rpc);
+        await threadCommands.execute(`clear:${pair.id}:${pair.slots.cli1.generation}:${pair.slots.cli2.generation}:${pair.activeRunId??pair.lastRunId??'none'}`,'pair.clear',{pairId:pair.id},rpc);
         selectedRef.current='';setSelected('');setPanel('chat');
       })});
   }
@@ -740,7 +783,7 @@ function App(){
   // Each mode lists its own threads; a fresh, unused session shows in both.
   // One history for every mode (E9), each thread labeled with its mode. Another mode's fresh session isn't a thread yet.
   const listed=threads.filter(t=>!t.empty||t.pairId===pair?.id);
-  const grouped=new Map<string,ThreadSummary[]>();for(const t of listed){const key=t.empty?'Today':dayLabel(t.updatedAt);grouped.set(key,[...(grouped.get(key)??[]),t]);}
+  const grouped=new Map<string,ThreadSummary[]>();for(const t of listed){const key=t.empty?'Today':dayLabel(t.updatedAt),list=grouped.get(key);if(list)list.push(t);else grouped.set(key,[t]);}
   const lines=(seat:Seat)=>activity.filter(l=>l.seat===seat&&!(l.type==='status'&&QUIET_STATUS.test(l.text)));
 
   return <div className="app">
@@ -800,7 +843,7 @@ function App(){
             {roomView&&internetOn(seat)&&<span className="net-tag" title="Internet on"><Icon.globe/></span>}<span className={`agent-status ${state.tone}`}>{state.text}</span>
             {roomView&&slot?.state==='ready'&&<UsageRing name={agentName(seat)} provider={slot.config?.provider} usage={pair?.usage?.[seat]}/>}</header>
           {roomView&&pair&&setup[seat]&&<AgentSetup key={setup[seat]||'home'} pairId={pair.id} seat={seat} startPhase={setup[seat]||undefined} onClose={()=>setSetup(s=>({...s,[seat]:false}))} onError={setError} confirmActivate={confirmActivate}/>}
-          <Scroller className="activity" label={`Agent ${i+1} activity`}>{own.length?own.map(line=><div key={line.key} className={`line ${line.type}`}><span className="line-type">{LINE_LABEL[line.type]??line.type}{line.late?' · late':''}</span><pre>{line.type==='output'?readableOutput(line.text):line.text}</pre></div>)
+          <Scroller className="activity" label={`Agent ${i+1} activity`}>{own.length?own.map(line=><div key={line.key} className={`line ${line.type}`}><span className="line-type">{LINE_LABEL[line.type]??line.type}{line.late?' · late':''}</span><pre>{line.shown??line.text}</pre></div>)
             :<p className="pane-empty">{isRoomThread?'Thinking and tool use appear here as they happen.':'No recorded activity.'}</p>}</Scroller>
         </article>;return i?[pane]:[pane,<div key="split" className="split-handle" role="separator" aria-orientation="vertical" aria-label="Resize the agent panes" aria-valuemin={20} aria-valuemax={80} aria-valuenow={Math.round(layout.split*100)} tabIndex={0} title="Drag to resize · double-click to reset" onPointerDown={dragSplit} onKeyDown={e=>nudge(e,'split')} onDoubleClick={()=>setLayout(l=>({...l,split:DEFAULT_LAYOUT.split}))}/>];})}
       </section>

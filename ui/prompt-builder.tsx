@@ -69,6 +69,7 @@ function simpleForm(prompt: SavedPrompt): SimpleForm {
 export function PromptBuilder({ mode, onUse, onClose }: { mode: Mode; onUse: (prepared: PreparedPrompt, run: boolean) => Promise<void>; onClose: () => void }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const [saved, setSaved] = useState<PromptSummary[]>([]), [editing, setEditing] = useState<{ id: string; revision: string } | null>(null);
+  const attempt = useRef<{ signature: string; id: string; requestId: string } | null>(null);
   const [debate, setDebate] = useState<DebateForm>(blankDebate), [simple, setSimple] = useState<SimpleForm>(blankSimple), [promptF, setPromptF] = useState<PromptForm>(blankPrompt);
   const isPrompt = mode === 'benchmark';
   const [busy, setBusy] = useState(''), [error, setError] = useState(''), [notice, setNotice] = useState('');
@@ -89,13 +90,18 @@ export function PromptBuilder({ mode, onUse, onClose }: { mode: Mode; onUse: (pr
     : (!simple.name.trim() ? 'Give the prompt a name.' : !simple.main.trim() ? `Fill in “${SIMPLE[mode as 'benchmark' | 'build'].main[0]}”.` : '');
   async function save(use: boolean) {
     await work(use ? 'Saving and loading…' : 'Saving…', async () => {
-      const id = editing?.id ?? crypto.randomUUID();
       const payload = isPrompt ? { name: promptF.name.trim(), text: promptText(promptF), mode: 'benchmark', buildKind: 'build', ...(promptF.kind !== 'none' ? { check: { kind: promptF.kind, answers: answersOf(promptF) } } : {}) }
         : isDebate ? { name: debate.name.trim(), text: debateText(debate), mode: 'conversation', buildKind: 'build', debate: debateSetup(debate) }
         : { name: simple.name.trim(), text: simpleText('build', simple), mode, buildKind: simple.buildKind };
       // An edited prompt keeps its files.
+      // The same save, retried after an error, keeps its prompt ID and request ID until it succeeds: a save that went
+      // through although its answer was lost isn't made twice (Q5).
+      const signature = JSON.stringify([editing, payload]);
+      if (attempt.current?.signature !== signature) attempt.current = { signature, id: editing?.id ?? crypto.randomUUID(), requestId: crypto.randomUUID() };
+      const { id, requestId } = attempt.current;
       const files = editing ? (await rpc<SavedPrompt>('prompt.get', { id })).files.map(f => ({ id: f.id, name: f.name })) : [];
-      const result = await rpc<SavedPrompt>('prompt.save', { ...payload, id, revision: editing?.revision ?? null, files, requestId: crypto.randomUUID() });
+      const result = await rpc<SavedPrompt>('prompt.save', { ...payload, id, revision: editing?.revision ?? null, files, requestId });
+      attempt.current = null;
       setEditing({ id: result.id, revision: result.revision }); await refresh();
       if (use) { await onUse(await rpc<PreparedPrompt>('prompt.prepare', { id: result.id, revision: result.revision }), false); onClose(); }
       else setNotice(`Saved “${result.name}” to the prompt library.`);

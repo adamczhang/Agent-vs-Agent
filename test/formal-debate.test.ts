@@ -128,9 +128,17 @@ test('each debater is briefed through its 1:1 line before the debate starts; the
     const judgment = service.store.run(run.id).judgment!;
     assert.deepEqual([judgment.winner, judgment.scores?.cli1.evidence, judgment.scores?.cli2.clash, judgment.judge.provider], ['cli2', 4, 4, 'claude']);
     await until(() => factory.agents[2]!.closed, 2000);
+    // Q4: once it has scored, the judge's session is forgotten: its pair (and its saved session state) goes.
+    await until(() => !service.resources.pairs().some(p => p.thread.startsWith('debate-judge-')), 2000);
     // Judge again works on an ended debate; a failed answer is reported, not lost.
     await service.call('debate.judge', { runId: run.id, provider: 'codex' });
     await until(() => factory.agents.length === 4 && factory.agents[3]!.calls.length === 2);
+    // Q4: a judge at work doesn't count against the limit for others either: with a limit of 3, a third agent starts.
+    await service.call('resources.configure', { maxActiveAgents: 3, requestId: 'limit-3' });
+    const other = await service.call('pair.create', { thread: 'formal-judged-other' }) as Pair;
+    await service.call('slot.configure', { pairId: other.id, seat: 'cli1', config: { provider: 'codex', model: 'model', auth: 'provider-login' } });
+    await service.call('slot.activate', { pairId: other.id, seat: 'cli1' });
+    assert.equal(service.store.pair(other.id).slots.cli1.state, 'ready');
     factory.agents[3]!.raw('I cannot decide.'); await until(() => service.store.run(run.id).judgment?.status === 'failed');
     assert.match(service.store.run(run.id).judgment!.error!, /did not answer with a ballot/);
   } finally { await close(); }
@@ -154,14 +162,15 @@ test('a debater that can\'t take its brief stops the start; a debate without a j
     factory.agents[0]!.calls[1]!.resolve({ status: 'cancelled', text: '' }); factory.agents[0]!.calls[1]!.settled = true; factory.agents[1]!.raw('READY');
     await assert.rejects(starting, /Agent 1 didn’t take its debate brief/);
     assert.equal(service.store.pair(pair.id).activeRunId, null);
-    const { judge: _judge, ...noJudge } = options;
+    // Q3: a failed brief leaves the sessions with that brief (and its side), so the retry gives both fresh sessions first.
+    const { judge: _judge, ...noJudge } = options, live = () => factory.agents.filter(a => !a.closed);
     const starting2 = service.call('run.start', { pairId: pair.id, text: 'This house would Y', requestId: 'no-judge', options: noJudge }) as Promise<Run>;
-    await until(() => factory.agents.every(a => a.calls.length === 3)); factory.agents[0]!.raw('READY'); factory.agents[1]!.raw('READY');
+    await until(() => factory.agents.length === 4 && live().length === 2 && live().every(a => a.calls.length === 2)); live()[0]!.raw('READY'); live()[1]!.raw('READY');
     const run = await starting2; await flush();
     await assert.rejects(service.call('debate.judge', { runId: run.id }), /once it has ended/);
-    factory.agents[0]!.answer('Opening'); await flush(); factory.agents[1]!.answer('Answer'); await flush();
+    live()[0]!.answer('Opening'); await flush(); live()[1]!.answer('Answer'); await flush();
     await new Promise(r => setTimeout(r, 50));
     assert.equal(service.store.run(run.id).judgment, undefined, 'no judge chosen: not judged');
-    assert.equal(factory.agents.length, 2);
+    assert.equal(factory.agents.length, 4, 'and no judge started');
   } finally { await close(); }
 });

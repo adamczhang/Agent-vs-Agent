@@ -13,11 +13,13 @@ const SEATS: Seat[] = ['cli1', 'cli2'];
 // A folder as a pattern that matches it however a check detail writes it: any case (Windows paths aren't case
 // sensitive), either separator (single or escaped), and, for a home folder, its 8.3 short name (C:\Users\RUNNER~1).
 const escapeRegex = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+// Each part as written or percent-encoded, as a file URL in a stack trace writes it (John%20Smith) (Q6).
+const part = (text: string) => { const encoded = encodeURIComponent(text); return encoded === text ? escapeRegex(text) : `(?:${escapeRegex(text)}|${escapeRegex(encoded)})`; };
 function folderPattern(path: string, shortName: boolean) {
   const parts = path.replace(/[\\/]+$/, '').split(/[\\/]+/).filter(Boolean), last = parts.pop() ?? '';
-  const sep = '(?:\\\\{1,2}|/)', parent = parts.map(escapeRegex).join(sep) + (parts.length ? sep : '');
+  const sep = '(?:\\\\{1,2}|/)', parent = parts.map(part).join(sep) + (parts.length ? sep : '');
   const short = shortName && /[^A-Za-z0-9]|.{9,}/.test(last) ? `|${escapeRegex(last.replace(/[^A-Za-z0-9]/g, '').slice(0, 6))}~\\d+` : '';
-  return new RegExp(`${path.startsWith('/') ? '/' : ''}${parent}(?:${escapeRegex(last)}${short})(?![A-Za-z0-9_-])`, 'gi');
+  return new RegExp(`${path.startsWith('/') ? '/' : ''}${parent}(?:${part(last)}${short})(?![A-Za-z0-9_-])`, 'gi');
 }
 function scrubber(dataRoot: string) {
   const data = dataRoot ? folderPattern(dataRoot, false) : undefined, home = folderPattern(homedir(), true);

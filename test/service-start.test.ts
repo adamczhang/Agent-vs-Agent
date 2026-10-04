@@ -86,3 +86,10 @@ test('the data folder check reports a folder that takes writes and secures secre
   const bad=checkDataFolder(join(blocked,'data'));
   assert.deepEqual([bad.writable,bad.secured],[false,null]);assert.match(bad.message,/^Not writable: /);
 });
+
+test('Q4: an empty service.lock (a crash just after writing it) doesn\'t stop the service from starting',{timeout:60000},async()=>{
+  const data=tempDir('ava-empty-lock-');writeFileSync(join(data,'service.lock'),'');
+  const before=process.env.AVA_IDLE_TIMEOUT_MS;process.env.AVA_IDLE_TIMEOUT_MS='1500';
+  try{const endpoint=await ensureService(process.cwd(),data);assert.ok(endpoint.port>0);}
+  finally{if(before===undefined)delete process.env.AVA_IDLE_TIMEOUT_MS;else process.env.AVA_IDLE_TIMEOUT_MS=before;}
+});

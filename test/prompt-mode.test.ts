@@ -90,6 +90,23 @@ test('a fresh session that fails leaves the agent with the session it had', asyn
   } finally { await close(); }
 });
 
+test('Q3: an agent whose fresh session failed gets one on the retry, though the new thread looks empty', async () => {
+  const { factory, service, close } = fixture();
+  try {
+    const pair = await agents(service, 'stale');
+    const first = await service.call('run.start', { pairId: pair.id, text: 'One', requestId: 'one', options: { mode: 'benchmark' } }) as Run;
+    await flush(); live(factory)[0]!.raw('a'); live(factory)[1]!.raw('b'); await until(() => service.store.run(first.id).status === 'completed');
+    const before = service.store.pair(pair.id).slots.cli2.sessionId;
+    // Agent 2's next fresh session fails its check; Agent 1's succeeds.
+    const original = factory.open.bind(factory); let failNext = true;
+    factory.open = async (...args: Parameters<TestFactory['open']>) => { const agent = await original(...args); if ((args[1] as { seat: string }).seat === 'cli2' && failNext) { failNext = false; agent.request = async () => ({ status: 'completed', text: 'nope' }); } return agent; };
+    await assert.rejects(service.call('run.start', { pairId: pair.id, text: 'Two', requestId: 'two', options: { mode: 'benchmark' } }), /did not answer its check/);
+    assert.equal(service.store.pair(pair.id).slots.cli2.sessionId, before, 'Agent 2 still has the session that answered the first prompt');
+    await service.call('run.start', { pairId: pair.id, text: 'Three', requestId: 'three', options: { mode: 'benchmark' } });
+    assert.notEqual(service.store.pair(pair.id).slots.cli2.sessionId, before, 'the retry gave it a fresh session first');
+  } finally { await close(); }
+});
+
 test('an older library gets the challenges and races once; the old Prompt starters go only where unedited', async () => {
   const { root, service, close } = fixture();
   try {

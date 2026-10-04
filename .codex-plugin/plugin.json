@@ -1,6 +1,6 @@
 {
   "name":"agent-vs-agent",
-  "version":"0.4.3",
+  "version":"0.4.4",
   "description":"Activate two CLI agents and run controlled conversations in a shared room.",
   "skills":"./skills/",
   "mcpServers":"./.mcp.json",

@@ -28,11 +28,12 @@ const project = (git: boolean) => {
 
 test('a project copy takes the working tree (uncommitted work included, build output left out) and records a baseline', () => {
   for (const git of [true, false]) {
-    const source = project(git), target = join(tempDir('ava-copy-'), 'copy'), copied = copyProject(source, target);
+    const parent = tempDir('ava-copy-'), source = project(git), target = join(parent, 'copy'), history = join(parent, 'baselines', 'copy.git'), copied = copyProject(source, target, history);
     assert.ok(existsSync(join(target, 'src', 'a.js')) && !existsSync(join(target, 'node_modules')), `${git ? 'git' : 'plain'}: sources copied, node_modules skipped`);
     if (git) assert.ok(existsSync(join(target, 'src', 'uncommitted.js')), 'uncommitted files come along');
     assert.equal(copied.gitSource, git);
     assert.equal(copied.baseline, true, 'a baseline commit in the copy, so changes can be shown later');
+    assert.ok(existsSync(join(history, 'HEAD')), 'and AvA\'s own record of it, outside the copy');
     assert.throws(() => copyProject(source, target), /already exists/);
   }
 });
@@ -88,24 +89,31 @@ test('a build run copies the project into each agent\'s own workspace, grants ac
   } finally { await service.shutdown(); service.store.close(); }
 });
 
-test('changes since the baseline list new, edited and deleted files, without touching the agent\'s own git state', () => {
-  const copy = join(tempDir('ava-copy-'), 'copy'); copyProject(project(false), copy);
+test('changes since the baseline list new, edited and deleted files, without touching the agent\'s own git state', async () => {
+  const parent = tempDir('ava-copy-'), copy = join(parent, 'copy'), history = join(parent, 'copy.git'); copyProject(project(false), copy, history);
   writeFileSync(join(copy, 'src', 'a.js'), 'export const a = 2;\nexport const c = 3;\n');
   writeFileSync(join(copy, 'index.html'), '<h1>hi</h1>\n');
   writeFileSync(join(copy, 'logo.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 0, 0, 1]));
   spawnSync('git', ['add', 'index.html'], { cwd: copy, windowsHide: true });
   const staged = () => spawnSync('git', ['diff', '--cached', '--name-only'], { cwd: copy, encoding: 'utf8', windowsHide: true }).stdout;
-  const before = staged(), changes = projectChanges(copy);
+  const before = staged(), changes = await projectChanges(copy, history);
   assert.deepEqual(changes.files.map(f => [f.path, f.status]).sort(), [['index.html', 'added'], ['logo.png', 'added'], ['src/a.js', 'modified']]);
   assert.deepEqual(changes.files.find(f => f.path === 'src/a.js'), { path: 'src/a.js', status: 'modified', added: 2, removed: 1 });
   assert.equal(changes.files.find(f => f.path === 'logo.png')!.added, null, 'a binary file has no line counts');
   assert.match(changes.patch, /\+export const c = 3;/);
   assert.equal(staged(), before, 'the agent\'s own index is untouched');
   rmSync(join(copy, 'src', 'a.js'));
-  assert.equal(projectChanges(copy).files.find(f => f.path === 'src/a.js')!.status, 'deleted');
-  const empty = join(tempDir('ava-empty-'), 'app');
-  assert.equal(startProject(empty).baseline, true, 'building from scratch starts with an empty baseline');
-  assert.deepEqual(projectChanges(empty).files, []);
+  assert.equal((await projectChanges(copy, history)).files.find(f => f.path === 'src/a.js')!.status, 'deleted');
+  // A copy made before AvA kept its own record reads the baseline from the copy's objects, with the same result.
+  assert.deepEqual((await projectChanges(copy)).files, (await projectChanges(copy, history)).files);
+  // The agent's own commits, and even a removed .git, don't move the baseline AvA compares with.
+  spawnSync('git', ['-c', 'user.name=a', '-c', 'user.email=a@a', 'commit', '-qam', 'agent'], { cwd: copy, windowsHide: true });
+  rmSync(join(copy, '.git'), { recursive: true, force: true });
+  assert.equal((await projectChanges(copy, history)).files.find(f => f.path === 'src/a.js')!.status, 'deleted');
+  await assert.rejects(projectChanges(copy), /no baseline/);
+  const emptyParent = tempDir('ava-empty-'), empty = join(emptyParent, 'app'), emptyHistory = join(emptyParent, 'app.git');
+  assert.equal(startProject(empty, emptyHistory).baseline, true, 'building from scratch starts with an empty baseline');
+  assert.deepEqual((await projectChanges(empty, emptyHistory)).files, []);
 });
 
 const raw = (port: number, path: string, headers: Record<string, string>) => new Promise<number>((done, fail) => {
@@ -226,7 +234,7 @@ test('a Build session: 1:1 setup with tools, one prompt, an empty folder per age
 
     await assert.rejects(service.call('run.start', { pairId, text: 'Review it', requestId: 'r0', options: { mode: 'build' }, build: { kind: 'review' } }), /folder for the agents to review/);
     await new Promise(r => setTimeout(r, 5));
-    const run = await service.call('run.start', { pairId, text: 'Build a Snake game', requestId: 'r1', options: { mode: 'build' }, build: { kind: 'build' } }) as { id: string; config: { build: { folder: string; source: string } } };
+    const run = await service.call('run.start', { pairId, text: 'Build a Snake game', requestId: 'r1', options: { mode: 'build' }, build: { kind: 'build' } }) as { id: string; generations: { cli1: number }; config: { build: { folder: string; source: string } } };
     runId = run.id; await flush();
     assert.equal(run.config.build.source, '');
     const copies = workspaces.map(w => join(w, run.config.build.folder));
@@ -256,6 +264,9 @@ test('a Build session: 1:1 setup with tools, one prompt, an empty folder per age
 
     const changes = await service.call('build.changes', { runId: run.id, seat: 'cli1' }) as { files: Array<{ path: string; status: string }> };
     assert.deepEqual(changes.files.map(f => [f.path, f.status]), [['server.js', 'added']]);
+    // Q1: AvA compares with its own record of the baseline, so even a copy whose .git the agent removed still shows them.
+    rmSync(join(participantWorkspace(service.dataRoot, { pairId, seat: 'cli1', generation: run.generations.cli1 }), run.config.build.folder, '.git'), { recursive: true, force: true });
+    assert.deepEqual(await service.call('build.changes', { runId: run.id, seat: 'cli1' }), changes);
     assert.deepEqual((await service.call('build.preview', { runId: run.id, seat: 'cli1' }) as { kind: string; url: string }), { kind: 'server', url: 'http://localhost:5173/', origin: 'http://localhost:5173', entry: 'http://localhost:5173/', named: true }, 'a server app opens at its own address');
     const preview = await service.call('build.preview', { runId: run.id, seat: 'cli2' }) as { kind: string; url: string; entry: string; named: boolean };
     assert.deepEqual([preview.kind, preview.entry, preview.named], ['static', `${run.config.build.folder}/game/index.html`, true], 'the page it named');

@@ -5,7 +5,9 @@ import { basename,dirname,join,resolve } from 'node:path';
 import type { AvAService } from './service.js';
 import { AvAError,SEATS,type Pair,type ProviderConfig,type Run,type Seat } from './types.js';
 import { projectRoot,packageVersion } from './paths.js';
-import { loadSuite,putFiles,treeFiles,type BenchTask } from './bench-tasks.js';
+import { loadSuite,putFiles,suiteStamp,treeFiles,type BenchTask } from './bench-tasks.js';
+// Folders of installed packages and caches, which an attempt's checks don't need.
+const CANDIDATE_SKIP=new Set(['node_modules','.venv','venv','__pycache__','.pytest_cache']);
 import { validateTask,validated } from './bench-validation.js';
 import { checkTask,containerBackend,needsContainer,verifierGuardAvailable,type CheckResult } from './bench-checks.js';
 import type { ContainerStatus } from './containers.js';
@@ -75,7 +77,14 @@ export class BenchmarkRunner {
     }
   }
   get busy(){return this.live.size>0;}
-  suite(path?:string){return loadSuite(path?resolve(path):join(projectRoot,'benchmarks','starter'));}
+  // The Benchmarks panel asks for the catalog every 2 s: a suite is loaded again (every file read and hashed) only when
+  // its files' names, sizes or times changed (Q6).
+  private loaded=new Map<string,{stamp:string;tasks:BenchTask[]}>();
+  suite(path?:string){
+    const root=path?resolve(path):join(projectRoot,'benchmarks','starter'),stamp=suiteStamp(root),cached=this.loaded.get(root);
+    if(stamp&&cached?.stamp===stamp)return cached.tasks;
+    const tasks=loadSuite(root);if(stamp)this.loaded.set(root,{stamp,tasks});return tasks;
+  }
   // Live program verifiers run under the verifier guard (bench-checks.ts), which needs a Node that can deny network
   // access. Tasks must also be validated, which is the user's decision to run their verifiers on this machine. A task
   // marked for container isolation needs Docker instead (src/containers.ts); its status is checked when a job starts
@@ -182,7 +191,14 @@ export class BenchmarkRunner {
           for(const pending of job.current.pending){
             signal.throwIfAborted();const seat=pending.seat,output=this.service.store.messages(run.id).filter(m=>m.sender===seat&&m.state==='committed').at(-1)?.text??'';
             const artifact=this.artifactRoot(pending.id);
-            if(building){const candidate=join(participantWorkspace(this.service.dataRoot,{pairId:pair.id,seat,generation:run.generations[seat]}),run.config.build!.folder);putFiles(artifact,treeFiles(candidate));}
+            if(building){
+              // Output the checks can't take (too many files, a link, a name they refuse) fails this attempt, not the whole job;
+              // installed packages aren't copied (Q6).
+              const candidate=join(participantWorkspace(this.service.dataRoot,{pairId:pair.id,seat,generation:run.generations[seat]}),run.config.build!.folder);
+              let files;try{files=treeFiles(candidate,CANDIDATE_SKIP);}
+              catch(error){this.record(job,{...pending,agent:run.participants?.[seat]??pending.agent,status:'error',finishedAt:new Date().toISOString(),error:safeError(error),runId:run.id});continue;}
+              putFiles(artifact,files);
+            }
             putFiles(artifact,task.files.filter(f=>f.path.startsWith('tests/')));
             const checks=await checkTask(task,output,artifact,signal),usage=stats.seats.find(s=>s.seat===seat)!;
             signal.throwIfAborted();

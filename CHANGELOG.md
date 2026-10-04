@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [0.4.4](https://github.com/adamczhang/Agent-vs-Agent/releases/tag/v0.4.4) - 2026-10-04
 
 ### Added
 
@@ -15,6 +15,45 @@
 - **Settings.** The Resources button is now **Settings**, with a gear icon, at the right of the sidebar's tools row.
 - **No visible restart between threads.** A new Prompt run or debate no longer closes and reactivates the agents. Each fresh session starts beside the current one and takes over once it's ready, so the agents stay loaded and Ready, and a fresh session that fails leaves the current one in place.
 - **Thread titles** use a prompt's heading ("Day of the week", or a debate's motion) instead of the raw Markdown.
+
+### Fixed
+
+- **Agents stay contained if the containment helper stops.** It now restarts for new agents. Its stop also no longer interrupts the cleanup of an agent being closed.
+- **Two services can't share one data folder** when one runs elevated: AvA treated a running elevated service as gone.
+- **Formal debates reach their closings and get judged.** One reformatted reply used up a request the schedule needed, so the debate ended early, unjudged. Each speech now has a repair to spare, and the time backstop fits every speech at its longest instead of a fixed hour. A formal debate always runs by its rounds, and a room message such as "You have the floor for 2 minutes." no longer retimes a debate.
+- **Two debaters on the same side are refused** even with a speech time limit set.
+- **A time set in Options** gets enough requests for all of it (it stopped at 20).
+- **Answer checking is exact.** 3.5, 3/4 or "3 or 4" no longer pass for 3, and "2^10 = 1024" passes for 1024. Answer keys with underscores or asterisks (x_1) match.
+- **A new prompt after a failed start is clean.** If one agent's fresh session failed, or a debate brief failed, the retry gives it a fresh session first, instead of carrying the earlier prompt (or the other side's brief) along.
+- **A debate briefing that fails or stalls** no longer hides the topic from that agent's first turn or ends the debate.
+- **Two attached files with the same name** are no longer mixed up in a debate prompt.
+- **Antigravity's effort menu** shows the newly chosen model's name.
+- **A judge isn't cut off.** Taking over for a newer install, or exiting when idle, waited only for conversations; a judge (up to 20 minutes), a 1:1 reply or a Build preparation could be stopped mid-way. One check now covers everything that would be cut off, and a run that needs attention but has nothing running no longer blocks updates forever.
+- **Judge sessions are deleted once they've scored.** Their saved state held the whole debate after Delete thread or Clear history, and a judge at work counted against other rooms' agent limit.
+- **Shutting down can't hang.** It waits at most 15 seconds for agents, and a failed step no longer leaves a service that answers but refuses every change.
+- **Clear Session and Close thread** hold the pair, so a prompt from another tab can't start on the old sessions halfway through.
+- **Deleting a thread** stops the app servers it kept first and removes the rest of its folders even if one is locked.
+- **A crash right after writing `service.lock`** no longer stops AvA from starting until the file is deleted by hand, and two services starting at the same moment no longer report a false failure.
+- **A failed start removes its copies** without hiding the reason it failed (a locked folder used to block every retry).
+- **Room retries are exact.** Pausing after a send whose outcome was unknown no longer loses that send's retry record (which could post it twice), and an unknown Stop, Close or Clear no longer blocks the prompt library. Retrying a start after changing its options (sides, rounds, judge, answer key) sends the new options, and Close thread after reactivating the agents closes them.
+- **The room keeps up.** A command's own refresh is no longer skipped while a poll is running (lists and headers lagged a few seconds), switching modes no longer briefly shows the other mode's agents, and going to a thread and back mid-load no longer loses its activity.
+- **Lighter rooms.** A live thread is re-read only when something in it changes, a long finished thread opens without holding up the room, hidden tabs stop polling, and a long debate no longer slows typing. An expired room link stops polling, so its message stays dismissed.
+- **Double clicks:** Activate in the setup menu and Save in the Prompt builder take effect once.
+- **Faster with a long history.** The room no longer rescans the whole shared history several times a second, streamed replies no longer wait for the disk on every chunk, Build's Changes view no longer freezes AvA while git reads a large copy, and deleting threads or history no longer blocks it. Menus, agent starts and the Settings and Benchmarks panels start far fewer PowerShell, Codex and Claude Code processes.
+- **Benchmarks:** one attempt whose output can't be checked (too many files, say) fails that attempt instead of the whole job, a suite kept in git loads, and installed packages aren't copied into the checks.
+- **A project inside a folder its repository ignores** is copied with its files instead of as an empty folder.
+- **The prompt library:** a prompt that can't be fully deleted (a locked file) is no longer left half-deleted, and leftovers of an interrupted save are cleaned up.
+- **Shared benchmark reports** also hide paths written as file URLs (`AvA%20Data`).
+
+### Security
+
+- **An agent can no longer make AvA run a program.** Build's Changes view ran git in the agent's copy, and an agent that could only write files there could set git up (through its worktree settings and `.gitattributes`) to run a program of its choosing on your computer. AvA now keeps its own record of each copy's starting point outside the agent's folder and never opens the agent's repository. The agent's own commits, or a deleted `.git`, no longer change what the Changes view compares with.
+- **Previews can't stop the service.** One preview request with an unusual key crashed all of AvA. Previews also no longer list folders outside the copy through a junction, or serve git data through a Windows short name (`GIT~1`).
+- **A long agent reply no longer stalls AvA** while it looks for the `APP:` line.
+- **Agents no longer receive other providers' API keys** from your environment (for example, `OPENAI_API_KEY` for a Claude Code agent), and AvA drops `ACPX_AUTH_*` variables, which ACPX would pass to every agent.
+- **Benchmarks:** task paths refuse `.git` in any letter case, and the Exercism importer reads only files inside the exercise.
+- **Stop all can't stop unrelated programs.** Its record of agent processes could, after a restart or sign-out, match a Windows process (such as `explorer.exe`) whose parent once had an agent's process ID. Records from an earlier logon session now count for nothing, and records of processes proved gone are closed. Agent containment likewise no longer adopts the children of a process that reused an exited agent process's ID.
+- **Build's Ask mode refuses short Windows names** (such as `CLAUDE~1` for `.claude`), which got past its settings-folder check.
 
 ## [0.4.3](https://github.com/adamczhang/Agent-vs-Agent/releases/tag/v0.4.3) - 2026-10-03
 

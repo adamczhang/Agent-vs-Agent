@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { suiteReport } from '../src/bench-report.js';
 import type { BenchAttempt, BenchJob } from '../src/bench-runner.js';
 import { AvAService } from '../src/service.js';
@@ -68,4 +69,10 @@ test('the service reports a finished job in both formats',async()=>{
     }
     await assert.rejects(service.call('bench.report',{jobId:done.id,format:'pdf'}));
   }finally{await service.shutdown();service.store.close();}
+});
+
+test('Q6: a percent-encoded path (a file URL in a stack trace) is replaced too',()=>{
+  const data=join(homedir(),'AvA Data'),url=pathToFileURL(join(data,'x.mjs')).href;
+  const report=suiteReport(job,[attempt({checks:[{index:0,kind:'run',passed:false,detail:`at ${url}`,durationMs:1}]})],'md',data);
+  assert.ok(!report.text.includes('AvA%20Data'),'the encoded data folder is scrubbed');assert.match(report.text,/<data>/);
 });

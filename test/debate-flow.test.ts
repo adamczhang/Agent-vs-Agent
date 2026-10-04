@@ -37,7 +37,22 @@ test('a debate briefing that fails only costs the head start: the agent still ge
     await flush();f.agents.cli2.calls[0]!.resolve({status:'cancelled',text:''});f.agents.cli2.calls[0]!.settled=true;
     f.agents.cli1.answer('First position');await flush();
     assert.equal(f.store.run(f.run.id).status,'running');assert.match(f.agents.cli2.calls[1]!.request.text,/Opening topic/);assert.match(f.agents.cli2.calls[1]!.request.text,/First position/);
+    // Q3: the topic message itself (with any files) comes with that turn: the failed briefing didn't count as delivering it.
+    assert.match(f.agents.cli2.calls[1]!.request.text,/"sender":"user","text":"Opening topic"/);
   }finally{await f.close();}
+});
+test('Q3: a briefing that stalls is cancelled on its own time limit, and the debate goes on',async()=>{
+  const clock=new FakeClock(),store=new Store(':memory:'),pair=store.createPair('stalled-briefing');
+  const agents={cli1:new FakeParticipant('one'),cli2:new FakeParticipant('two')};
+  for(const seat of SEATS)store.mutateSlot(pair.id,seat,s=>{s.state='ready';s.sessionId=agents[seat].sessionId;});
+  const engine=new ConversationController(store,clock),run=engine.start(pair.id,conversationConfig('Opening topic',{paceMs:0}),'start',agents);
+  try{
+    await flush();await clock.advance(180_001);await flush();
+    assert.equal(store.run(run.id).status,'running','not ended by the turn timer');
+    assert.ok(agents.cli2.calls[0]!.settled,'the briefing was cancelled');
+    agents.cli1.answer('First position');await flush();
+    assert.match(agents.cli2.calls[1]!.request.text,/"sender":"user","text":"Opening topic"/);
+  }finally{engine.stop(run.id);await flush();store.close();}
 });
 test('a queued prompt waits for a turn boundary, reaches both agents once, and does not reset the speaker',async()=>{
   const f=room({opening:'cli2'});try{
@@ -78,7 +93,7 @@ test('sending while paused obtains one sequential response from each agent, then
 // for a closing statement, and the debate ends once each agent has spoken that many times.
 test('a debate runs for its rounds: asking to stop does not end it, and the last round is a closing statement',async()=>{
   const f=room({completion:'rounds',rounds:2});try{
-    assert.equal(f.store.run(f.run.id).config.maxRequests,5,'two turns a round plus the briefing');
+    assert.equal(f.store.run(f.run.id).config.maxRequests,9,'two turns a round, a format repair to spare for each, plus the briefing');
     await flush();assert.match(f.agents.cli1.calls[0]!.request.text,/Round 1 of 2\. .*ends by itself after round 2/);
     assert.doesNotMatch(f.agents.cli1.calls[0]!.request.text,/Ask to finish|Remaining active time/);
     f.agents.cli2.raw('READY');f.agents.cli1.answer('Opening',true);await flush();
@@ -103,14 +118,15 @@ test('a stop condition the operator wrote still ends a debate with rounds',async
 });
 test('debates default to 7 rounds; a time in the topic, or Prompt and Build, keep their own endings',()=>{
   const debate=conversationConfig('Should cities ban cars downtown?');
-  assert.deepEqual([debate.completion,debate.rounds,debate.maxRequests,debate.durationMs],['rounds',7,15,3_600_000]);
-  assert.equal(conversationConfig('Motion',{stances:{cli1:'for',cli2:'against'}}).maxRequests,14,'a formal debate is briefed through the 1:1 lines, not with a request of the run');
+  // Q3: a repair to spare for every speech, and a time backstop that fits every speech at its longest (7 × 2 × 5 min 5 s + 10 min).
+  assert.deepEqual([debate.completion,debate.rounds,debate.maxRequests,debate.durationMs],['rounds',7,29,4_870_000]);
+  assert.equal(conversationConfig('Motion',{stances:{cli1:'for',cli2:'against'}}).maxRequests,28,'a formal debate is briefed through the 1:1 lines, not with a request of the run');
   assert.throws(()=>conversationConfig('Motion',{stances:{cli1:'for',cli2:'for'}}),/opposite sides/);
-  assert.equal(conversationConfig('Topic',{rounds:3}).maxRequests,7);
+  assert.equal(conversationConfig('Topic',{rounds:3}).maxRequests,13);
   assert.equal(conversationConfig('Topic',{rounds:3,maxRequests:40}).maxRequests,40,'a request limit you set is kept');
   const timed=conversationConfig('Debate pizza for 5 minutes');assert.deepEqual([timed.completion,timed.rounds],['duration',undefined]);
   const chosen=conversationConfig('Debate pizza for 5 minutes',{completion:'rounds',rounds:6});
-  assert.deepEqual([chosen.completion,chosen.rounds,chosen.durationMs],['rounds',6,3_600_000],'rounds chosen over the topic\'s time win');
+  assert.deepEqual([chosen.completion,chosen.rounds,chosen.durationMs],['rounds',6,4_260_000],'rounds chosen over the topic\'s time win');
   assert.equal(conversationConfig('Topic',{completion:'either'}).rounds,undefined);
   for(const mode of ['benchmark','build'] as const){const c=conversationConfig('One answer',{mode,completion:'rounds'});assert.deepEqual([c.completion,c.rounds],['either',undefined]);}
   for(const rounds of [0,1.5,101])assert.throws(()=>conversationConfig('Topic',{rounds}),/Rounds must be a whole number/);

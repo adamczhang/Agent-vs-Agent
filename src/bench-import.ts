@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
-import { basename, dirname, join, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { stringify } from 'yaml';
 import { AvAError } from './types.js';
 
@@ -99,10 +99,23 @@ export function readExercism(exercise: string): ImportedTask {
   const config = JSON.parse(readFileSync(configFile, 'utf8')) as { blurb?: string; files?: { solution?: string[]; test?: string[]; example?: string[] } };
   const solution = config.files?.solution ?? [], test = config.files?.test ?? [], example = config.files?.example ?? [];
   if (solution.length !== 1 || example.length !== 1 || !test.length) throw new AvAError('BENCH_IMPORT', `${slug}: AvA imports exercises with one solution file, one example (reference) file and test files.`);
-  const file = basename(solution[0]!), read = (path: string) => readFileSync(join(dir, path), 'utf8');
+  // The files config.json names must be inside the exercise: a downloaded exercise can't pull in other files (they would
+  // be handed to the agents as its starting code).
+  const read = (path: string) => {
+    const full = resolve(dir, path), rel = relative(dir, full);
+    if (!rel || rel.startsWith('..') || isAbsolute(rel)) throw new AvAError('BENCH_IMPORT', `${slug}: ${path} is outside the exercise folder.`);
+    return readFileSync(full, 'utf8');
+  };
+  const file = basename(solution[0]!);
+  if (!FILE.test(file)) throw new AvAError('BENCH_IMPORT', `${slug}: the solution file must be a .js or .mjs file name.`);
   const docs = ['.docs/introduction.md', '.docs/instructions.md', '.docs/instructions.append.md'].filter(p => existsSync(join(dir, p))).map(read).join('\n\n').trim();
   const tests: Record<string, string> = { 'jest-shim.mjs': JEST_SHIM };
-  const specs = test.map(path => { const name = basename(path).replace(/\.m?js$/, '') + '.mjs'; tests[name] = rewriteImports(read(path), [file]); return name; });
+  const specs = test.map(path => {
+    const name = basename(path).replace(/\.m?js$/, '') + '.mjs';
+    // A test can't take the place of AvA's own runner files, or of another test.
+    if (!/^[\w.-]+\.mjs$/.test(name) || name in tests || name === 'verify.mjs') throw new AvAError('BENCH_IMPORT', `${slug}: the test file ${path} can't be imported under that name.`);
+    tests[name] = rewriteImports(read(path), [file]); return name;
+  });
   tests['verify.mjs'] = `import { run } from './jest-shim.mjs';\n${specs.map(s => `await import('./${s}');`).join('\n')}\nawait run();\n`;
   const title = slug.split(/[-_\s]+/).filter(Boolean).map(w => w[0]!.toUpperCase() + w.slice(1)).join(' ') || slug;
   const prompt = `Implement ${file}, an ES module, so that it solves this exercise. Keep its existing exports. Use no dependencies.\n\n${docs || config.blurb || title}`;

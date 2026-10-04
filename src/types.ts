@@ -160,19 +160,23 @@ export function conversationConfig(topic: string, overrides: Partial<RunConfig> 
     // A debate runs for its rounds unless the topic gives a time ("…for 5 minutes"). Ending when either agent asked
     // made agents that agree stop after a turn or two (G1).
     completion: duration ? 'duration' : benchmark ? 'either' : 'rounds', durationMs,
-    maxRequests: duration ? Math.max(20, Math.ceil(durationMs / 5000) + 20) : 20,
-    perTurnMs: benchmark ? 3_600_000 : 300_000, paceMs: benchmark ? 0 : 5000, lead: 'cli1', opening: benchmark ? 'both' : 'cli1', ...overrides,
+    maxRequests: 20, perTurnMs: benchmark ? 3_600_000 : 300_000, paceMs: benchmark ? 0 : 5000, lead: 'cli1', opening: benchmark ? 'both' : 'cli1', ...overrides,
   };
-  // The rounds set the length: requests for every turn plus the briefing (E7; a formal debate is briefed through the 1:1
-  // lines instead), and an hour as the time limit's backstop.
+  if (benchmark) { delete config.stances; delete config.judge; delete config.speechMs; }
+  // A formal debate (sides) always runs by its rounds: its format (opening, rebuttals, closing) and its judging need every
+  // speech, so a time in the topic or the options doesn't end it (Q3).
+  if (config.stances) config.completion = 'rounds';
+  // The rounds set the length. Requests: one for every speech, one format repair for each, and the briefing (E7; a
+  // formal debate is briefed through the 1:1 lines instead). The debate ends on its rounds, so the spare requests only
+  // ever go to repairs; without them, one repair cost the closing speech and the judging (Q3).
   if (config.completion === 'rounds' && !benchmark) {
     config.rounds ??= DEFAULT_ROUNDS;
     if (!Number.isInteger(config.rounds) || config.rounds < 1 || config.rounds > MAX_ROUNDS) throw new AvAError('INVALID_CONFIG', `Rounds must be a whole number from 1 to ${MAX_ROUNDS}.`);
-    if (overrides.maxRequests === undefined) config.maxRequests = config.rounds * 2 + (config.stances ? 0 : 1);
-    // Rounds chosen over a time in the topic ("…for 5 minutes") win: that time no longer cuts the debate short.
-    if (overrides.durationMs === undefined) config.durationMs = 3_600_000;
+    if (overrides.maxRequests === undefined) config.maxRequests = config.rounds * 4 + (config.stances ? 0 : 1);
   } else { delete config.rounds; if (config.completion === 'rounds') config.completion = 'either'; }
-  if (benchmark) { delete config.stances; delete config.judge; delete config.speechMs; }
+  // A timed conversation gets requests for its whole time (one per 5 seconds at most), however the time was set: in the
+  // topic or in Options (Q3).
+  if (config.completion === 'duration' && overrides.maxRequests === undefined) config.maxRequests = Math.min(10_000, Math.max(20, Math.ceil(config.durationMs / 5000) + 20));
   if (config.mode !== 'benchmark') delete config.check;
   else if (config.check && (!config.check.answers.length || config.check.answers.some(a => !a.trim()))) throw new AvAError('INVALID_CONFIG', 'An answer key needs at least one answer.');
   if (config.speechMs !== undefined) {
@@ -181,7 +185,12 @@ export function conversationConfig(topic: string, overrides: Partial<RunConfig> 
     // The turn's own backstop leaves room for the speech limit to act first.
     else config.perTurnMs = Math.min(3_600_000, Math.max(config.perTurnMs, config.speechMs + 60_000));
   }
-  else if (config.stances && config.stances.cli1 === config.stances.cli2) throw new AvAError('INVALID_CONFIG', 'The two debaters need opposite sides.');
+  if (config.stances && config.stances.cli1 === config.stances.cli2) throw new AvAError('INVALID_CONFIG', 'The two debaters need opposite sides.');
+  // With rounds, the time limit is only a backstop: every speech at its longest, the pauses between them, and ten
+  // minutes to spare, between an hour and a day (Q3; a fixed hour cut long debates short, before their closings). A
+  // formal debate's time control is its speech limit, so a time set for it doesn't apply either.
+  if (config.completion === 'rounds' && config.rounds && (overrides.durationMs === undefined || config.stances))
+    config.durationMs = Math.min(86_400_000, Math.max(3_600_000, config.rounds * 2 * ((config.speechMs ?? config.perTurnMs) + config.paceMs) + 600_000));
   // One agent opens: the other speaks next, then they alternate.
   if (config.opening && config.opening !== 'both' && !overrides.lead) config.lead = other(config.opening);
   // A benchmark is exactly one simultaneous answer from each agent.

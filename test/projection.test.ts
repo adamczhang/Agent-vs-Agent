@@ -18,4 +18,9 @@ test('a Debate reply shows as its message, decoded as it streams, and anything e
   assert.equal(readableOutput('```json\n{"message":"fenced"}\n```'),'fenced');
   assert.equal(readableOutput('Plain answer with {"message":"inside"}'),'Plain answer with {"message":"inside"}');
   assert.equal(readableOutput('{"stop_requested":true,"message":"x"}'),'{"stop_requested":true,"message":"x"}','only an envelope that opens with its message');
+});test('Q5: an output line\'s decoded reply is worked out as it changes, not on every render',()=>{
+  const first=activityProjection([],[{seq:1,type:'activity',time:'',data:{seat:'cli1',turnId:'t',type:'output',text:'{"message":"Hel'}}]);
+  assert.equal(first[0]!.shown,'Hel');
+  const next=activityProjection(first,[{seq:2,type:'activity',time:'',data:{seat:'cli1',turnId:'t',type:'output',text:'lo"}'}},{seq:3,type:'activity',time:'',data:{seat:'cli2',turnId:'u',type:'tool',text:'ls'}}]);
+  assert.deepEqual(next.map(l=>l.shown),['Hello','ls']);
 });

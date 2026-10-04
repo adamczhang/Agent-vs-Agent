@@ -71,8 +71,10 @@ if(process.argv.includes('--mcp')){
     mkdirSync(dataRoot,{recursive:true});
     releaseOwner=claimOwner(dataRoot,owner);
     if(existsSync(lockFile)){
-      const lock=JSON.parse(readFileSync(lockFile,'utf8')) as {pid:number;started?:number};
-      if(ownerAlive(lock.pid,lock.started))throw new AvAError('OWNER_EXISTS','An AvA service already owns this data directory. Connect to its existing endpoint.');
+      // An empty or unreadable lock (a crash right after it was written) is stale: owner.sqlite, claimed above, already
+      // keeps out a second owner (Q4).
+      let lock:{pid:number;started?:number}|undefined;try{lock=JSON.parse(readFileSync(lockFile,'utf8'));}catch{/* stale */}
+      if(lock&&ownerAlive(lock.pid,lock.started))throw new AvAError('OWNER_EXISTS','An AvA service already owns this data directory. Connect to its existing endpoint.');
       unlinkSync(lockFile);
     }
     writeFileSync(lockFile,JSON.stringify({pid:process.pid,owner,started:processStarted()}),{flag:'wx',mode:0o600});locked=true;
@@ -80,21 +82,26 @@ if(process.argv.includes('--mcp')){
     const [{AvAService},{listen}]=await Promise.all([import('./service.js'),import('./http.js')]);
     const service=new AvAService(dataRoot),http=await listen(service,join(projectRoot,'dist','web'));
     let closing=false,idle:ReturnType<typeof setInterval>|undefined;
+    // Every step is tried, and the process exits at the end: one that failed (an agent that wouldn't close) used to leave
+    // a service that still answered health but refused every change, which hosts then kept alive (Q4). Whatever it left
+    // running is found through the process ledger.
     const shutdown=async()=>{
-      if(closing)return;closing=true;
-      try{await http.close();service.store.close();if(JSON.parse(readFileSync(lockFile,'utf8')).owner===owner)unlinkSync(lockFile);releaseOwner?.();if(idle)clearInterval(idle);}
-      catch(error){closing=false;console.error(error instanceof Error?error.message:error);}
+      if(closing)return;closing=true;if(idle)clearInterval(idle);
+      const step=async(work:()=>unknown)=>{try{await work();}catch(error){console.error(error instanceof Error?error.message:error);}};
+      await step(()=>http.close());await step(()=>service.store.close());
+      await step(()=>{if(JSON.parse(readFileSync(lockFile,'utf8')).owner===owner)unlinkSync(lockFile);});await step(()=>releaseOwner?.());
+      process.exit(0);
     };
     process.once('SIGINT',()=>{void shutdown();});process.once('SIGTERM',()=>{void shutdown();});
     // A newer install asked this service to step aside (service.retire): its idle agents close, then it exits and the
     // newer plugin starts its own.
-    service.retire=()=>{void (async()=>{try{await service.shutdown();}catch{/* close what it can */}await shutdown();process.exit(0);})();};
+    service.retire=()=>{void (async()=>{try{await service.shutdown();}catch{/* close what it can */}await shutdown();})();};
     if(process.argv.includes('--daemon')){
       const idleMs=Math.max(100,Number(process.env.AVA_IDLE_TIMEOUT_MS)||120000);
       idle=setInterval(()=>{
         if(Date.now()-http.lastRequestAt()<idleMs||closing)return;
-        const hasActive=service.store.db.prepare('SELECT data FROM pairs').all().some(row=>(JSON.parse(String(row.data)) as Pair).activeRunId);
-        if(!hasActive&&!service.benchmarks.busy)void shutdown();
+        // The same check as a handover (Q4): a judge, a 1:1 reply or a Build preparation also keeps it running.
+        if(!service.busyReason())void shutdown();
       },Math.min(10000,idleMs));
     }
     console.log(JSON.stringify({status:'listening',port:http.port,pid:process.pid,dataRoot,version:packageVersion}));

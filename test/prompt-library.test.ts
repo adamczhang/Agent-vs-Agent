@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, readFileSync, renameSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { AvAService } from '../src/service.js';
 import { PromptLibrary } from '../src/prompt-library.js';
@@ -230,3 +230,15 @@ for (const mode of ['benchmark', 'conversation', 'build'] as const) {
     await service.call('run.control', { runId: run.id, action: 'stop', requestId: 'stop-' + mode }); await flush();
   });
 }
+
+test('Q6: one file is read on its own; a delete moves the prompt aside first; leftovers of an interrupted save or delete go at the next start', async t => {
+  const { service, library, root } = fixture(t);
+  const file = await upload(service);
+  const saved = library.save({ ...input({ id: 'with-file' }), files: [{ id: 'f1', name: 'notes.txt', attachmentId: file.id }] });
+  assert.equal(Buffer.from(library.file(saved.id, 'f1').data, 'base64').toString(), 'Reference material');
+  library.delete(saved.id, saved.revision);
+  assert.ok(!readdirSync(join(root, 'prompts')).some(name => name.includes('with-file')), 'nothing left of it');
+  for (const name of ['.pending-x-1', '.deleting-y-2']) mkdirSync(join(root, 'prompts', name, 'files'), { recursive: true });
+  new PromptLibrary(root, service.store).list();
+  assert.ok(!readdirSync(join(root, 'prompts')).some(name => name.startsWith('.pending-') || name.startsWith('.deleting-')));
+});

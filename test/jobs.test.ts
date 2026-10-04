@@ -16,7 +16,7 @@ async function start(host:JobHost,name:string,argv:string[],assignTo=name){
   await host.create(name);
   const child=spawn(launched.argv[0]!,launched.argv.slice(1),{stdio:['pipe','pipe','pipe'],windowsHide:true});
   let output='';child.stdout.on('data',c=>{output+=String(c);});
-  const contained=await host.release(assignTo,child.pid!);
+  const contained=await host.release(assignTo,child.pid!,launched.token);
   await until(()=>output.includes(']'));
   return {launched,contained,pids:JSON.parse(output.slice(output.indexOf('['),output.indexOf(']')+1)) as number[],launcher:child.pid!};
 }
@@ -49,7 +49,7 @@ test('a process started outside the job by a Store app (PowerShell 7) is still f
   const marker=`AVA_LINEAGE_${process.pid}`;
   const launched=await host.launch(['pwsh.exe','-NoProfile','-Command',`Start-Process -WindowStyle Hidden '${process.execPath}' -ArgumentList '-e','setInterval(()=>{},1000)//${marker}'`]);
   await host.create('pair/cli1/1/d');
-  const child=spawn(launched.argv[0]!,launched.argv.slice(1),{stdio:'ignore',windowsHide:true});await host.release('pair/cli1/1/d',child.pid!);
+  const child=spawn(launched.argv[0]!,launched.argv.slice(1),{stdio:'ignore',windowsHide:true});await host.release('pair/cli1/1/d',child.pid!,launched.token);
   const find=()=>spawnSync('powershell.exe',['-NoProfile','-Command',`Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object { $_.CommandLine -match '${marker}' } | ForEach-Object { $_.ProcessId }`],{encoding:'utf8',windowsHide:true}).stdout.split(/\s+/).filter(Boolean).map(Number);
   let started:number[]=[];assert.ok(await until(()=>(started=find()).length===1,20000),'the background process started');
   try{
@@ -57,6 +57,17 @@ test('a process started outside the job by a Store app (PowerShell 7) is still f
     await host.retire('pair/cli1/1/d');
     assert.ok(await until(()=>!alive(started[0]!)),'retiring the job stops it');
   }finally{if(alive(started[0]!))process.kill(started[0]!);}
+});
+
+test('Q2: a job helper that stops is started again, so new agents are contained again',{timeout:60000},async(t)=>{
+  if(process.platform!=='win32')return;
+  const host=new JobHost(tempDir('ava-jobs-restart-'));t.after(()=>host.dispose());
+  const internals=host as unknown as {child?:{pid:number}};
+  await host.launch(['node']);const helper=internals.child!.pid;
+  process.kill(helper);assert.ok(await until(()=>internals.child===undefined),'the helper stopped');
+  const started=await start(host,'pair/cli1/1/g',agent(1));
+  assert.equal(started.contained,true,started.launched.note);assert.notEqual(internals.child?.pid,helper,'a new helper');
+  await host.retire('pair/cli1/1/g');assert.ok(await until(()=>!alive(started.pids[0]!)));
 });
 
 test('when assignment fails, the launcher still starts the agent, uncontained, and says so',{timeout:60000},async(t)=>{

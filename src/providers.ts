@@ -1,5 +1,5 @@
 import { createAcpRuntime, createAgentRegistry, createFileSessionStore, type AcpxRuntime, type AcpRuntimeHandle, type AcpRuntimeSessionUsage, type AcpRuntimeUsageBreakdown } from 'acpx/runtime';
-import { existsSync, mkdirSync, readFileSync,writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, isAbsolute, join } from 'node:path';
 import { participantWorkspace } from './workspace.js';
@@ -40,7 +40,11 @@ export class NativeFactory implements ParticipantFactory {
   ledger?:ProcessLedger;
   // Windows job objects for agent processes (src/jobs.ts), set by the service.
   jobs?:AgentJobs;
-  constructor(readonly dataRoot:string,private setups:Partial<Record<Provider,ProviderSetup>>={}){}
+  constructor(readonly dataRoot:string,private setups:Partial<Record<Provider,ProviderSetup>>={}){
+    // ACPX copies each ACPX_AUTH_<NAME> variable into every agent as <NAME>, where an agent's environment can't blank it.
+    // AvA never uses them (each agent's own route supplies its credentials), so its service drops them.
+    for(const name of Object.keys(process.env))if(/^ACPX_AUTH_/i.test(name))delete process.env[name];
+  }
   inspect(provider:Provider){
     const setup=this.setups[provider];
     const registry=createAgentRegistry(setup?.argv?{overrides:{[provider]:setup.argv}}:undefined);
@@ -48,7 +52,22 @@ export class NativeFactory implements ParticipantFactory {
   }
   list(){return PROVIDERS.map(provider=>({provider,inspection:this.inspect(adapterOf(provider))}));}
   doctor(){return doctor(this.dataRoot,p=>this.inspect(p));}
-  cliWarnings(){return cliWarnings(p=>this.inspect(p));}
+  // Every menu step shows these, and each reading runs both CLIs' --version: read once a minute at most (Q6).
+  private warned?:{at:number;value:Promise<Partial<Record<Provider,string>>>};
+  cliWarnings(){
+    if(!this.warned||Date.now()-this.warned.at>=60_000){const value=cliWarnings(p=>this.inspect(p));this.warned={at:Date.now(),value};value.catch(()=>{if(this.warned?.value===value)this.warned=undefined;});}
+    return this.warned.value;
+  }
+  // Codex's MCP server names, read once per CLI and configuration rather than at every start, each fresh session and each
+  // model list (each reading starts Node and Codex). A changed CLI or config.toml is read again (Q6).
+  private mcpNames=new Map<string,Promise<string[]>>();
+  private async codexMcp(cli:InstalledCli,cwd:string,env:NodeJS.ProcessEnv,signal:AbortSignal){
+    const home=env.CODEX_HOME||join(homedir(),'.codex'),stamp=(path:string)=>{try{return statSync(path).mtimeMs;}catch{return 0;}};
+    const key=JSON.stringify([cli.command,cli.args,stamp(cli.path),home,stamp(join(home,'config.toml'))]);
+    let names=this.mcpNames.get(key);
+    if(!names){const reading=codexMcpNames(cli,cwd,env);names=reading;this.mcpNames.set(key,reading);reading.catch(()=>{if(this.mcpNames.get(key)===reading)this.mcpNames.delete(key);});}
+    const found=await names;signal.throwIfAborted();return found;
+  }
   private argv(provider:Provider){
     const inspected=this.inspect(adapterOf(provider));
     if(!inspected||inspected.launch.kind!=='installed')throw new AvAError('MISSING_PROVIDER',`${provider}: install the required CLI/ACP adapter first.`);
@@ -79,7 +98,7 @@ export class NativeFactory implements ParticipantFactory {
     // Codex (and the Gateway, which runs on it) and Claude Code run as the user's installed CLI, at the version the adapter needs.
     const cli=CODEX_HARNESS.has(config.provider)?await installedCli('codex'):config.provider==='claude'?await installedCli('claude'):undefined;
     const cwd=participantWorkspace(this.dataRoot,scope);mkdirSync(cwd,{recursive:true});
-    const mcpNames=CODEX_HARNESS.has(config.provider)?await codexMcpNames(cli!,cwd,{...process.env,...this.setups[config.provider]?.env},signal):[];
+    const mcpNames=CODEX_HARNESS.has(config.provider)?await this.codexMcp(cli!,cwd,{...process.env,...this.setups[config.provider]?.env},signal):[];
     // A Gateway model's catalog entry: its context window goes to Codex (which has no metadata for it) and its vision tag
     // says whether it takes images.
     const listed=config.provider==='vercel'?(await gatewayModels(this.dataRoot).catch(()=>[])).find(m=>m.id===config.model):undefined;
@@ -99,7 +118,7 @@ export class NativeFactory implements ParticipantFactory {
         config.provider==='vercel'?{model:config.model,effort:config.effort?.value,key:gatewayKey(this.dataRoot)!.key,...(listed?.context?{context:listed.context}:{})}:undefined,cli,mcpNames),
       processLifecycle:{
         async onBeforeSpawn(){signal.throwIfAborted();if(launch.contained)await jobs!.create(jobName).catch(()=>{/* release() then reports it uncontained */});},
-        async onSpawned(event){processes.add(event.pid);ledger?.spawned({pid:event.pid,...scope});if(launch.contained&&!await jobs!.release(jobName,event.pid))uncontained=true;signal.throwIfAborted();},
+        async onSpawned(event){processes.add(event.pid);ledger?.spawned({pid:event.pid,...scope});if(launch.contained&&!await jobs!.release(jobName,event.pid,launch.token))uncontained=true;signal.throwIfAborted();},
         onExit(event){processes.delete(event.pid);record(()=>ledger?.exited(event.pid));}},
     });
     const containment=()=>!jobs?'':!launch.contained?` ${launch.note}`:uncontained?' Process containment failed for this agent; its processes are found by process tree.':` ${launch.note}`;
@@ -148,8 +167,10 @@ export class NativeFactory implements ParticipantFactory {
 // gateway: for a Vercel AI Gateway agent, its model, effort and key (all fixed when it starts). cli: the installed CLI the
 // agent runs (Codex for Codex and the Gateway, Claude Code for Claude), from installedCli.
 export function participantEnvironment(provider:Provider,configured:Record<string,string>={},dataRoot?:string,internet=false,gateway?:{model:string;effort?:string;key:string;context?:number},cli?:Pick<InstalledCli,'command'|'args'|'path'>,discoveredMcp:string[]=[]){
-  // Agents inherit the service's environment; the Gateway key goes only to a Gateway agent (set below), never another.
-  const env:Record<string,string>={...configured,AVA_PARTICIPANT:'1',AI_GATEWAY_API_KEY:''};
+  // Agents inherit the service's environment, minus every other provider's API credentials (an agent that can run
+  // commands could print them where the other agent reads). The Gateway key goes only to a Gateway agent (set below).
+  const others=Object.entries(API_VARIABLES).filter(([name])=>name!==provider).flatMap(([,names])=>names).filter(name=>!API_VARIABLES[provider].includes(name));
+  const env:Record<string,string>={...configured,...Object.fromEntries(others.map(name=>[name,''])),AVA_PARTICIPANT:'1',AI_GATEWAY_API_KEY:''};
   if(CODEX_HARNESS.has(provider)){
     const inherited=JSON.parse(configured.CODEX_CONFIG??process.env.CODEX_CONFIG??'{}') as Record<string,unknown>;
     const names=disabledMcpNames(discoveredMcp);

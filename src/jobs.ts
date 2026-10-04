@@ -1,5 +1,5 @@
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -39,6 +39,8 @@ public static class AvAJobs {
   static readonly object gate = new object();
   static readonly Dictionary<string, IntPtr> jobs = new Dictionary<string, IntPtr>();
   static readonly Dictionary<string, Dictionary<uint, long>> lineage = new Dictionary<string, Dictionary<uint, long>>();
+  // When each lineage PID was first seen gone (FILETIME ticks): a child that started after then has another parent.
+  static readonly Dictionary<string, Dictionary<uint, long>> gone = new Dictionary<string, Dictionary<uint, long>>();
   static Timer watcher;
   static void Check(bool ok) { if (!ok) throw new Win32Exception(Marshal.GetLastWin32Error()); }
   static IntPtr Job(string name) { IntPtr job; if (!jobs.TryGetValue(name, out job)) throw new InvalidOperationException("No such job."); return job; }
@@ -65,22 +67,29 @@ public static class AvAJobs {
   }
   // Each job's lineage holds every process seen in it or descended from one, with its start time. Exited ones stay, so
   // a child whose parent has just exited (a shell that ran Start-Process) still finds it. A recorded PID running again
-  // with another start time was reused, and stops counting.
+  // with another start time was reused, and stops counting. An exited one only counts for children that started before
+  // it was seen gone: a process that reused its PID, started a child and exited between two sweeps can't pass that
+  // child off as the agent's.
   static void Sweep() {
     lock (gate) {
       if (jobs.Count == 0) return;
       List<KeyValuePair<uint, uint>> processes; try { processes = Snapshot(); } catch { return; }
       var running = new HashSet<uint>(); foreach (var p in processes) running.Add(p.Key);
+      long now = DateTime.UtcNow.ToFileTimeUtc();
       foreach (var job in jobs) {
-        var known = lineage[job.Key]; uint[] members; try { members = InJob(job.Value); } catch { continue; }
+        var known = lineage[job.Key]; var ended = gone[job.Key]; uint[] members; try { members = InJob(job.Value); } catch { continue; }
         foreach (var pid in members) if (!known.ContainsKey(pid)) { long started = Started(pid); if (started != 0) known[pid] = started; }
-        foreach (var pid in new List<uint>(known.Keys)) if (running.Contains(pid)) { long started = Started(pid); if (started != 0 && started != known[pid]) known.Remove(pid); }
+        foreach (var pid in new List<uint>(known.Keys)) {
+          if (running.Contains(pid)) { long started = Started(pid); if (started != 0 && started != known[pid]) { known.Remove(pid); ended.Remove(pid); } }
+          else if (!ended.ContainsKey(pid)) ended[pid] = now;
+        }
         for (bool grew = true; grew; ) {
           grew = false;
           foreach (var p in processes) {
             if (known.ContainsKey(p.Key) || p.Key == p.Value || !known.ContainsKey(p.Value)) continue;
-            long started = Started(p.Key);
+            long started = Started(p.Key), parentGone;
             if (started == 0 || started < known[p.Value]) continue;
+            if (ended.TryGetValue(p.Value, out parentGone) && started > parentGone) continue;
             known[p.Key] = started; grew = true;
           }
         }
@@ -96,7 +105,7 @@ public static class AvAJobs {
       var limits = new Extended(); limits.Basic.Flags = 0x400;
       if (memoryBytes > 0) { limits.Basic.Flags |= 0x200; limits.JobMemory = new UIntPtr((ulong)memoryBytes); }
       if (!SetInformationJobObject(job, 9, ref limits, (uint)Marshal.SizeOf(typeof(Extended)))) { int error = Marshal.GetLastWin32Error(); CloseHandle(job); throw new Win32Exception(error); }
-      jobs[name] = job; lineage[name] = new Dictionary<uint, long>();
+      jobs[name] = job; lineage[name] = new Dictionary<uint, long>(); gone[name] = new Dictionary<uint, long>();
       if (watcher == null) watcher = new Timer(delegate { Sweep(); }, null, 100, 100);
     }
   }
@@ -117,7 +126,7 @@ public static class AvAJobs {
     }
   }
   public static void Terminate(string name) { lock (gate) { IntPtr job; if (jobs.TryGetValue(name, out job)) Check(TerminateJobObject(job, 1)); } }
-  public static void Close(string name) { lock (gate) { IntPtr job; if (jobs.TryGetValue(name, out job)) { CloseHandle(job); jobs.Remove(name); lineage.Remove(name); } } }
+  public static void Close(string name) { lock (gate) { IntPtr job; if (jobs.TryGetValue(name, out job)) { CloseHandle(job); jobs.Remove(name); lineage.Remove(name); gone.Remove(name); } } }
 }`;
 // One JSON request per line on stdin, one JSON answer per line on stdout. The helper ends when stdin closes (the
 // service exited), which closes its job handles without stopping anything in the jobs.
@@ -140,13 +149,15 @@ while(($line=[Console]::In.ReadLine()) -ne $null){
   [Console]::Out.WriteLine(($answer|ConvertTo-Json -Compress))
 }`;
 
-// The launcher ACPX starts in place of the agent: <node> <launcher> <signal folder> <agent command> <arguments...>.
+// The launcher ACPX starts in place of the agent: <node> <launcher> <signal folder> <token> <agent command> <arguments...>.
+// Its signal file is <token>-<pid>.ready: a token of its own, so a signal left for an earlier launcher with the same PID
+// (one killed just after AvA wrote it) can never start this one's agent before it is in its job.
 const LAUNCHER = `// AvA agent launcher (src/jobs.ts). Waits until AvA has placed this process in the agent's job object, or decided it
 // can't, then starts the agent with this process's own stdio, so the agent and its children are in the job from birth.
 import {spawn} from 'node:child_process';
 import {existsSync,rmSync} from 'node:fs';
 import {join} from 'node:path';
-const [folder,command,...args]=process.argv.slice(2),ready=join(folder,process.pid+'.ready'),deadline=Date.now()+30000;
+const [folder,token,command,...args]=process.argv.slice(2),ready=join(folder,token+'-'+process.pid+'.ready'),deadline=Date.now()+30000;
 while(!existsSync(ready)){
   if(Date.now()>deadline){process.stderr.write('AvA did not release this agent to start.\\n');process.exit(1);}
   await new Promise(resolve=>setTimeout(resolve,15));
@@ -167,11 +178,12 @@ const stopExactly = (pids: number[]) => new Promise<void>(done => {
 });
 
 export interface AgentJobs {
-  // The launcher's command line for an agent command, or the command itself when jobs aren't available.
-  launch(argv: string[]): Promise<{ argv: string[]; contained: boolean; note: string }>;
+  // The launcher's command line for an agent command, or the command itself when jobs aren't available. token names
+  // this launch's signal (pass it to release).
+  launch(argv: string[]): Promise<{ argv: string[]; contained: boolean; note: string; token?: string }>;
   create(name: string, memoryBytes?: number): Promise<void>;
   // Assigns a started launcher to its job and lets it start the agent; contained is false when assignment failed.
-  release(name: string, pid: number): Promise<boolean>;
+  release(name: string, pid: number, token?: string): Promise<boolean>;
   members(name: string): Promise<number[]>;
   scopeMembers(prefix: string): Promise<number[]>;
   // Stops every member except those kept (or the whole job when none are), then lets the job go.
@@ -184,6 +196,8 @@ export class JobHost implements AgentJobs {
   private starting?: Promise<void>;
   private failure?: string;
   private next = 1;
+  // Restarts after the helper stopped while running; a helper that never started stays failed.
+  private restarts = 0;
   private waiting = new Map<number, { resolve(value: { ok: boolean; pids?: number[]; error?: string }): void; reject(error: Error): void }>();
   private names = new Set<string>();
   constructor(private dataRoot: string, private stop: (pids: number[]) => Promise<void> = stopExactly) {}
@@ -205,7 +219,7 @@ export class JobHost implements AgentJobs {
       } catch (error) { fail(`The job helper could not start (${error instanceof Error ? error.message : String(error)}).`); return; }
       this.child = child;
       const timer = setTimeout(() => { fail('The job helper did not start within 30 seconds.'); child.kill(); }, 30_000);
-      let buffered = '', errors = '';
+      let buffered = '', errors = '', ready = false;
       child.stderr.on('data', chunk => { if (errors.length < 2000) errors += String(chunk); });
       // A write to a helper that has just exited fails with EPIPE; without a listener that error would end the service.
       child.stdin.on('error', error => { fail(`The job helper stopped (${error.message}).`); });
@@ -216,14 +230,20 @@ export class JobHost implements AgentJobs {
           if (!line) continue;
           let message: { ready?: boolean; id?: number; ok?: boolean; pids?: number | number[]; error?: string };
           try { message = JSON.parse(line); } catch { continue; }
-          if (message.ready) { clearTimeout(timer); resolve(); continue; }
+          if (message.ready) { clearTimeout(timer); ready = true; resolve(); continue; }
           const waiter = this.waiting.get(Number(message.id)); this.waiting.delete(Number(message.id));
           const pids = message.pids === undefined ? undefined : Array.isArray(message.pids) ? message.pids : [message.pids];
           waiter?.resolve({ ok: !!message.ok, ...(pids ? { pids: pids.map(Number) } : {}), ...(message.error ? { error: message.error } : {}) });
         }
       });
       child.on('error', error => { clearTimeout(timer); fail(`The job helper failed (${error.message}).`); });
-      child.on('exit', () => { clearTimeout(timer); this.child = undefined; fail(`The job helper stopped.${errors.trim() ? ' ' + errors.trim().split(/\r?\n/)[0] : ''}`); });
+      child.on('exit', () => {
+        clearTimeout(timer); if (this.child === child) this.child = undefined;
+        fail(`The job helper stopped.${errors.trim() ? ' ' + errors.trim().split(/\r?\n/)[0] : ''}`);
+        // The jobs it held are gone (their agents run on, found through the process ledger), but new agents are contained
+        // again: a helper that was running is started anew on the next request, up to three times.
+        if (ready && !this.disposed && this.restarts < 3) { this.restarts++; this.starting = undefined; this.failure = undefined; }
+      });
       child.unref(); (child.stdin as unknown as { unref?(): void }).unref?.();
       (child.stdout as unknown as { unref?(): void }).unref?.(); (child.stderr as unknown as { unref?(): void }).unref?.();
     });
@@ -245,7 +265,8 @@ export class JobHost implements AgentJobs {
     if (this.failure) return { argv, contained: false, note: `Process containment unavailable: ${this.failure}` };
     mkdirSync(this.folder, { recursive: true });
     this.sweepReady();
-    return { argv: [process.execPath, this.launcher(), this.folder, ...argv], contained: true, note: 'Processes contained in a Windows job object.' };
+    const token = randomUUID();
+    return { argv: [process.execPath, this.launcher(), this.folder, token, ...argv], contained: true, note: 'Processes contained in a Windows job object.', token };
   }
   // A launcher waits at most 30 s for its signal, so an older one was never read (its launcher had gone). Removing it
   // keeps a later launcher that reuses the PID from starting its agent before it is in the job.
@@ -254,13 +275,13 @@ export class JobHost implements AgentJobs {
     catch { /* no folder yet */ }
   }
   async create(name: string, memoryBytes = 0) { await this.must('create', { name, memory: memoryBytes }); this.names.add(name); }
-  async release(name: string, pid: number) {
+  async release(name: string, pid: number, token = '') {
     let contained = false;
     try { await this.must('assign', { name, pid }); contained = true; } catch { /* the agent still starts, found by its process tree */ }
     // A launcher that has already exited never reads its signal, which would wait for the next process with its PID.
     if (!contained && !running(pid)) return false;
     mkdirSync(this.folder, { recursive: true });
-    writeFileSync(join(this.folder, `${pid}.ready`), contained ? 'contained' : 'uncontained');
+    writeFileSync(join(this.folder, `${token}-${pid}.ready`), contained ? 'contained' : 'uncontained');
     return contained;
   }
   async members(name: string) { return this.names.has(name) ? (await this.must('list', { name })).pids ?? [] : []; }
@@ -277,8 +298,9 @@ export class JobHost implements AgentJobs {
       const kept = new Set(keep), first = kept.size ? await this.members(name).catch(() => [] as number[]) : [];
       if (!first.some(pid => kept.has(pid))) await this.must('terminate', { name }).catch(() => {});
       // Twice: a member may start another process while the first set is being stopped.
-      for (let pass = 0; pass < 2; pass++) { const stop = (await this.members(name)).filter(pid => !kept.has(pid)); if (!stop.length) break; await this.stop(stop); }
+      for (let pass = 0; pass < 2; pass++) { const stop = (await this.members(name).catch(() => [] as number[])).filter(pid => !kept.has(pid)); if (!stop.length) break; await this.stop(stop); }
     } finally { this.names.delete(name); await this.must('close', { name }).catch(() => {}); }
   }
-  dispose() { this.child?.stdin.end(); this.child = undefined; }
+  private disposed = false;
+  dispose() { this.disposed = true; this.child?.stdin.end(); this.child = undefined; }
 }

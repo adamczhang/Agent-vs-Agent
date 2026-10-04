@@ -1,8 +1,9 @@
 // Build mode: each agent works in its own copy of a project, inside its private workspace folder, so the two agents
 // can't overwrite each other and the original is never touched.
-import { closeSync, copyFileSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync } from 'node:fs';
+import { closeSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { execFile, spawnSync } from 'node:child_process';
+import { rm } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { AvAError } from './types.js';
@@ -63,24 +64,46 @@ export function checkProject(path: string, dataRoot: string) {
 }
 // AvA's own git calls ignore anything that would run a program (a file-system monitor, hooks) and anything from the
 // user's global setup that would stop or prompt (commit signing), and give up after two minutes.
-const git = (cwd: string, args: string[], env?: NodeJS.ProcessEnv) => spawnSync('git', ['-c', 'core.quotepath=off', '-c', 'core.fsmonitor=false', '-c', `core.hooksPath=${process.platform === 'win32' ? 'NUL' : '/dev/null'}`, '-c', 'commit.gpgsign=false', ...args],
-  { cwd, encoding: 'buffer', windowsHide: true, timeout: 120_000, maxBuffer: 64 * 1024 * 1024, ...(env ? { env } : {}) });
-// The agent can write its copy's .git, so before AvA runs git there, the repository's own config must not name any
-// program to run (filters, diff drivers, an fsmonitor, hooks, a pager) or pull in other config. Reading it as a file
-// runs nothing.
-const UNSAFE_GIT_CONFIG = /^\s*(?:\[\s*(?:filter|diff|merge|include|includeif)\b|(?:fsmonitor|hookspath|pager|editor|sshcommand|gitproxy|askpass|textconv|command|driver|process|clean|smudge)\s*=)/im;
-function assertSafeRepository(copy: string) {
-  const dotGit = join(copy, '.git');
-  if (!existsSync(dotGit) || !statSync(dotGit).isDirectory()) throw new AvAError('NO_BASELINE', 'This copy has no baseline to compare with.');
-  let config = ''; try { config = readFileSync(join(dotGit, 'config'), 'utf8'); } catch { /* no config */ }
-  if (UNSAFE_GIT_CONFIG.test(config)) throw new AvAError('UNSAFE_REPOSITORY', 'The git settings in this copy were changed to run programs, so AvA won’t read its changes.');
+const GIT_FLAGS = ['-c', 'core.quotepath=off', '-c', 'core.fsmonitor=false', '-c', `core.hooksPath=${process.platform === 'win32' ? 'NUL' : '/dev/null'}`, '-c', 'commit.gpgsign=false'];
+const GIT_OPTIONS = { encoding: 'buffer' as const, windowsHide: true, timeout: 120_000, maxBuffer: 64 * 1024 * 1024 };
+const git = (cwd: string, args: string[], env?: NodeJS.ProcessEnv) => spawnSync('git', [...GIT_FLAGS, ...args], { cwd, ...GIT_OPTIONS, ...(env ? { env } : {}) });
+// The same, without blocking the service while git hashes a large copy (the Changes view, Q6).
+const gitAsync = (cwd: string, args: string[], env?: NodeJS.ProcessEnv) => new Promise<{ status: number; stdout: Buffer }>(done => {
+  execFile('git', [...GIT_FLAGS, ...args], { cwd, ...GIT_OPTIONS, ...(env ? { env } : {}) }, (error, stdout) => done({ status: error ? (typeof error.code === 'number' ? error.code : 1) : 0, stdout: Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout ?? '') }));
+});
+// AvA's record of a copy's baseline: a bare repository outside the agent's workspace, cloned from the copy's first
+// commit before the agent starts. The agent can rewrite its copy's own .git (settings, worktree settings, a filter that
+// names a program, hooks), so AvA's git never opens that repository: it reads the copy's files as a work tree only.
+export function participantBaseline(dataRoot: string, scope: { pairId: string; seat: string; generation: number }, folder: string) {
+  return join(dataRoot, 'baselines', scope.pairId, scope.seat, String(scope.generation), `${folder}.git`);
 }
+const OBJECT_ID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+// A copy made before AvA kept its own baseline: the commit its HEAD names, read from the copy's files as text (reading
+// runs nothing; its objects are then only read as data).
+function copyHead(dotGit: string) {
+  let value = readFileSync(join(dotGit, 'HEAD'), 'utf8').trim();
+  for (let depth = 0; value.startsWith('ref:') && depth < 5; depth++) {
+    const name = value.slice(4).trim();
+    if (!/^refs\/[\w./-]+$/.test(name) || name.split('/').includes('..')) return undefined;
+    const loose = join(dotGit, name);
+    if (existsSync(loose)) value = readFileSync(loose, 'utf8').trim();
+    else { try { value = readFileSync(join(dotGit, 'packed-refs'), 'utf8').split(/\r?\n/).find(line => line.endsWith(` ${name}`))?.split(' ')[0] ?? ''; } catch { return undefined; } }
+  }
+  return OBJECT_ID.test(value) ? value : undefined;
+}
+// Git's own variables (GIT_DIR and the like) from the service's environment never reach these calls.
+const gitEnv = (extra: Record<string, string>) => ({ ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !/^GIT_/i.test(name))), ...extra });
 
 // The files to copy: in a git repository, tracked and untracked-but-not-ignored files (so uncommitted work is
 // included and build output isn't); otherwise everything except the usual generated folders.
 function projectFiles(source: string) {
   const listed = git(source, ['ls-files', '-co', '--exclude-standard', '-z']);
-  if (listed.status === 0) return { git: true, files: listed.stdout.toString('utf8').split('\0').filter(Boolean).filter(f => existsSync(join(source, f))) };
+  if (listed.status === 0) {
+    const files = listed.stdout.toString('utf8').split('\0').filter(Boolean).filter(f => existsSync(join(source, f)));
+    // Nothing listed in a folder that has files: it's inside a repository that ignores it (a home folder's dotfiles
+    // repository, another project's build/). It's copied like a folder outside git instead of empty (Q6).
+    if (files.length || !readdirSync(source).some(name => name.toLowerCase() !== '.git')) return { git: true, files };
+  }
   const files: string[] = [];
   const walk = (dir: string) => { for (const entry of readdirSync(join(source, dir), { withFileTypes: true })) {
     const rel = dir ? join(dir, entry.name) : entry.name;
@@ -96,7 +119,7 @@ function projectFiles(source: string) {
 // The copy is made in a temporary folder beside the target and renamed into place, so a copy that fails part-way leaves
 // nothing behind (and a retry starts clean). Entries that aren't plain files (a nested repository or a submodule the
 // git listing names as a folder, a link) are skipped.
-export function copyProject(source: string, target: string) {
+export function copyProject(source: string, target: string, history?: string) {
   if (existsSync(target)) throw new AvAError('COPY_EXISTS', `${target} already exists.`);
   const { git: isRepo, files } = projectFiles(source);
   if (files.length > COPY_LIMITS.files) throw new AvAError('PROJECT_TOO_LARGE', `More than ${COPY_LIMITS.files} files. Choose a smaller folder.`);
@@ -114,17 +137,22 @@ export function copyProject(source: string, target: string) {
     }
     renameSync(partial, target);
   } catch (error) { rmSync(partial, { recursive: true, force: true }); throw error; }
-  return { files: copied, bytes, gitSource: isRepo, baseline: baselineCommit(target, 'Baseline copy'), name: basename(source) };
+  return { files: copied, bytes, gitSource: isRepo, baseline: baselineCommit(target, 'Baseline copy', history), name: basename(source) };
 }
 // Building from scratch: an empty folder, with an empty baseline commit so its changes show the same way.
-export function startProject(target: string) {
+export function startProject(target: string, history?: string) {
   if (existsSync(target)) throw new AvAError('COPY_EXISTS', `${target} already exists.`);
   mkdirSync(target, { recursive: true });
-  return { files: 0, bytes: 0, gitSource: false, baseline: baselineCommit(target, 'Empty start'), name: '' };
+  return { files: 0, bytes: 0, gitSource: false, baseline: baselineCommit(target, 'Empty start', history), name: '' };
 }
-function baselineCommit(target: string, message: string) {
-  return git(target, ['init', '-q']).status === 0 && git(target, ['add', '-A']).status === 0
+// The copy's own repository (the agent may use git there) with its first commit, then AvA's record of that commit
+// (history), cloned while the copy's .git is still the one AvA just made.
+function baselineCommit(target: string, message: string, history?: string) {
+  const committed = git(target, ['init', '-q']).status === 0 && git(target, ['add', '-A']).status === 0
     && git(target, ['-c', 'user.name=Agent vs Agent', '-c', 'user.email=ava@localhost', 'commit', '-q', '--allow-empty', '--no-verify', '-m', message]).status === 0;
+  if (!committed || !history) return committed;
+  rmSync(history, { recursive: true, force: true }); mkdirSync(dirname(history), { recursive: true });
+  return git(dirname(history), ['clone', '--bare', '--no-hardlinks', '-q', target, history], gitEnv({})).status === 0;
 }
 // A folder name for one run's copy: the project name plus a short unique suffix.
 export const copyFolder = (source: string, key: string) => `${basename(source).replace(/[^\w.-]+/g, '-').slice(0, 40) || 'project'}-${key.replace(/[^\w]/g, '').slice(0, 8)}`;
@@ -132,20 +160,37 @@ export const copyFolder = (source: string, key: string) => `${basename(source).r
 export interface FileChange { path: string; status: 'added' | 'modified' | 'deleted' | 'changed'; added: number | null; removed: number | null }
 const STATUS: Record<string, FileChange['status']> = { A: 'added', M: 'modified', D: 'deleted' };
 const MAX_LISTED = 2000;
-// What an agent changed in its copy since the baseline (the copy's first commit), new files included. It is compared
-// through a temporary index, so the agent's own git state is untouched. Ignored files, such as build output, aren't
-// listed. Binary files have no line counts.
-export function projectChanges(copy: string, maxPatch = 400_000) {
-  assertSafeRepository(copy);
-  const roots = git(copy, ['rev-list', '--max-parents=0', 'HEAD']);
-  const base = roots.status === 0 ? roots.stdout.toString('utf8').trim().split(/\s+/).pop() : undefined;
-  if (!base) throw new AvAError('NO_BASELINE', 'This copy has no baseline to compare with.');
-  const index = join(tmpdir(), `ava-index-${randomUUID()}`), env = { ...process.env, GIT_INDEX_FILE: index };
+// What an agent changed in its copy since the baseline, new files included. Git runs in a scratch repository of AvA's
+// own (its settings, a temporary index), which reads the baseline's objects from history (AvA's record, see
+// participantBaseline) or, for a copy made before that record existed, from the copy's own object store as data. The
+// copy is only its work tree, so the agent's git state is untouched and its git settings never apply. Ignored files,
+// such as build output, aren't listed. Binary files have no line counts.
+export async function projectChanges(copy: string, history?: string, maxPatch = 400_000) {
+  const scratch = mkdtempSync(join(tmpdir(), 'ava-changes-')), repo = join(scratch, 'repo.git'), env = gitEnv({ GIT_INDEX_FILE: join(scratch, 'index') });
+  const noBaseline = () => new AvAError('NO_BASELINE', 'This copy has no baseline to compare with.');
   try {
-    if (git(copy, ['add', '-A'], env).status !== 0) throw new AvAError('CHANGES_FAILED', 'Could not read the changes in this copy.');
-    const diff = (args: string[]) => git(copy, ['diff', '--cached', '--no-renames', '--no-color', '--no-ext-diff', '--no-textconv', ...args, base, '--'], env);
-    const names = diff(['--name-status', '-z']).stdout.toString('utf8').split('\0'), counts = new Map<string, [number | null, number | null]>();
-    for (const row of diff(['--numstat', '-z']).stdout.toString('utf8').split('\0')) {
+    let objects: string, head: string | undefined;
+    if (history && existsSync(history)) {
+      const named = await gitAsync(scratch, [`--git-dir=${history}`, 'rev-parse', 'HEAD'], gitEnv({}));
+      objects = join(history, 'objects'); head = named.status === 0 ? named.stdout.toString('utf8').trim() : undefined;
+    } else {
+      const dotGit = join(copy, '.git');
+      if (!existsSync(dotGit) || !statSync(dotGit).isDirectory()) throw noBaseline();
+      objects = join(dotGit, 'objects'); head = copyHead(dotGit);
+    }
+    if (!head || !OBJECT_ID.test(head)) throw noBaseline();
+    if ((await gitAsync(scratch, ['init', '--bare', '-q', '--template=', `--object-format=${head.length === 64 ? 'sha256' : 'sha1'}`, repo], gitEnv({}))).status !== 0) throw new AvAError('CHANGES_FAILED', 'Could not read the changes in this copy.');
+    mkdirSync(join(repo, 'objects', 'info'), { recursive: true });
+    writeFileSync(join(repo, 'objects', 'info', 'alternates'), `${objects.replaceAll('\\', '/')}\n`);
+    const run = (args: string[]) => gitAsync(copy, [`--git-dir=${repo}`, `--work-tree=${copy}`, ...args], env);
+    // The baseline is the first commit (the copy's own history may have grown since).
+    const roots = await run(['rev-list', '--max-parents=0', head]);
+    const base = roots.status === 0 ? roots.stdout.toString('utf8').trim().split(/\s+/).pop() : undefined;
+    if (!base) throw noBaseline();
+    if ((await run(['add', '-A'])).status !== 0) throw new AvAError('CHANGES_FAILED', 'Could not read the changes in this copy.');
+    const diff = (args: string[]) => run(['diff', '--cached', '--no-renames', '--no-color', '--no-ext-diff', '--no-textconv', ...args, base, '--']);
+    const names = (await diff(['--name-status', '-z'])).stdout.toString('utf8').split('\0'), counts = new Map<string, [number | null, number | null]>();
+    for (const row of (await diff(['--numstat', '-z'])).stdout.toString('utf8').split('\0')) {
       const [added, removed, ...path] = row.split('\t');
       if (path.length) counts.set(path.join('\t'), [added === '-' ? null : Number(added), removed === '-' ? null : Number(removed)]);
     }
@@ -156,12 +201,12 @@ export function projectChanges(copy: string, maxPatch = 400_000) {
     }
     const listed = files.slice(0, MAX_LISTED);
     // A very large change (say, installed packages that weren't ignored) gets its file list without the patch.
-    const patch = files.length <= MAX_LISTED ? diff([]).stdout : Buffer.alloc(0);
+    const patch = files.length <= MAX_LISTED ? (await diff([])).stdout : Buffer.alloc(0);
     return {
       files: listed, totalFiles: files.length,
       added: files.reduce((n, f) => n + (f.added ?? 0), 0), removed: files.reduce((n, f) => n + (f.removed ?? 0), 0),
       patch: patch.subarray(0, maxPatch).toString('utf8'), truncated: patch.length > maxPatch || files.length > MAX_LISTED,
     };
-  } finally { rmSync(index, { force: true }); rmSync(`${index}.lock`, { force: true }); }
+  } finally { await rm(scratch, { recursive: true, force: true, maxRetries: 3 }).catch(() => {}); }
 }
 export { inside as isInside, sep };

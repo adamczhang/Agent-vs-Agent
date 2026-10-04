@@ -5,7 +5,8 @@ import { parseDocument } from 'yaml';
 import { z } from 'zod';
 import { AvAError } from './types.js';
 
-export const benchPath=z.string().min(1).max(240).refine(p=>!/[\\<>:"|?*\x00-\x1f]/.test(p)&&!p.startsWith('/')&&p.split('/').every(s=>s!=='.'&&s!=='..'&&s!=='.git'&&!!s&&!/[ .]$/.test(s)&&!/^(con|prn|aux|nul|com[0-9]|lpt[0-9])(?:\.|$)/i.test(s)),'Use a relative path without links, traversal, reserved names or alternate streams.');
+// (.git in any case: Windows treats .GIT as the same folder.)
+export const benchPath=z.string().min(1).max(240).refine(p=>!/[\\<>:"|?*\x00-\x1f]/.test(p)&&!p.startsWith('/')&&p.split('/').every(s=>s!=='.'&&s!=='..'&&s.toLowerCase()!=='.git'&&!!s&&!/[ .]$/.test(s)&&!/^(con|prn|aux|nul|com[0-9]|lpt[0-9])(?:\.|$)/i.test(s)),'Use a relative path without links, traversal, reserved names or alternate streams.');
 const checkSchema=z.union([
   z.object({equals:z.string().max(32000)}).strict(),z.object({contains:z.string().min(1).max(32000)}).strict(),
   z.object({regex:z.string().min(1).max(2000),flags:z.string().regex(/^[imsu]*$/).optional(),timeout_ms:z.number().int().min(50).max(5000).optional()}).strict().refine(c=>{try{new RegExp(c.regex,c.flags);return true;}catch{return false;}},'Invalid regular expression or flags.'),
@@ -32,12 +33,13 @@ export function safeBenchFile(root:string,name:string){
   }
   return target;
 }
-export function treeFiles(root:string):TaskFile[]{
+// skip: folder names left out (an attempt's installed packages).
+export function treeFiles(root:string,skip:ReadonlySet<string>=new Set()):TaskFile[]{
   const files:TaskFile[]=[];let size=0;
   function walk(dir:string){
     const full=join(root,dir),info=lstatSync(full);if(info.isSymbolicLink())throw new AvAError('BENCH_LINK','Benchmark files and folders must not be links.');
     for(const entry of readdirSync(full,{withFileTypes:true}).sort((a,b)=>a.name.localeCompare(b.name))){
-      const path=dir?`${dir}/${entry.name}`:entry.name;if(entry.name==='.git')continue;benchPath.parse(path);
+      const path=dir?`${dir}/${entry.name}`:entry.name;if(entry.name.toLowerCase()==='.git'||entry.isDirectory()&&skip.has(entry.name))continue;benchPath.parse(path);
       const stat=lstatSync(join(root,path));if(stat.isSymbolicLink())throw new AvAError('BENCH_LINK','Benchmark files and folders must not be links.');
       if(stat.isDirectory())walk(path);else if(stat.isFile()){
         if(files.length>=TASK_LIMITS.files||(size+=stat.size)>TASK_LIMITS.bytes)throw new AvAError('BENCH_SIZE','Benchmark files exceed the 1,000-file or 16 MiB limit.');
@@ -68,9 +70,16 @@ export function loadTask(directory:string):BenchTask{
   const hash=createHash('sha256');for(const file of files){hash.update(file.path+'\0'+file.bytes.length+'\0');hash.update(file.bytes);}
   return {spec,directory:root,digest:hash.digest('base64url'),files};
 }
+// A suite's files by name, size and time ('' when it can't be read): unchanged, the suite needn't be loaded again.
+export function suiteStamp(directory:string){
+  const hash=createHash('sha256');
+  const walk=(dir:string)=>{for(const entry of readdirSync(dir,{withFileTypes:true}).sort((a,b)=>a.name.localeCompare(b.name))){if(entry.name.toLowerCase()==='.git')continue;const path=join(dir,entry.name),info=lstatSync(path);hash.update(`${path}\0${info.size}\0${info.mtimeMs}\0`);if(entry.isDirectory())walk(path);}};
+  try{walk(resolve(directory));return hash.digest('hex');}catch{return '';}
+}
 export function loadSuite(directory:string):BenchTask[]{
   const root=resolve(directory);if(lstatSync(root).isSymbolicLink())throw new AvAError('BENCH_LINK','A benchmark suite must not be a link.');
-  const tasks=existsSync(join(root,'task.yaml'))?[loadTask(root)]:readdirSync(root,{withFileTypes:true}).filter(d=>d.isDirectory()||d.isSymbolicLink()).sort((a,b)=>a.name.localeCompare(b.name)).map(d=>loadTask(join(root,d.name)));
+  // Task folders only: a suite kept in git (.git, .github) or with other folders (scripts) loads too (Q6).
+  const tasks=existsSync(join(root,'task.yaml'))?[loadTask(root)]:readdirSync(root,{withFileTypes:true}).filter(d=>(d.isDirectory()||d.isSymbolicLink())&&!d.name.startsWith('.')&&existsSync(join(root,d.name,'task.yaml'))).sort((a,b)=>a.name.localeCompare(b.name)).map(d=>loadTask(join(root,d.name)));
   if(!tasks.length)throw new AvAError('BENCH_SUITE','The suite contains no tasks.');
   if(new Set(tasks.map(t=>t.spec.id)).size!==tasks.length)throw new AvAError('BENCH_ID','Task IDs must be unique inside a suite.');
   return tasks;

@@ -1,15 +1,18 @@
 import type { Seat } from '../src/types.js';
 export interface Event {seq:number;type:string;time:string;data:Record<string,unknown>}
-export interface ActivityLine {key:number;seat:Seat;turnId:string;type:string;text:string;late:boolean}
+// shown: what the agent's screen shows (an output line's reply decoded), worked out once per change rather than on
+// every render (Q5).
+export interface ActivityLine {key:number;seat:Seat;turnId:string;type:string;text:string;late:boolean;shown?:string}
 export function activityProjection(previous:ActivityLine[],events:Event[]):ActivityLine[]{
-  const next=previous.map(line=>({...line}));
+  const next=previous.map(line=>({...line})),touched=new Set<ActivityLine>();
   for(const event of events){
     if(event.type!=='activity'||!['cli1','cli2'].includes(String(event.data.seat)))continue;
     const data=event.data,seat=data.seat as Seat,turnId=String(data.turnId),type=String(data.type),text=String(data.text??'');
     const last=next.findLast(line=>line.seat===seat);
-    if(last&&['output','thought'].includes(type)&&last.turnId===turnId&&last.type===type&&last.late===!!data.late&&last.text.length+text.length<64000)last.text+=text;
-    else next.push({key:event.seq,seat,turnId,type,text,late:!!data.late});
+    if(last&&['output','thought'].includes(type)&&last.turnId===turnId&&last.type===type&&last.late===!!data.late&&last.text.length+text.length<64000){last.text+=text;touched.add(last);}
+    else{const line={key:event.seq,seat,turnId,type,text,late:!!data.late};next.push(line);touched.add(line);}
   }
+  for(const line of touched)line.shown=line.type==='output'?readableOutput(line.text):line.text;
   let size=0;
   return next.slice(-500).reverse().filter(line=>(size+=line.text.length)<=1000000).reverse();
 }

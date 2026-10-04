@@ -63,7 +63,8 @@ export function buildPermission(request: ToolPermissionRequest, root: string) {
     if (!isInside(norm(full), norm(base))) return { decision: undefined, reason: `outside its copy (${full})` };
     const local = relative(base, full);
     if (SETTINGS.test(local)) return { decision: undefined, reason: `a CLI's own settings folder (${local})` };
-    if (process.platform === 'win32' && local.split(/[\\/]/).some(part => /[:<>"|?*\x00-\x1f]|[. ]$/.test(part) || /^(con|prn|aux|nul|com[0-9]|lpt[0-9])(?:\.|$)/i.test(part))) return { decision: undefined, reason: 'ambiguous Windows file path' };
+    // (A part with ~<digit> may be a short 8.3 name, such as CLAUDE~1 for .claude, which names-based checks can't see.)
+    if (process.platform === 'win32' && local.split(/[\\/]/).some(part => /[:<>"|?*\x00-\x1f]|[. ]$|~\d/.test(part) || /^(con|prn|aux|nul|com[0-9]|lpt[0-9])(?:\.|$)/i.test(part))) return { decision: undefined, reason: 'ambiguous Windows file path' };
     // Refuse links in any existing component, including the workspace itself. A not-yet-created file is fine.
     for (let cursor = full; ; cursor = dirname(cursor)) {
       try {

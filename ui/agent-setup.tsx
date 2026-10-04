@@ -24,8 +24,15 @@ export function AgentSetup({ pairId, seat, onClose, onError, confirmActivate, st
   }
   useEffect(() => { void load(startPhase && startPhase !== 'home' ? startPhase : undefined); }, [pairId, seat, startPhase]);
   useEffect(() => { if (!busy) input.current?.focus(); }, [busy, menu?.id]);
+  // Held from the first click, before the confirmation that can ask the user: a double-click on Activate used to send two
+  // activations, the second replacing the first (Q5).
+  const choosing = useRef(false);
   async function choose(choice: string) {
-    if (!menu || busy) return;
+    if (!menu || busy || choosing.current) return;
+    choosing.current = true;
+    try { await chooseNow(menu, choice); } finally { choosing.current = false; }
+  }
+  async function chooseNow(menu: Menu, choice: string) {
     const item = /^\d+$/.test(choice) ? menu.choices[Number(choice) - 1] : undefined;
     if (/^\d+$/.test(choice) && !item) { onError('Choose a number from the menu.'); return; }
     if (item?.value === 'activate' && !(await confirmActivate())) return;

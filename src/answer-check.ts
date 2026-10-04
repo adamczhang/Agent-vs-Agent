@@ -13,19 +13,38 @@ export const answerInstructions = (kind: 'challenge' | 'race', form: string) => 
 
 // The agent's final answer: its last "ANSWER:" line (Markdown emphasis and code marks ignored), else nothing.
 export function finalAnswer(text: string): string | null {
-  const lines = text.replace(/\r\n/g, '\n').split('\n').map(l => l.replace(/[*_`]/g, '').trim()).filter(Boolean);
+  const lines = text.replace(/\r\n/g, '\n').split('\n').map(l => unmark(l).trim()).filter(Boolean);
   for (const line of lines.reverse()) { const m = line.match(/^(?:final\s+)?answer\s*[:：]\s*(.+)$/i); if (m) return m[1]!.trim(); }
   return null;
 }
-const clean = (s: string) => s.toLowerCase().replace(/^["'“”‘’]+|["'“”‘’.!]+$/g, '').replace(/\s+/g, ' ').trim();
-const gcd = (a: bigint, b: bigint): bigint => b === 0n ? (a < 0n ? -a : a) : gcd(b, a % b);
-const fraction = (s: string) => { const m = s.match(/(-?\d+)\s*\/\s*(\d+)/); if (!m || m[2] === '0') return null; const n = BigInt(m[1]!), d = BigInt(m[2]!), g = gcd(n, d) || 1n; return `${n / g}/${d / g}`; };
-// Whether an answer matches one accepted answer: whole numbers by value (2,131 = 2131), fractions in lowest terms, and
-// anything else as text, case and surrounding punctuation ignored (an answer may add words after it: "Monday, 13 March").
+// Markdown emphasis and code marks, in pairs around text (**2131**, _Dev_, `x`). A lone mark stays (x_1, 5623_7, 2**10),
+// and the answer key gets the same treatment, so a key such as x_1 matches the answer x_1 (Q3).
+const unmark = (s: string) => { for (let pass = 0, next = s; pass < 3; pass++, s = next) if ((next = s.replace(/(\*\*|__|\*|_|`)(?=\S)(.+?)(?<=\S)\1/g, '$2')) === s) break; return s; };
+const clean = (s: string) => unmark(s).toLowerCase().replace(/^["'“”‘’]+|["'“”‘’.!]+$/g, '').replace(/\s+/g, ' ').trim();
+// A number as written: a sign (the Unicode minus too), digits, an optional decimal part, an optional "/ denominator".
+const NUMBER = /[-−]?\d+(?:\.\d+)?(?:\s*\/\s*\d+)?/;
+// Its exact value as a fraction, or null (a zero denominator).
+function value(token: string) {
+  const [top, bottom = '1'] = token.replace('−', '-').split('/').map(s => s.trim());
+  const [whole, decimals = ''] = top!.split('.');
+  const n = BigInt(whole! + decimals), d = 10n ** BigInt(decimals.length) * BigInt(bottom);
+  return d === 0n ? null : { n, d };
+}
+// Whether an answer matches one accepted answer. A number (whole, decimal or fraction) by value: the first number in
+// the answer, after thousands separators and anything before an "=" go ("2,131 tilings", "2^10 = 1024", "74/144" for
+// 37/72). It must be that number exactly ("3.5" isn't 3, "3/4" isn't 3) and the only candidate ("12 or 13" counts for
+// nothing). Anything else as text, case and surrounding punctuation ignored; an answer may add words after it
+// ("Monday, 13 March").
 export function matches(answer: string, expected: string) {
   const a = clean(answer), e = clean(expected);
-  if (/^-?\d+$/.test(e)) { const n = a.replace(/(\d)[,\s](?=\d{3}\b)/g, '$1').match(/-?\d+/); return !!n && BigInt(n[0]) === BigInt(e); }
-  if (/^-?\d+\s*\/\s*\d+$/.test(e)) return fraction(a) !== null && fraction(a) === fraction(e);
+  if (new RegExp(`^${NUMBER.source}$`).test(e)) {
+    const plain = a.replace(/(\d)[,\s](?=\d{3}\b)/g, '$1'), side = plain.slice(plain.lastIndexOf('=') + 1);
+    if (/\b(?:or|and)\b|±|\+\/-/.test(side)) return false;
+    const found = side.match(NUMBER);
+    if (!found || /^\s*(?:\^|\*\*|e\d)/i.test(side.slice(found.index! + found[0].length))) return false;
+    const x = value(found[0]), y = value(e);
+    return !!x && !!y && x.n * y.d === y.n * x.d;
+  }
   return a === e || a.startsWith(e) && !/[a-z0-9]/.test(a[e.length] ?? '');
 }
 // The result: each agent's answer, whether it's right, and how long it took; the winner is the right one, or the faster.

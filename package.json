@@ -1,6 +1,6 @@
 {
   "name": "agent-vs-agent",
-  "version": "0.4.3",
+  "version": "0.4.4",
   "description": "Two AI coding agents side by side: Codex, Claude Code, Grok Build, Antigravity and the Vercel AI Gateway in one controlled room.",
   "license": "MIT",
   "author": "Adam Zhang <adam.dadvibes@gmail.com> (https://x.com/dad__vibes)",

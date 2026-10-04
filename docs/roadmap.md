@@ -6,15 +6,16 @@ Work one item at a time, starting with `next`. An item is done when its "Done wh
 
 ## Where things stand
 
-- **Published:** v0.4.3 (2026-10-03), with formal, judged debates, the prompt builder, Quick activate and service handover. Earlier: v0.3.5, with Windows CI passing. The [v0.3.1 release notes](release-v0.3.1.md) record what was tested.
-- **Phases A to C are done:** reliable installs, confined benchmark execution, and benchmarks worth sharing. Both hosts run 0.4.1 (not yet published), with Phase E, the Debate work (G1–G3) and the activation follow-ups (E11–E14).
+- **Published:** v0.4.3 (2026-10-03), with formal, judged debates, the prompt builder, Quick activate and service handover. Both hosts run it. Unreleased work was also pushed to GitHub's main as a snapshot (no tag).
+- **Ready to publish:** v0.4.4, with Prompt challenges and races, a fresh thread per Prompt run and debate, and the codebase review fixes (Phase Q). Its [release notes](release-v0.4.4.md) record what was tested.
+- **Phases A to C are done:** reliable installs, confined benchmark execution, and benchmarks worth sharing.
 - **Shipped:**
   - Prompt, Debate, and Build and Review, with private 1:1 lines, history, replay, stats and previews.
   - Validated benchmark tasks, deterministic checks, saved attempts, a scoreboard and exports.
-  - A prompt library, Resources and Stop all.
+  - A prompt library with builders, Settings and Stop all.
   - Ask-mode refusal of command execution.
 - **Toolchain:** ACPX 0.19.4, codex-acp 2.1.1 and claude-agent-acp 0.85.1 are the latest releases, and AvA uses them. Codex 0.160 and Claude Code 2.1.287 pass; Claude Code 2.1.288 is out.
-- **Tests:** 242 offline tests, 7 browser scenarios and smoke tests of both plugins. The v0.2.0 acceptance run used 99 live requests across all five providers.
+- **Tests:** 299 offline tests, 9 browser scenarios and smoke tests of both plugins. The v0.2.0 acceptance run used 99 live requests across all five providers.
 - **Benchmarks:** 20 validated starter tasks. In the full live run, Claude Code passed 20 of 20. Codex passed all 20 once the Review tasks came with their files.
 
 ### What changed the plan
@@ -300,10 +301,32 @@ The owner moved on from Debate to Prompt mode.
 | P4 | One thread per Prompt run: fresh sessions, same agents | offline | done |
 | P5 | New threads without closing the agents: fresh sessions start beside the current ones (Prompt and Debate) | offline | done |
 | P6 | The Prompt builder: task, answer form and hidden expected answer; the library editor gets the answer key | offline | done |
-| P7 | Live check of the challenges and races with Codex and Claude Code | live | next |
+| P7 | Live check of the challenges and races with Codex and Claude Code | live | done |
+| P8 | Publish v0.4.4 (Prompt challenges and races, fresh threads, the review fixes) and install it in both hosts | user | next |
+| P9 | Harder challenges: prompts the strongest models need one to five minutes for, and sometimes miss, each answer still computed by program | live | todo |
 
 - **P3:** the logic puzzle was brute-forced to make sure it has exactly one solution, and the code-tracing answer was taken from running the code. The two earlier Prompt starters are retired (set 4) where unedited.
+- **P7 (2026-10-04, 40 requests):** Claude Code (Opus 5.5) against Codex (6.1 Sol), both at high effort, in two rooms of five prompts. Every answer line was read and checked, every prompt was its own thread with fresh sessions, and the agents stayed Ready. Both agents answered all ten correctly, in 5 to 18 seconds each: the challenges work but are far easier than the one to five minutes intended, so P9 makes harder ones. Evidence: `pilot-evidence/stage-d/p7-prompt-challenges-live.json`.
+- **P8:** the release docs are ready as v0.4.4 (version bumped, notes in `docs/release-v0.4.4.md`). Publishing and installing wait for the owner's word.
 - **P5:** before, the next thread closed and reactivated both agents, so they briefly showed as not active. Now each fresh session runs its readiness check beside the current one and takes over in one write. A fresh session that fails leaves the agent as it was.
+
+## Phase Q — codebase review fixes (owner, 2026-10-04)
+
+A review of the whole codebase found 59 issues. They are fixed in batches, most severe first, each with regression tests (`test/review.test.ts`). The owner chose these ahead of P7.
+
+| ID | Item | Gate | Status |
+| --- | --- | --- | --- |
+| Q1 | Security and crashes: AvA's git never opens an agent's repository; previews survive odd keys and hide junctions and short names; the APP line is read without quadratic backtracking; `.git` in any case in task paths; imported exercises read only their own files; agents get no other provider's API keys | offline | done |
+| Q2 | Process safety: ledger records from before this logon session count for nothing, and proved-gone ones get an exit time; job lineage dates exited PIDs; EPERM means alive; the job helper restarts; launch signals carry a token; the Build gate refuses short 8.3 names | offline | done |
+| Q3 | Debate and Prompt correctness: a repair to spare for every speech; the side check with a speech limit; a time backstop that fits the speeches; formal debates always run by rounds; Options minutes and broadcast times; whole-answer matching; a fresh session that half fails is redone; failed or stalled briefings; attachments by ID | offline | done |
+| Q4 | Service lifecycle: one busy check for handover and idle exit (judge, discovery, operations); quarantined runs; bounded shutdown that always exits; judge sessions cleaned up and outside the agent limit; guarded deletes; Clear Session locks the pair; an empty lock file; the owner claim outside the write lock; shared model-list lookups | offline | done |
+| Q5 | Room: one command client per kind of action, with the options in a start's signature; the stale-room and polling races; a live thread re-read only on change; hidden tabs pause; an expired link stops polling; decoded output cached; the builder's save and the setup menu's Activate take effect once | offline | done |
+| Q6 | Performance and robustness: cached thread groupings, per-thread activity, SQL counts, event pages without messages, `synchronous=NORMAL`, lateness checked every 200 ms; async git and deletes; fewer PowerShell and CLI launches; cached suites and MCP lists. Also: a bad candidate fails only its attempt, a suite kept in git loads, an ignored project is copied whole, library deletes and leftovers, percent-encoded paths in reports | offline | done |
+
+- **Q1:** the reviewer reproduced the git attack: a filter in `.git/config.worktree` passed AvA's settings check, and `git add -A` then ran its program on the host. The preview crash was one request with a 64-character key containing `é`. The old APP pattern took 16 s on a 100,000-character line; it now takes milliseconds. `ACPX_AUTH_*` variables are dropped from the service's environment, because ACPX copies them into every agent where an agent's environment can't blank them.
+- **Q6:** the events table already had its `(run_id, seq)` index, so no new index was needed; the room's costs were the full-history scans around it. `/ava doctor`'s data-folder check (two PowerShell starts, about a second) stays synchronous: it runs only on request.
+- **Phase Q is done.** It ships in v0.4.4.
+- **Q2:** the logon session's start is its `winlogon.exe` start time, since Windows Fast Startup keeps the boot time running across a shutdown. Before, an orphan such as `explorer.exe` (its parent `userinit` exits) whose dead parent's PID matched an old record could be tree-killed by Stop all.
 
 ## Phase D — reach (later; versions assigned when scope is accepted)
 
