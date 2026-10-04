@@ -362,10 +362,19 @@ The owner moved on to Build mode: a dedicated mode for two kinds of task, app bu
 | H6 | Harder hunts: bugs that don't contradict a nearby docstring, no count given, and a few decoys, so the strongest agents miss some | live | done |
 | H7 | Portable hunts: a hunt's repository can be a public git address; AvA fetches one commit (no history, only the slice's files) into a cache and copies from it; the built-in hunts use CLI-MODE on GitHub | offline + live | done |
 | H8 | Harder app builds: specifications with exact, checkable behavior that the strongest agents get partly wrong | live | done |
-| H9 | Publish v0.4.5 (Build: app builds and bug hunts, portable and expert hunts, and the harder prompts of every mode) and install it in both hosts | user | next |
+| H9 | Publish v0.4.5 (Build: app builds and bug hunts, portable and expert hunts, and the harder prompts of every mode) and install it in both hosts | user | done |
+| H10 | Publish the CI fix for v0.4.5 (a test's line endings) as a snapshot on public main, without a new tag | user | next |
 
 - **Harder prompts in every mode (owner, 2026-10-04: "add harder prompts in all modes"):** H6 (hunts), P9 (challenges), H8 (app builds) and G15 (debates), in that order, each calibrated live against Claude Code and Codex at their strongest.
 
+- **H9 (2026-10-04):**
+  - **Published:** v0.4.5 on GitHub (public main 249468e, the tag and the release).
+  - **Windows CI failed one test:** a hunt's copy from a local commit gets CRLF line endings where `core.autocrlf` is on, as on GitHub's runner, and the test expected LF. Only the test was wrong: copies from a local commit follow the user's git settings, as their checkouts do, and planting already handles CRLF. Copies from the web always keep stored line endings.
+  - **The fix:** the test now compares text regardless of line endings, and all 317 tests pass with `autocrlf` on and off. It's committed locally; publishing it as a snapshot (no new tag) is H10.
+  - **Installed:** both hosts run 0.4.5. Both packaged plugins passed their smoke tests (26 and 23 checks), both installed copies match `release/marketplace`, and Codex's hook (unchanged since 0.4.4) is enabled and trusted.
+  - **The service:** no AvA service was running, so the installed 0.4.5 service was started on the shared data folder (1.1 s). Claude Code sessions opened before 0.4.4 keep their 0.4.3 MCP server, which uses the running service, until they reload.
+  - **The library:** the shared library's marker still read 3: it hadn't been opened since 0.4.3. It upgrades to set 5 the first time it's opened, bringing the challenges, the Build prompts and the hard prompts.
+  - **Also fixed:** the lineage test could leave a background process running if it started late. One from a run at 7:00 AM was found and stopped.
 - **H8 (2026-10-04, 8 requests):** three hard app builds, each exposing its exact behavior on `window` so it can be checked from outside: chess (`perft(fen, depth)`), a spreadsheet (`evaluateSheet(cells)`) and a regex engine with no RegExp (`regexFullMatch(pattern, text)`).
   - **Live:** chess and the regex engine, built by Claude Code (Opus 5.5) and Codex (6.1 Sol) at high effort under Ask, so neither could run its code. Each app was then served locally and checked in a headless browser with cases the agents weren't given.
     - **Chess:** both passed all 7 perft checks: the starting position and Kiwipete as given, and five unseen positions (mirrored with colors swapped, and positions 3, 4 and 5 of the standard suite) to depth 3 or 4. Claude Code took 5.5 minutes, Codex 9.6.

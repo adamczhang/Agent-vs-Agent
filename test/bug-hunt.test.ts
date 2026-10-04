@@ -57,7 +57,8 @@ test('a hunt\'s copy: one commit\'s files (not the folder as it is), paths left 
   const parent = tempDir('ava-hunt-copy-'), target = join(parent, 'copy'), history = join(parent, 'copy.git');
   const copied = copyProject(source, target, history, { commit, exclude: ['tests', 'AGENTS.md'], plant: [{ file: 'src/app.js', find: 'a + b', replace: 'a - b', what: 'subtracts' }] });
   assert.deepEqual([copied.files, copied.planted?.[0]?.line], [1, 1]);
-  assert.equal(readFileSync(join(target, 'src', 'app.js'), 'utf8'), 'export const total = (a, b) => a - b;\n', 'the commit\'s code, with the bug planted');
+  // A local commit is written out as the user's git settings write it (CRLF where core.autocrlf is on, as on CI).
+  assert.equal(readFileSync(join(target, 'src', 'app.js'), 'utf8').replace(/\r\n/g, '\n'), 'export const total = (a, b) => a - b;\n', 'the commit\'s code, with the bug planted');
   assert.ok(!existsSync(join(target, 'tests')) && !existsSync(join(target, 'AGENTS.md')), 'left out');
   assert.deepEqual((await projectChanges(target, history)).files, [], 'the planted bug is part of the baseline');
   assert.equal(git(source, 'status', '--porcelain').stdout, '', 'the repository is untouched');
