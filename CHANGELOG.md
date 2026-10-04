@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.3.5](https://github.com/adamczhang/Agent-vs-Agent/releases/tag/v0.3.5) - 2026-10-03
+
+### Fixed
+
+- **Securing secrets no longer waits on Windows PowerShell's module scan.** AvA secured `server.json` and its secrets folder with PowerShell cmdlets.
+  - **The problem:** with no module cache, as in a new profile or a fresh LOCALAPPDATA, each call first scanned every installed module. On a machine with many modules that took over 10 seconds a call, so the service couldn't start in time.
+  - **The fix:** secrets are now secured with .NET calls alone, and so is the check of when a process started. PowerShell loads no modules for either.
+
+### Development
+
+- **Smoke tests:** a service that neither starts nor fails is now diagnosed. The smoke test lists the service's processes and times PowerShell in the host's environment. It also reports how long the service took to start.
+- **Browser tests:** the two benchmark scenarios get 90 seconds. With the 20-task suite they took 32 seconds on CI.
+
 ## [0.3.4](https://github.com/adamczhang/Agent-vs-Agent/releases/tag/v0.3.4) - 2026-10-03
 
 ### Fixed

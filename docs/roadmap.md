@@ -31,7 +31,7 @@ Work one item at a time, starting with `next`. An item is done when its "Done wh
 | --- | --- | --- | --- |
 | H1 | Start with a data folder on a second drive (secret permissions no longer take ownership) | offline | done |
 | H2 | Install 0.2.1 in both hosts and confirm the service starts on the shared data folder | user | done |
-| H3 | Publish 0.3.1 (with the 0.3.2 to 0.3.4 fixes) | user | in progress |
+| H3 | Publish 0.3.1 (with the 0.3.2 to 0.3.5 fixes) | user | in progress |
 | H4 | Service start failures reach the host with their reason (0.2.2) | offline | done |
 | H5 | Test the plugin the way the hosts run it | offline | done |
 | H6 | Upkeep: dependency and CLI updates on a schedule | offline + live | done |
@@ -48,7 +48,10 @@ Work one item at a time, starting with `next`. An item is done when its "Done wh
     - **Most likely cause:** since H7, the service is the first process to read the engine's files, cold. Here that takes about 5 s, against about 0.4 s warm, and a hosted VM with antivirus scanning is slower.
     - **Fix (0.3.3):** the wait is now 45 s (Codex allows a tool call 60 s), and the smoke test prints the failure detail and the end of the service log.
     - **Held:** v0.3.3 is committed and exported locally, with its tag, but not pushed. The owner chose to hold it (2026-10-03). H3 is done once a pushed release passes CI.
-    - **0.3.4 (local):** fixes for all 15 findings of a code review of the work since v0.2.0, plus a suite that was loaded twice per start. Published as v0.3.4, which includes 0.3.3; v0.3.3 itself was never released. Checks: 242 offline tests, 7 browser scenarios and both smoke tests. A live run used 8 requests: both agents passed a Review task, and a Gateway judge scored each attempt in a fresh session.
+    - **0.3.4:** fixes for all 15 findings of a code review of the work since v0.2.0, plus a suite that was loaded twice per start. Published as v0.3.4, which includes 0.3.3; v0.3.3 itself was never released. Checks: 242 offline tests, 7 browser scenarios and both smoke tests. A live run used 8 requests: both agents passed a Review task, and a Gateway judge scored each attempt in a fresh session.
+    - **v0.3.4's CI run:** the Codex smoke test failed again, this time with an empty service log after 45 s.
+    - **Diagnosis:** a diagnostic run on a temporary branch showed that securing one secret in the Codex host's environment took 22.6 s on the runner. The smoke test gives each plugin a fresh LOCALAPPDATA, so Windows PowerShell has no module cache. Each cmdlet then scans every installed module, and the runner has many.
+    - **Fix (0.3.5):** secrets and process start times use .NET calls, no cmdlets, so PowerShell loads no module. The browser tests' two benchmark scenarios also get 90 s; one took 32 s on CI.
   - Export the public commit, tag `v0.3.1`, and push with the owner's go-ahead.
   - Update the README's clone tag, and create the GitHub release page.
   - *Done when* the release is public and CI passes on it.

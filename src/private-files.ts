@@ -8,17 +8,21 @@ import { AvAError } from './types.js';
 // The DACL is written first, with the owner's implicit WRITE_DAC: an owner with only Modify rights (the default on a
 // second drive) lacks WRITE_OWNER. That DACL gives this account full control, so an owner that isn't this account (an
 // elevated administrator's new files belong to the Administrators group) is then replaced in a second write.
+// .NET only, no cmdlets: a cmdlet makes Windows PowerShell load its module, and with no module cache (a new profile, or
+// a fresh LOCALAPPDATA) that means scanning every installed module first, which took over 10 s a call on CI.
 const ACL_SCRIPT=`$ErrorActionPreference='Stop'
-$item=Get-Item -Force -LiteralPath $env:AVA_PRIVATE_PATH
+$path=$env:AVA_PRIVATE_PATH
+$dir=[System.IO.Directory]::Exists($path)
+$item=if($dir){[System.IO.DirectoryInfo]::new($path)}else{[System.IO.FileInfo]::new($path)}
 $sid=[System.Security.Principal.WindowsIdentity]::GetCurrent().User
-$owner=$item.GetAccessControl('Owner').GetOwner([System.Security.Principal.SecurityIdentifier])
-$type=if($item.PSIsContainer){'System.Security.AccessControl.DirectorySecurity'}else{'System.Security.AccessControl.FileSecurity'}
-$rule=if($item.PSIsContainer){New-Object System.Security.AccessControl.FileSystemAccessRule($sid,'FullControl','ContainerInherit,ObjectInherit','None','Allow')}else{New-Object System.Security.AccessControl.FileSystemAccessRule($sid,'FullControl','Allow')}
-$acl=New-Object $type
+$owner=$item.GetAccessControl([System.Security.AccessControl.AccessControlSections]::Owner).GetOwner([System.Security.Principal.SecurityIdentifier])
+$type=if($dir){[System.Security.AccessControl.DirectorySecurity]}else{[System.Security.AccessControl.FileSecurity]}
+$rule=if($dir){[System.Security.AccessControl.FileSystemAccessRule]::new($sid,'FullControl','ContainerInherit,ObjectInherit','None','Allow')}else{[System.Security.AccessControl.FileSystemAccessRule]::new($sid,'FullControl','Allow')}
+$acl=$type::new()
 $acl.SetAccessRuleProtection($true,$false)
 $acl.AddAccessRule($rule)
 $item.SetAccessControl($acl)
-if(-not $sid.Equals($owner)){$own=New-Object $type;$own.SetOwner($sid);$item.SetAccessControl($own)}`;
+if(-not $sid.Equals($owner)){$own=$type::new();$own.SetOwner($sid);$item.SetAccessControl($own)}`;
 
 export function protectPrivatePath(path: string) {
   const info=lstatSync(path);

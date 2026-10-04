@@ -89,6 +89,8 @@ test('Resources saves a lower limit without stopping work, then stops all with c
 });
 
 test('Benchmarks validate tasks, show the ceiling, and recover a lost start acknowledgement after reload',async({page,room},info)=>{
+  // The 20-task starter suite makes the selection steps slow on CI's runners (32 s there against Playwright's 30 s).
+  test.setTimeout(90_000);
   await room.service.call('resources.configure',{maxActiveAgents:6,requestId:'browser-benchmark-capacity'});
   await page.goto(room.url);await page.getByRole('button',{name:'More',exact:true}).click();await page.getByRole('menuitem',{name:'Benchmarks',exact:true}).click();
   const panel=page.getByRole('dialog',{name:'Benchmarks',exact:true});
@@ -121,6 +123,8 @@ test('Benchmarks validate tasks, show the ceiling, and recover a lost start ackn
 });
 
 test('benchmark results filter models, retain evidence across reload, and export the filtered attempts',async({page,room},info)=>{
+  // As above: a full starter-suite panel takes most of 30 s on CI's runners.
+  test.setTimeout(90_000);
   await room.service.call('resources.configure',{maxActiveAgents:6,requestId:'results-capacity'});
   await room.service.call('bench.validate',{taskIds:['invoice-total']});
   const job=await room.service.call('bench.start',{pairId:room.pairId,taskIds:['invoice-total'],repeats:3,requestId:'browser-results'}) as BenchJob;

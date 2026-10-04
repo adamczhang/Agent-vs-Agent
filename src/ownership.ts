@@ -17,7 +17,8 @@ export function ownerAlive(pid: number, started?: number | null) {
 }
 function startTimeOf(pid: number): number | undefined {
   const result = process.platform === 'win32'
-    ? spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `(Get-Process -Id ${pid} -ErrorAction Stop).StartTime.ToUniversalTime().ToString('o')`], { encoding: 'utf8', windowsHide: true, timeout: 20_000 })
+    // .NET rather than Get-Process, so PowerShell loads no module (see private-files.ts).
+    ? spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `[System.Diagnostics.Process]::GetProcessById(${pid}).StartTime.ToUniversalTime().ToString('o')`], { encoding: 'utf8', windowsHide: true, timeout: 20_000 })
     : spawnSync('ps', ['-o', 'etimes=', '-p', String(pid)], { encoding: 'utf8', timeout: 20_000 });
   if (result.status !== 0) return undefined;
   const text = result.stdout.trim();

@@ -6,6 +6,7 @@ import {cpSync,existsSync,linkSync,mkdirSync,mkdtempSync,readFileSync,readdirSyn
 import {tmpdir} from 'node:os';
 import {join,resolve} from 'node:path';
 import {spawnSync} from 'node:child_process';
+import {pathToFileURL} from 'node:url';
 import {Client} from '@modelcontextprotocol/sdk/client/index.js';
 import {StdioClientTransport} from '@modelcontextprotocol/sdk/client/stdio.js';
 
@@ -101,10 +102,29 @@ try{await client.connect(new StdioClientTransport(hostLaunch(flag('--copy')?unde
 catch(error){check(`the MCP server starts as ${hostName} launches it`,false,error instanceof Error?error.message:String(error));finish();}
 check(`the MCP server starts as ${hostName} launches it (${declared.command} ${declared.args.join(' ')}; handshake ${Date.now()-launchedAt} ms, hosts allow 30 s)`,Date.now()-launchedAt<10000);
 // The first call that needs the service (bare /ava help doesn't).
-const opening=await client.callTool({name:'ava_providers',arguments:{}});
+const serviceAt=Date.now(),opening=await client.callTool({name:'ava_providers',arguments:{}}),serviceMs=Date.now()-serviceAt;
 const serviceLog=()=>{try{return readFileSync(join(dataRoot,'service.log'),'utf8').trim().split(/\r?\n/).slice(-8);}catch{return [];}};
-check('the service starts in a data folder where the account holds only Modify rights',opening.isError!==true,opening.isError?{error:opening.content,serviceLog:serviceLog()}:undefined);
-if(opening.isError)finish();
+check(`the service starts in a data folder where the account holds only Modify rights (${serviceMs} ms)`,opening.isError!==true,opening.isError?{error:opening.content,serviceLog:serviceLog()}:undefined);
+if(opening.isError){console.log(`  diagnosis: ${JSON.stringify(await diagnoseStart())}`);finish();}
+// A service that neither starts nor fails says nothing on its own. What it is doing: its log after a longer wait, the
+// processes it is running (the service is in service.lock), and how long securing a secret takes in the host's own
+// environment, the step most likely to stall.
+async function diagnoseStart(){
+  const wait=Date.now()+90_000;while(Date.now()<wait&&!serviceLog().some(l=>l.includes('"status"')))await new Promise(r=>setTimeout(r,1000));
+  let pid:number|undefined;try{pid=(JSON.parse(readFileSync(join(dataRoot,'service.lock'),'utf8')) as {pid:number}).pid;}catch{/* no lock */}
+  const tree=process.platform!=='win32'||!pid?'':spawnSync('powershell.exe',['-NoProfile','-NonInteractive','-Command',
+    // Descendants only: a child starts after its parent (an older process can still name a reused PID as its parent).
+    `$all=Get-CimInstance Win32_Process;$tree=@($all|Where-Object{$_.ProcessId -eq ${pid}});for($i=0;$i -lt 4;$i++){$tree+=@($all|Where-Object{$p=$_;($tree|Where-Object{$_.ProcessId -eq $p.ParentProcessId -and $_.CreationDate -le $p.CreationDate}) -and -not ($tree|Where-Object{$_.ProcessId -eq $p.ProcessId})})};$tree|ForEach-Object{'{0} parent {1} since {2:HH:mm:ss}: {3}' -f $_.ProcessId,$_.ParentProcessId,$_.CreationDate,$_.CommandLine}`],{encoding:'utf8',windowsHide:true,timeout:60_000}).stdout.trim().split(/\r?\n/).map(l=>l.slice(0,300));
+  const probe=join(dataRoot,'probe-secret.json'),launch=hostLaunch(flag('--copy')?undefined:dataRoot),started=Date.now();
+  const secured=spawnSync(process.execPath,['--input-type=module','-e',`import {writePrivateFile} from ${JSON.stringify(pathToFileURL(join(plugin,'dist','src','private-files.js')).href)};writePrivateFile(${JSON.stringify(probe)},'{}');`],{env:launch.env,cwd:launch.cwd,encoding:'utf8',windowsHide:true,timeout:120_000});
+  // Windows PowerShell in the host's environment: .NET alone, a cmdlet (which loads its module), and a cmdlet with this
+  // machine's own LOCALAPPDATA (where PowerShell keeps its module cache) instead of the test's fresh one.
+  const timed=(command:string,extra:Record<string,string>={})=>{const at=Date.now(),r=spawnSync('powershell.exe',['-NoProfile','-NonInteractive','-Command',command],{env:{...launch.env,...extra},encoding:'utf8',windowsHide:true,timeout:60_000});return `${Date.now()-at} ms (exit ${r.status})`;};
+  const powershell=process.platform!=='win32'?{}:{dotNetOnly:timed("$null=[System.IO.DirectoryInfo]::new('.')"),cmdlet:timed('$null=Get-Item .'),
+    cmdletWithOwnLocalAppData:timed('$null=Get-Item .',process.env.LOCALAPPDATA?{LOCALAPPDATA:process.env.LOCALAPPDATA}:{})};
+  return {serviceLog:serviceLog(),servicePid:pid??null,alive:pid?(()=>{try{process.kill(pid,0);return true;}catch{return false;}})():null,processes:tree,
+    secureInHostEnv:{ms:Date.now()-started,status:secured.status,signal:secured.signal,error:(secured.stderr||String(secured.error??'')).trim().split(/\r?\n/)[0]?.slice(0,300)},powershell};
+}
 const tools=(await client.listTools()).tools.map(t=>t.name);
 check('MCP tools include ava_command and ava_reconcile',tools.includes('ava_command')&&tools.includes('ava_reconcile'),tools);
 const help=await client.callTool({name:'ava_command',arguments:{thread:'pkg-smoke',command:'/ava'}});
