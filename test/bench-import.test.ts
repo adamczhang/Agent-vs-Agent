@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync,readFileSync,writeFileSync,cpSync } from 'node:fs';
+import { mkdirSync,readFileSync,readdirSync,writeFileSync,cpSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { JEST_SHIM,importExercism,importJsonl,exerciseFolders } from '../src/bench-import.js';
@@ -68,4 +68,9 @@ test('JSON Lines import: one container task per line, with every field required'
   writeFileSync(file,'{"id":"x"}');assert.throws(()=>importJsonl(file,tempDir('ava-jsonl-bad-')),/Line 1 needs a "prompt" string/);
   writeFileSync(file,'not json');assert.throws(()=>importJsonl(file,tempDir('ava-jsonl-bad-')),/Line 1 isn't valid JSON/);
   writeFileSync(file,row('Bad_ID'));assert.throws(()=>importJsonl(file,tempDir('ava-jsonl-bad-')),/lowercase words/);
+  // A bad or repeated line anywhere leaves the suite as it was, so the same import can run again once it's fixed.
+  for(const lines of [[row('add-one'),'not json'],[row('add-one'),row('add-one')],[row('add-one'),row('Bad_ID')]]){
+    const untouched=tempDir('ava-jsonl-atomic-');writeFileSync(file,lines.join('\n'));
+    assert.throws(()=>importJsonl(file,untouched),/isn't valid JSON|more than once|lowercase words/);assert.deepEqual(readdirSync(untouched),[],'nothing was written');
+  }
 });

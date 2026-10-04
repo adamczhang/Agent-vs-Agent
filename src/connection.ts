@@ -35,11 +35,13 @@ export function startFailure(logFile:string,from:number,pid?:number):{code:strin
 // install reads the engine's files cold (antivirus scanning them too), which a slow machine can take well over 15 s to
 // do; 45 s stays inside Codex's 60-second limit for a tool call.
 export async function ensureService(projectRoot:string,dataRoot:string,waitMs=45_000):Promise<Endpoint>{
-  // ownerRunning: whether the recorded owner is still that process (checked once per call; it may ask the system).
+  // ownerRunning: whether the recorded owner is still that process. The lock is read on every pass, so an owner that
+  // shuts down during the wait (an idle exit removes its lock) is replaced at once; asking the system whether a locked
+  // owner still runs (a crash leaves its lock) is slower, so that is repeated only every 5 s.
   const logFile=join(dataRoot,'service.log');
   try{mkdirSync(dataRoot,{recursive:true});}
   catch(error){throw new AvAError('SERVICE_START_FAILED',`AvA's data folder ${dataRoot} can't be created (${error instanceof Error?error.message:String(error)}).`);}
-  let spawned=false,ownerRunning:boolean|undefined,child:{pid?:number;exited:boolean}|undefined,logFrom=0;
+  let spawned=false,ownerRunning:boolean|undefined,ownerCheckedAt=0,child:{pid?:number;exited:boolean}|undefined,logFrom=0;
   const deadline=Date.now()+waitMs;
   while(Date.now()<deadline){
     try{const address=endpoint(dataRoot);const health=await callEndpoint<{pid:number}>(address,'health',{},1000);if(health.pid===address.pid)return address;}catch{/* An existing owner may still be starting. */}
@@ -50,7 +52,9 @@ export async function ensureService(projectRoot:string,dataRoot:string,waitMs=45
       if(failure?.code!=='OWNER_EXISTS')throw new AvAError('SERVICE_START_FAILED',`AvA's service could not start: ${failure?.error??'it stopped without saying why.'} Details are in ${logFile}.`);
     }
     if(!spawned){
-      if(ownerRunning===undefined){try{const lock=JSON.parse(readFileSync(join(dataRoot,'service.lock'),'utf8')) as {pid:number;started?:number};ownerRunning=ownerAlive(lock.pid,lock.started);}catch{ownerRunning=false;/* No live owner. */}}
+      let lock:{pid:number;started?:number}|undefined;try{lock=JSON.parse(readFileSync(join(dataRoot,'service.lock'),'utf8'));}catch{/* No owner recorded. */}
+      if(!lock)ownerRunning=false;
+      else if(ownerRunning===undefined||Date.now()-ownerCheckedAt>=5000){ownerCheckedAt=Date.now();ownerRunning=ownerAlive(lock.pid,lock.started);}
       if(!ownerRunning){
         let log:number;
         try{log=openSync(logFile,'a',0o600);logFrom=fstatSync(log).size;}

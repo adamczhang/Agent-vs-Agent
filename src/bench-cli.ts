@@ -5,10 +5,10 @@ import { parseArgs } from 'node:util';
 import { defaultDataRoot,projectRoot } from './paths.js';
 import { ensureService,callEndpoint } from './connection.js';
 import { loadSuite } from './bench-tasks.js';
-import { exerciseFolders,importExercism,importJsonl } from './bench-import.js';
+import { exerciseFolders,importJsonl,readExercism,writeTasks } from './bench-import.js';
 import { validateTask } from './bench-validation.js';
 import { PROVIDERS,type ProviderConfig } from './types.js';
-import type { BenchJob } from './bench-runner.js';
+import { requestCeiling,type BenchJob } from './bench-runner.js';
 
 const help='Usage: npm run bench -- import <exercise-folder|file.jsonl> --format exercism|jsonl --out <new-suite-folder> | validate <suite> | run <suite> --agents codex:model,claude:model [--repeat 1] [--task id,id] [--stop-on-failure] [--judge provider:model] | jobs | status <job-id> | cancel <job-id> | results | export json|csv --out <new-file> | report <job-id> --format html|md --out <new-file>. Results/exports accept --suite, --task, --provider, --model, --from, --to, --source all|only|exclude, --job. Add --data <folder> to use an isolated pool.';
 async function main(){
@@ -21,8 +21,10 @@ async function main(){
   if(command==='import'){
     if(!target||!values.out||!['exercism','jsonl'].includes(values.format??''))throw new Error(help);
     const suite=resolve(values.out);
-    const ids=values.format==='jsonl'?importJsonl(target,suite):(existsSync(join(resolve(target),'.meta','config.json'))?[resolve(target)]:exerciseFolders(target)).map(dir=>importExercism(dir,suite));
-    if(!ids.length)throw new Error('No Exercism exercises found there.');
+    const exercises=values.format==='jsonl'?[]:existsSync(join(resolve(target),'.meta','config.json'))?[resolve(target)]:exerciseFolders(target);
+    if(values.format!=='jsonl'&&!exercises.length)throw new Error('No Exercism exercises found there.');
+    // A folder of exercises is read in full before anything is written, like a JSON Lines file.
+    const ids=values.format==='jsonl'?importJsonl(target,suite):writeTasks(suite,exercises.map(readExercism));
     console.log(JSON.stringify({imported:ids.length,suite,tasks:ids,next:`npm run bench -- validate ${suite}`}));return;
   }
   if(command==='validate'){
@@ -56,12 +58,14 @@ async function main(){
   const configs=values.agents.split(',').map(selector=>{const at=selector.indexOf(':'),provider=selector.slice(0,at),model=selector.slice(at+1);if(at<1||!model||!PROVIDERS.includes(provider as ProviderConfig['provider']))throw new Error('Name each agent as provider:model.');return {provider:provider as ProviderConfig['provider'],model,auth:provider==='vercel'?'api':'provider-login'} as ProviderConfig;});
   if(configs.length!==2)throw new Error('Exactly two agents are required.');
   const repeats=Number(values.repeat??1);if(!Number.isInteger(repeats)||repeats<1||repeats>10)throw new Error('Repeat must be 1–10.');
-  const suite=resolve(target),catalog=await callEndpoint<{tasks:Array<{id:string}>}>(address,'bench.catalog',{suite});
+  const suite=resolve(target),catalog=await callEndpoint<{tasks:Array<{id:string;rubric?:boolean}>}>(address,'bench.catalog',{suite});
   const taskIds=values.task?.split(',')??catalog.tasks.map(t=>t.id),requestId=values['request-id']??randomUUID();
-  console.log(JSON.stringify({requestId,requestCeiling:taskIds.length*repeats*4,includes:'two activations and two task requests per task/repetition'}));
   // --judge provider:model: a third agent scores attempts at tasks with a rubric, apart from their checks.
-    const judge=values.judge?(()=>{const at=values.judge.indexOf(':'),provider=values.judge.slice(0,at),model=values.judge.slice(at+1);if(at<1||!model||!PROVIDERS.includes(provider as ProviderConfig['provider']))throw new Error('Name the judge as provider:model.');return {provider:provider as ProviderConfig['provider'],model,auth:provider==='vercel'?'api':'provider-login'} as ProviderConfig;})():undefined;
-    const started=await callEndpoint<BenchJob>(address,'bench.start',{suite,taskIds,repeats,stopOnFailure:values['stop-on-failure']??false,agents:{cli1:configs[0],cli2:configs[1]},...(judge?{judge}:{}),requestId});
+  const judge=values.judge?(()=>{const at=values.judge.indexOf(':'),provider=values.judge.slice(0,at),model=values.judge.slice(at+1);if(at<1||!model||!PROVIDERS.includes(provider as ProviderConfig['provider']))throw new Error('Name the judge as provider:model.');return {provider:provider as ProviderConfig['provider'],model,auth:provider==='vercel'?'api':'provider-login'} as ProviderConfig;})():undefined;
+  // The ceiling is logged before anything starts, the judge's requests included (the service enforces the same one).
+  const chosen=taskIds.map(id=>({rubric:!!catalog.tasks.find(t=>t.id===id)?.rubric}));
+  console.log(JSON.stringify({requestId,requestCeiling:requestCeiling(chosen,repeats,!!judge),includes:`two activations and two task requests per task/repetition${judge?', and a fresh judge session (access check and judgment) per attempt at a rubric task':''}`}));
+  const started=await callEndpoint<BenchJob>(address,'bench.start',{suite,taskIds,repeats,stopOnFailure:values['stop-on-failure']??false,agents:{cli1:configs[0],cli2:configs[1]},...(judge?{judge}:{}),requestId});
   let previous='';
   for(;;){const job=await callEndpoint<BenchJob>(address,'bench.get',{jobId:started.id});const progress=JSON.stringify({jobId:job.id,status:job.status,completed:job.results.length,total:job.totalAttempts,task:job.current?.taskId,repeat:job.current?.repeat,error:job.error});if(progress!==previous){console.log(progress);previous=progress;}
     if(!['queued','running'].includes(job.status)){console.log(JSON.stringify({jobId:job.id,passed:job.results.filter(r=>r.status==='pass').length,failed:job.results.filter(r=>r.status!=='pass').length,status:job.status}));if(job.status!=='completed'||job.results.some(r=>r.status!=='pass'))process.exitCode=1;return;}

@@ -47,7 +47,7 @@ export class FakeParticipant implements Participant {
   emit(type:'thought'|'tool'|'output', text:string,index=this.calls.length-1) {this.calls[index]!.request.onEvent({type,text});}
   async close(){this.closed=true;for(const call of this.calls)if(!call.settled){call.settled=true;call.resolve({status:'cancelled',text:''});}}
 }
-type OpenOptions={internet?:()=>boolean;resumeSessionId?:string;workspace?:()=>string|undefined;bypass?:()=>boolean;keep?:()=>number[]};
+type OpenOptions={internet?:()=>boolean;resumeSessionId?:string;workspace?:()=>string|undefined;bypass?:()=>boolean;keep?:()=>number[]|Promise<number[]>};
 export class TestFactory implements ServiceFactory {
   agents:Array<FakeParticipant&ConfiguredParticipant&{options:OpenOptions;buildAccess?:boolean[]}>=[];
   ledger?:ServiceFactory['ledger'];

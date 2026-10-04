@@ -41,6 +41,20 @@ test('a report scores each agent with pass@k, lists every task and check, and ca
   }
 });
 
+// Windows paths aren't case sensitive, and a verifier may quote one in another case, with forward or escaped slashes,
+// or under its 8.3 short name; none of these may carry the account name into a shared report.
+test('a report replaces the data and home folders however a check detail writes them',()=>{
+  const home=homedir(),data=join(home,'AvA Data'),user=home.split(/[\\/]/).pop()!;
+  const short=home.replace(/[^\\/]+$/,`${user.replace(/[^A-Za-z0-9]/g,'').slice(0,6).toUpperCase()}~1`);
+  const variants=[data.toUpperCase(),data.toLowerCase().replaceAll('\\','/'),data.replaceAll('\\','\\\\'),home.toLowerCase(),home.toUpperCase().replaceAll('\\','/')];
+  const detail=variants.map(v=>`at ${v}${'\\'}x.mjs`).join('; ')+(/[^A-Za-z0-9]|.{9,}/.test(user)?`; temp ${short}\\AppData\\Local\\Temp`:'');
+  const report=suiteReport(job,[attempt({checks:[{index:0,kind:'run',passed:false,detail,durationMs:1}]})],'md',data);
+  assert.ok(!report.text.toLowerCase().includes(user.toLowerCase()),`no account name in: ${report.text.split('\n').find(l=>l.includes('run'))}`);
+  assert.equal((report.text.match(/<data>/g)??[]).length,3);
+  // A neighbouring folder that only starts with the same name isn't touched.
+  assert.ok(suiteReport(job,[attempt({checks:[{index:0,kind:'run',passed:false,detail:`${home}-old\\x`,durationMs:1}]})],'md',data).text.includes(`${home}-old`));
+});
+
 test('the service reports a finished job in both formats',async()=>{
   const data=tempDir('ava-bench-report-'),factory=new BenchmarkFactory(data);factory.wrongSeat='cli2';
   const service=new AvAService(data,factory,'simulation',{processes:async()=>[]});

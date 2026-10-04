@@ -23,7 +23,10 @@ test('the verifier container has no network, a read-only root, no privileges, li
   assert.equal(flag('--network'),'none');assert.ok(args.includes('--read-only'));assert.equal(flag('--tmpfs'),'/tmp:rw,size=64m');
   assert.equal(flag('--cap-drop'),'ALL');assert.equal(flag('--security-opt'),'no-new-privileges');assert.equal(flag('--user'),'node');
   assert.equal(flag('--pids-limit'),'128');assert.equal(flag('--memory'),'512m');assert.equal(flag('--memory-swap'),'512m');assert.equal(flag('--cpus'),'1');
-  assert.equal(flag('--mount'),'type=bind,source=C:\\attempt folder,target=/work,readonly');assert.equal(flag('--workdir'),'/work');
+  assert.equal(flag('--mount'),'type=bind,"source=C:\\attempt folder",target=/work,readonly');assert.equal(flag('--workdir'),'/work');
+  // Docker reads --mount as comma-separated fields: a folder name with a comma stays one quoted field.
+  const comma=containerArgs('D:\\Work, Inc\\attempt','tests/verify.mjs','x');
+  assert.equal(comma[comma.indexOf('--mount')+1],'type=bind,"source=D:\\Work, Inc\\attempt",target=/work,readonly');
   assert.ok(args.includes(imageRef())&&imageRef().endsWith(VERIFIER_IMAGE.digest),'the image is pinned by digest');
   assert.deepEqual(args.slice(-3),['node','--max-old-space-size=256','tests/verify.mjs']);
   assert.ok(!args.some(a=>/privileged|^--net(work)?=host$|^--pid(=.*)?$|^--ipc|^-v$|^--volume/.test(a)),'no privileged mode, host namespaces or extra volumes');
@@ -35,13 +38,19 @@ test('a container task runs its verifier through Docker and records the backend;
   await withDocker({status:async()=>({available:true,image:VERIFIER_IMAGE.digest}),run:async(args)=>{calls.push(args);return {exitCode:0,output:'checked in a container',timedOut:false};}},async()=>{
     const [result]=await checkTask(task([{run:'node tests/verify.mjs'}]),'',root);
     assert.deepEqual([result!.passed,result!.backend,result!.image,result!.detail],[true,'container',VERIFIER_IMAGE.digest,'checked in a container']);
-    assert.equal(calls.length,1);assert.equal(calls[0]![0],'run');assert.ok(calls[0]!.includes(`type=bind,source=${root},target=/work,readonly`));
+    assert.equal(calls.length,1);assert.equal(calls[0]![0],'run');assert.ok(calls[0]!.includes(`type=bind,"source=${root}",target=/work,readonly`));
   });
   await withDocker({status:async()=>({available:false,reason:'Docker is not running.'}),run:async()=>{throw new Error('must not run');}},async()=>{
     const [result]=await checkTask(task([{run:'node tests/verify.mjs'}]),'',root);
     assert.equal(result!.passed,false);assert.equal(result!.backend,'container');assert.match(result!.detail,/^Container isolation unavailable: Docker is not running\./);
   });
   assert.throws(()=>readFileSync(join(root,'host-ran')),'the verifier never ran on the host');
+});
+
+test('Docker\'s engine type is read from its stdout alone: a warning on stderr doesn\'t hide a Linux engine',async()=>{
+  const fake=(info:{output:string;stdout?:string}):Parameters<typeof containerStatus>[0]=>async args=>args[0]==='info'?{exitCode:0,timedOut:false,...info}:{exitCode:0,output:'sha256:x',stdout:'sha256:x',timedOut:false};
+  assert.deepEqual(await containerStatus(fake({output:'WARNING: Plugin \"C:\\\\x\\\\docker-foo.exe\" is not valid\nlinux',stdout:'linux\n'})),{available:true,image:VERIFIER_IMAGE.digest});
+  assert.match((await containerStatus(fake({output:'windows',stdout:'windows\n'}))).reason!,/Windows containers/);
 });
 
 test('a container task is refused before any agent starts when Docker is unavailable, and the catalog says why',async()=>{

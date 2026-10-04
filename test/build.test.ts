@@ -7,7 +7,7 @@ import { request } from 'node:http';
 import { AvAService } from '../src/service.js';
 import { buildPermission } from '../src/providers.js';
 import { Previews, appTarget, pageIn } from '../src/preview.js';
-import { checkProject, copyProject, participantWorkspace, projectChanges, startProject } from '../src/workspace.js';
+import { checkProject, copyProject, inlineProject, participantWorkspace, projectChanges, startProject } from '../src/workspace.js';
 import type { Pair } from '../src/types.js';
 import type { AgentJobs } from '../src/jobs.js';
 import { TestFactory, flush } from './fakes.js';
@@ -249,7 +249,7 @@ test('a Build session: 1:1 setup with tools, one prompt, an empty folder per age
     assert.deepEqual(events.find(e => e.type === 'build_server')!.data.processes.map((p: { pid: number }) => p.pid).sort(), [5000, 5001]);
     assert.ok(events.some(e => e.type === 'activity' && /keeps running at http:\/\/localhost:5173\//.test(e.data.text)) && events.some(e => e.type === 'activity' && /Stopped 3 processes it left running: .*orphan\.exe/.test(e.data.text)), 'the agent screen says what was kept and stopped');
     // Closing the agent leaves its kept app server running.
-    assert.deepEqual(one.options.keep!().sort(), [5000, 5001]); assert.deepEqual(two.options.keep!(), []);
+    assert.deepEqual((await one.options.keep!()).sort(), [5000, 5001]); assert.deepEqual(await two.options.keep!(), []);
 
     await assert.rejects(service.call('run.start', { pairId, text: 'Now add levels', requestId: 'r2', options: { mode: 'build' }, build: { kind: 'build' } }), /one prompt/, 'one prompt per Build session');
     await assert.rejects(service.call('run.start', { pairId, text: 'Talk', requestId: 'r3', options: { mode: 'conversation' } }), /one prompt/);
@@ -279,4 +279,21 @@ test('a Build session: 1:1 setup with tools, one prompt, an empty folder per age
     assert.deepEqual((await service.call('threads.list', { pairId }) as { threads: Array<{ empty: boolean }> }).threads.filter(t => !t.empty), []);
     assert.equal(service.store.db.prepare('SELECT COUNT(*) AS n FROM direct_messages').get()!.n, 0);
   } finally { await service.shutdown(); service.store.close(); }
+});
+
+test('a Review prompt inlines a small project without build output, likely secrets or binary files, and never fails the run', () => {
+  const dir = tempDir('ava-inline-');
+  mkdirSync(join(dir, 'src')); writeFileSync(join(dir, 'src', 'a.js'), 'one\r\ntwo\n');
+  writeFileSync(join(dir, '.env'), 'API_KEY=secret-value'); writeFileSync(join(dir, '.env.example'), 'API_KEY=');
+  writeFileSync(join(dir, 'server.pem'), '-----BEGIN PRIVATE KEY-----');
+  mkdirSync(join(dir, 'dist')); writeFileSync(join(dir, 'dist', 'bundle.js'), 'built');
+  writeFileSync(join(dir, 'logo.png'), Buffer.from([0x89, 0x50, 0, 1]));
+  const text = inlineProject(dir);
+  assert.match(text, /--- src\/a\.js ---\n {3}1 \| one\n {3}2 \| two/);
+  assert.match(text, /--- \.env\.example ---/, 'an example environment file holds no secrets');
+  assert.ok(!text.includes('secret-value') && !text.includes('PRIVATE KEY') && !text.includes('bundle.js') && !text.includes('logo.png'), text);
+  assert.match(text, /Not shown here because they may hold secrets: \.env, server\.pem\./);
+  // The size decides before anything is read: a project over the limit inlines nothing.
+  writeFileSync(join(dir, 'data.csv'), 'x'.repeat(70_000)); assert.equal(inlineProject(dir), '');
+  assert.equal(inlineProject(join(dir, 'missing')), '', 'a folder that cannot be read inlines nothing');
 });

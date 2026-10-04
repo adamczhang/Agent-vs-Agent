@@ -12,21 +12,23 @@ export const imageRef = () => `node@${VERIFIER_IMAGE.digest}`;
 export const pullCommand = () => `docker pull ${VERIFIER_IMAGE.tag}@${VERIFIER_IMAGE.digest}`;
 
 export interface ContainerStatus { available: boolean; reason?: string; image?: string }
-export interface ContainerRun { exitCode: number | null; output: string; timedOut: boolean }
+// output: stdout and stderr together, as a verifier's evidence; stdout: stdout alone, for reading Docker's own answers
+// (Docker prints warnings on stderr).
+export interface ContainerRun { exitCode: number | null; output: string; stdout?: string; timedOut: boolean }
 // The Docker command line, injectable for tests.
 export type Docker = (args: string[], options: { timeoutMs: number; signal?: AbortSignal; name?: string }) => Promise<ContainerRun>;
 
 const exec = promisify(execFile);
 const OUTPUT_LIMIT = 8000;
 export const docker: Docker = (args, { timeoutMs, signal, name }) => new Promise(resolve => {
-  let output = '', settled = false, timedOut = false;
+  let output = '', stdout = '', settled = false, timedOut = false;
   const child = spawn('docker', args, { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
   const stop = () => { if (name) void exec('docker', ['kill', name], { windowsHide: true, timeout: 15_000 }).catch(() => {}); child.kill(); };
   const timer = setTimeout(() => { timedOut = true; stop(); }, timeoutMs);
   const cancel = () => stop();
-  const finish = (code: number | null) => { if (settled) return; settled = true; clearTimeout(timer); signal?.removeEventListener('abort', cancel); resolve({ exitCode: code, output: output.slice(0, OUTPUT_LIMIT), timedOut }); };
+  const finish = (code: number | null) => { if (settled) return; settled = true; clearTimeout(timer); signal?.removeEventListener('abort', cancel); resolve({ exitCode: code, output: output.slice(0, OUTPUT_LIMIT), stdout: stdout.slice(0, OUTPUT_LIMIT), timedOut }); };
   const collect = (chunk: Buffer) => { if (output.length < OUTPUT_LIMIT) output += chunk.toString('utf8'); };
-  child.stdout.on('data', collect); child.stderr.on('data', collect);
+  child.stdout.on('data', (chunk: Buffer) => { collect(chunk); if (stdout.length < OUTPUT_LIMIT) stdout += chunk.toString('utf8'); }); child.stderr.on('data', collect);
   child.on('error', () => { output ||= 'Docker could not be started.'; finish(null); });
   child.on('close', finish);
   signal?.addEventListener('abort', cancel, { once: true }); if (signal?.aborted) cancel();
@@ -36,17 +38,20 @@ export const docker: Docker = (args, { timeoutMs, signal, name }) => new Promise
 export async function containerStatus(run: Docker = docker): Promise<ContainerStatus> {
   const info = await run(['info', '--format', '{{.OSType}}'], { timeoutMs: 15_000 });
   if (info.exitCode !== 0) return { available: false, reason: 'Docker is not running (or not installed). Start Docker Desktop to run container-isolated tasks.' };
-  if (info.output.trim() !== 'linux') return { available: false, reason: 'Docker is running Windows containers. Switch Docker Desktop to Linux containers.' };
+  if ((info.stdout ?? info.output).trim() !== 'linux') return { available: false, reason: 'Docker is running Windows containers. Switch Docker Desktop to Linux containers.' };
   const image = await run(['image', 'inspect', '--format', '{{.Id}}', imageRef()], { timeoutMs: 15_000 });
   if (image.exitCode !== 0) return { available: false, reason: `The verifier image isn't present. Download it once with: ${pullCommand()}` };
   return { available: true, image: VERIFIER_IMAGE.digest };
 }
 
 // The hardened `docker run` for one verifier. The attempt folder is mounted read-only at /work, its working directory.
+// Docker reads --mount as comma-separated fields, so the source is a quoted field (quotes doubled): a folder name with
+// a comma can't split it.
+const mountSource = (path: string) => `"source=${path.replaceAll('"', '""')}"`;
 export function containerArgs(attempt: string, verifier: string, name: string) {
   return ['run', '--rm', '--name', name, '--network', 'none', '--read-only', '--tmpfs', '/tmp:rw,size=64m',
     '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges', '--pids-limit', '128', '--memory', '512m', '--memory-swap', '512m', '--cpus', '1',
-    '--user', 'node', '--env', 'HOME=/tmp', '--env', 'TMPDIR=/tmp', '--mount', `type=bind,source=${attempt},target=/work,readonly`, '--workdir', '/work',
+    '--user', 'node', '--env', 'HOME=/tmp', '--env', 'TMPDIR=/tmp', '--mount', `type=bind,${mountSource(attempt)},target=/work,readonly`, '--workdir', '/work',
     imageRef(), 'node', '--max-old-space-size=256', verifier];
 }
 

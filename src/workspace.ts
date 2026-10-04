@@ -1,6 +1,6 @@
 // Build mode: each agent works in its own copy of a project, inside its private workspace folder, so the two agents
 // can't overwrite each other and the original is never touched.
-import { copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync } from 'node:fs';
+import { closeSync, copyFileSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -12,29 +12,39 @@ export const COPY_LIMITS = { files: 20_000, bytes: 500 * 1024 * 1024 };
 const SKIP = new Set(['node_modules', '.git', 'dist', 'build', 'out', '.next', '.venv', 'venv', '__pycache__', '.pytest_cache', 'target', 'bin', 'obj', '.idea', '.vs']);
 
 // The agent's workspace (its session's working folder); providers.ts opens each session there.
+// Files that commonly hold secrets: environment files (their examples aside), private keys and certificates, and
+// credential files. A Review prompt names them but leaves their contents in the agent's copy.
+const SECRET_FILE = /^\.env(?!\.(?:example|sample|template)$)(?:\..+)?$|\.(?:pem|key|p12|pfx|jks|keystore|ppk)$|^id_(?:rsa|dsa|ecdsa|ed25519)(?:\.pub)?$|^(?:\.npmrc|\.netrc|\.pypirc|\.git-credentials|credentials(?:\.json)?)$/i;
 // A small project's text files, numbered by line, for a Review prompt. Agents that read files only through commands
 // (Codex, whose commands Ask refuses) can then still review it. '' when the project is too big (over 40 files or 64 KB
-// of text) or has nothing to show; git data, dependencies, links and binary files are left out.
+// of text), has nothing to show, or can't be read. Left out: git data, dependencies and build output, links, binary
+// files, and files that may hold secrets (listed by name).
 export function inlineProject(dir: string, maxFiles = 40, maxBytes = 64_000) {
-  const files: string[] = [];
+  const files: string[] = [], secrets: string[] = [];
   const walk = (rel: string) => {
     for (const entry of readdirSync(join(dir, rel), { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
       const path = rel ? `${rel}/${entry.name}` : entry.name;
-      if (entry.isSymbolicLink() || ['.git', 'node_modules'].includes(entry.name)) continue;
-      if (entry.isDirectory()) walk(path); else if (entry.isFile()) files.push(path);
+      if (entry.isSymbolicLink() || entry.isDirectory() && SKIP.has(entry.name)) continue;
+      if (entry.isDirectory()) walk(path); else if (entry.isFile()) (SECRET_FILE.test(entry.name) ? secrets : files).push(path);
       if (files.length > maxFiles) return;
     }
   };
-  try { walk(''); } catch { return ''; }
-  if (!files.length || files.length > maxFiles) return '';
-  let total = 0; const parts: string[] = [];
-  for (const path of files) {
-    const bytes = readFileSync(join(dir, path));
-    if (bytes.includes(0)) continue;
-    total += bytes.length; if (total > maxBytes) return '';
-    parts.push(`--- ${path} ---\n${bytes.toString('utf8').replace(/\r\n/g, '\n').split('\n').map((line, i) => `${String(i + 1).padStart(4)} | ${line}`).join('\n')}`);
-  }
-  return parts.join('\n\n');
+  try {
+    walk('');
+    if (!files.length || files.length > maxFiles) return '';
+    let total = 0; const parts: string[] = [];
+    for (const path of files) {
+      // The size first, so a large file is never read whole just to find it is too big. A binary file (a NUL byte in
+      // its first 8 KB) is skipped whatever its size.
+      const file = join(dir, path), size = statSync(file).size, head = Buffer.alloc(Math.min(size, 8192)), fd = openSync(file, 'r');
+      try { readSync(fd, head, 0, head.length, 0); } finally { closeSync(fd); }
+      if (head.includes(0)) continue;
+      total += size; if (total > maxBytes) return '';
+      parts.push(`--- ${path} ---\n${readFileSync(file).toString('utf8').replace(/\r\n/g, '\n').split('\n').map((line, i) => `${String(i + 1).padStart(4)} | ${line}`).join('\n')}`);
+    }
+    if (secrets.length) parts.push(`(Not shown here because they may hold secrets: ${secrets.join(', ')}.)`);
+    return parts.join('\n\n');
+  } catch { return ''; }
 }
 export function participantWorkspace(dataRoot: string, scope: { pairId: string; seat: string; generation: number }) {
   return join(dataRoot, 'workspaces', scope.pairId, scope.seat, String(scope.generation));

@@ -1,6 +1,6 @@
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 // Windows job objects for agent processes (roadmap X3). Each agent starts through a small launcher, which ACPX spawns.
@@ -158,6 +158,8 @@ child.on('exit',code=>{process.exitCode=code??1;});
 for(const signal of ['SIGINT','SIGTERM'])process.on(signal,()=>child.kill(signal));
 `;
 
+// Whether a process with this PID is running (signal 0 tests without signalling).
+const running = (pid: number) => { try { process.kill(pid, 0); return true; } catch (error) { return (error as NodeJS.ErrnoException).code === 'EPERM'; } };
 // Stops exactly these processes, not their trees: a kept app server can be the child of a member that is stopped.
 const stopExactly = (pids: number[]) => new Promise<void>(done => {
   if (!pids.length) { done(); return; }
@@ -205,6 +207,8 @@ export class JobHost implements AgentJobs {
       const timer = setTimeout(() => { fail('The job helper did not start within 30 seconds.'); child.kill(); }, 30_000);
       let buffered = '', errors = '';
       child.stderr.on('data', chunk => { if (errors.length < 2000) errors += String(chunk); });
+      // A write to a helper that has just exited fails with EPIPE; without a listener that error would end the service.
+      child.stdin.on('error', error => { fail(`The job helper stopped (${error.message}).`); });
       child.stdout.on('data', chunk => {
         buffered += String(chunk);
         for (let at = buffered.indexOf('\n'); at >= 0; at = buffered.indexOf('\n')) {
@@ -240,12 +244,21 @@ export class JobHost implements AgentJobs {
     await this.start();
     if (this.failure) return { argv, contained: false, note: `Process containment unavailable: ${this.failure}` };
     mkdirSync(this.folder, { recursive: true });
+    this.sweepReady();
     return { argv: [process.execPath, this.launcher(), this.folder, ...argv], contained: true, note: 'Processes contained in a Windows job object.' };
+  }
+  // A launcher waits at most 30 s for its signal, so an older one was never read (its launcher had gone). Removing it
+  // keeps a later launcher that reuses the PID from starting its agent before it is in the job.
+  private sweepReady() {
+    try { for (const file of readdirSync(this.folder)) { if (!file.endsWith('.ready')) continue; const path = join(this.folder, file); try { if (Date.now() - statSync(path).mtimeMs > 60_000) rmSync(path, { force: true }); } catch { /* gone or in use */ } } }
+    catch { /* no folder yet */ }
   }
   async create(name: string, memoryBytes = 0) { await this.must('create', { name, memory: memoryBytes }); this.names.add(name); }
   async release(name: string, pid: number) {
     let contained = false;
     try { await this.must('assign', { name, pid }); contained = true; } catch { /* the agent still starts, found by its process tree */ }
+    // A launcher that has already exited never reads its signal, which would wait for the next process with its PID.
+    if (!contained && !running(pid)) return false;
     mkdirSync(this.folder, { recursive: true });
     writeFileSync(join(this.folder, `${pid}.ready`), contained ? 'contained' : 'uncontained');
     return contained;
@@ -258,9 +271,11 @@ export class JobHost implements AgentJobs {
   async retire(name: string, keep: number[] = []) {
     if (!this.names.has(name)) return;
     try {
-      // With nothing to keep, the job ends at once; its lineage outside the job is stopped below either way.
-      if (!keep.length) await this.must('terminate', { name }).catch(() => {});
-      const kept = new Set(keep);
+      // With nothing of its own to keep, the job ends at once; its lineage outside the job is stopped below either way.
+      // Kept processes count only when they are this job's members: other agents' app servers, or recorded ones that
+      // have since exited, mustn't stop it ending as a whole.
+      const kept = new Set(keep), first = kept.size ? await this.members(name).catch(() => [] as number[]) : [];
+      if (!first.some(pid => kept.has(pid))) await this.must('terminate', { name }).catch(() => {});
       // Twice: a member may start another process while the first set is being stopped.
       for (let pass = 0; pass < 2; pass++) { const stop = (await this.members(name)).filter(pid => !kept.has(pid)); if (!stop.length) break; await this.stop(stop); }
     } finally { this.names.delete(name); await this.must('close', { name }).catch(() => {}); }

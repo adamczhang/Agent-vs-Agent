@@ -13,11 +13,22 @@ import { AvAError } from './types.js';
 const ID = /^[a-z0-9]+(?:-[a-z0-9]+)*$/, FILE = /^[A-Za-z0-9_-]+\.m?js$/;
 const MODULE = '{"name":"benchmark-task","private":true,"type":"module"}\n';
 const put = (root: string, path: string, text: string) => { const file = join(root, path); mkdirSync(dirname(file), { recursive: true }); writeFileSync(file, text.endsWith('\n') ? text : text + '\n'); };
-function writeTask(suite: string, task: { id: string; title: string; prompt: string; file: string; stub?: string; solution: string; tests: Record<string, string>; minutes?: number; timeoutMs?: number }) {
-  if (!ID.test(task.id) || task.id.length > 80) throw new AvAError('BENCH_IMPORT', `Task id "${task.id}" must be lowercase words joined by hyphens.`);
-  if (!FILE.test(task.file)) throw new AvAError('BENCH_IMPORT', `${task.id}: the solution file must be a .js or .mjs file name.`);
+export interface ImportedTask { id: string; title: string; prompt: string; file: string; stub?: string; solution: string; tests: Record<string, string>; minutes?: number; timeoutMs?: number }
+// Every task is checked (its id and file, no repeats, nothing already in the suite) before any is written, so an import
+// that fails leaves the suite as it was, and the same command can run again once the source is fixed.
+export function writeTasks(suite: string, tasks: ImportedTask[]) {
+  const seen = new Set<string>();
+  for (const task of tasks) {
+    if (!ID.test(task.id) || task.id.length > 80) throw new AvAError('BENCH_IMPORT', `Task id "${task.id}" must be lowercase words joined by hyphens.`);
+    if (!FILE.test(task.file)) throw new AvAError('BENCH_IMPORT', `${task.id}: the solution file must be a .js or .mjs file name.`);
+    if (seen.has(task.id)) throw new AvAError('BENCH_IMPORT', `${task.id} appears more than once. Each task needs its own id.`);
+    seen.add(task.id);
+    if (existsSync(join(suite, task.id))) throw new AvAError('BENCH_IMPORT', `${task.id} already exists in ${suite}. Choose a new suite folder.`);
+  }
+  return tasks.map(task => writeTask(suite, task));
+}
+function writeTask(suite: string, task: ImportedTask) {
   const root = join(suite, task.id);
-  if (existsSync(root)) throw new AvAError('BENCH_IMPORT', `${task.id} already exists in ${suite}. Choose a new suite folder.`);
   const spec = { id: task.id, version: 1, title: task.title.slice(0, 160), mode: 'build', time_limit_minutes: task.minutes ?? 10, isolation: 'container',
     prompt: task.prompt.slice(0, 16000), checks: [{ file_exists: task.file }, { run: 'node tests/verify.mjs', timeout_ms: task.timeoutMs ?? 20000 }] };
   put(root, 'task.yaml', stringify(spec, { lineWidth: 0 }));
@@ -80,7 +91,9 @@ const rewriteImports = (source: string, files: string[]) => source
     return `${lead}${quote}../${file}${quote}`;
   });
 
-export function importExercism(exercise: string, suite: string) {
+export function importExercism(exercise: string, suite: string) { return writeTasks(suite, [readExercism(exercise)])[0]!; }
+// One Exercism exercise as an AvA task (nothing written).
+export function readExercism(exercise: string): ImportedTask {
   const dir = resolve(exercise), slug = basename(dir), configFile = join(dir, '.meta', 'config.json');
   if (!existsSync(configFile)) throw new AvAError('BENCH_IMPORT', `${dir} has no .meta/config.json; it isn't an Exercism exercise.`);
   const config = JSON.parse(readFileSync(configFile, 'utf8')) as { blurb?: string; files?: { solution?: string[]; test?: string[]; example?: string[] } };
@@ -91,22 +104,22 @@ export function importExercism(exercise: string, suite: string) {
   const tests: Record<string, string> = { 'jest-shim.mjs': JEST_SHIM };
   const specs = test.map(path => { const name = basename(path).replace(/\.m?js$/, '') + '.mjs'; tests[name] = rewriteImports(read(path), [file]); return name; });
   tests['verify.mjs'] = `import { run } from './jest-shim.mjs';\n${specs.map(s => `await import('./${s}');`).join('\n')}\nawait run();\n`;
-  const title = slug.split('-').map(w => w[0]!.toUpperCase() + w.slice(1)).join(' ');
+  const title = slug.split(/[-_\s]+/).filter(Boolean).map(w => w[0]!.toUpperCase() + w.slice(1)).join(' ') || slug;
   const prompt = `Implement ${file}, an ES module, so that it solves this exercise. Keep its existing exports. Use no dependencies.\n\n${docs || config.blurb || title}`;
-  return writeTask(suite, { id: `exercism-${slug}`.slice(0, 80), title: `Exercism: ${title}`, prompt, file, stub: read(solution[0]!), solution: read(example[0]!), tests });
+  return { id: `exercism-${slug}`.slice(0, 80), title: `Exercism: ${title}`, prompt, file, stub: read(solution[0]!), solution: read(example[0]!), tests };
 }
 
 export function importJsonl(source: string, suite: string) {
-  const ids: string[] = [];
+  const tasks: ImportedTask[] = [];
   for (const [index, line] of readFileSync(resolve(source), 'utf8').split(/\r?\n/).entries()) {
     if (!line.trim()) continue;
     let row: { id?: unknown; title?: unknown; prompt?: unknown; file?: unknown; solution?: unknown; tests?: unknown };
     try { row = JSON.parse(line); } catch { throw new AvAError('BENCH_IMPORT', `Line ${index + 1} isn't valid JSON.`); }
     for (const key of ['id', 'prompt', 'file', 'solution', 'tests'] as const) if (typeof row[key] !== 'string' || !(row[key] as string).trim()) throw new AvAError('BENCH_IMPORT', `Line ${index + 1} needs a "${key}" string.`);
-    ids.push(writeTask(suite, { id: row.id as string, title: typeof row.title === 'string' ? row.title : row.id as string, prompt: row.prompt as string, file: row.file as string, solution: row.solution as string, tests: { 'verify.mjs': row.tests as string } }));
+    tasks.push({ id: row.id as string, title: typeof row.title === 'string' ? row.title : row.id as string, prompt: row.prompt as string, file: row.file as string, solution: row.solution as string, tests: { 'verify.mjs': row.tests as string } });
   }
-  if (!ids.length) throw new AvAError('BENCH_IMPORT', 'No tasks found.');
-  return ids;
+  if (!tasks.length) throw new AvAError('BENCH_IMPORT', 'No tasks found.');
+  return writeTasks(suite, tasks);
 }
 // Every Exercism exercise folder directly inside a folder (such as a track's exercises/practice).
 export function exerciseFolders(root: string) { return readdirSync(resolve(root), { withFileTypes: true }).filter(e => e.isDirectory() && existsSync(join(resolve(root), e.name, '.meta', 'config.json'))).map(e => join(resolve(root), e.name)); }

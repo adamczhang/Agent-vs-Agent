@@ -9,7 +9,7 @@ import { AvAError, systemClock, type AgentUsage, type Clock, type Pair, type Par
 // usage: what the agent last reported about its context window and session usage (absent if it reports nothing).
 export interface ConfiguredParticipant extends Participant { accepted: ProviderConfig; evidence: string; isConnected?(): boolean; launchedWithInternet?: boolean; imageInput?: boolean; setBuildAccess?(on: boolean): Promise<void>; usage?(): AgentUsage | undefined }
 export interface ParticipantFactory {
-  open(config: ProviderConfig, scope: { pairId: string; seat: Seat; generation: number }, signal: AbortSignal, options?: { internet?: () => boolean; resumeSessionId?: string; workspace?: () => string | undefined; bypass?: () => boolean; keep?: () => number[] }): Promise<ConfiguredParticipant>;
+  open(config: ProviderConfig, scope: { pairId: string; seat: Seat; generation: number }, signal: AbortSignal, options?: { internet?: () => boolean; resumeSessionId?: string; workspace?: () => string | undefined; bypass?: () => boolean; keep?: () => number[] | Promise<number[]> }): Promise<ConfiguredParticipant>;
 }
 export class ActivationManager {
   private pending = new Map<string, AbortController>();
@@ -77,7 +77,7 @@ export class ActivationManager {
   // Set by the service: the folder an agent may work in while a Build run is active for it (undefined otherwise).
   workspaceAccess?:(pairId:string,seat:Seat)=>string|undefined;
   // The processes an agent's close leaves running: the app servers its Build runs kept (set by the service).
-  keptProcesses?:(pairId:string,seat:Seat)=>number[];
+  keptProcesses?:(pairId:string,seat:Seat)=>Promise<number[]>;
   private options(pairId:string,seat:Seat){return {internet:()=>this.internet(pairId,seat),workspace:()=>this.workspaceAccess?.(pairId,seat),bypass:()=>this.bypass(pairId,seat),keep:()=>this.keptProcesses?.(pairId,seat)??[]};}
   // Apply a launch-time setting to a live agent without losing its conversation: retire its process, then start a new
   // one that resumes the same native session (Codex allows only one process per session), and check it really is the

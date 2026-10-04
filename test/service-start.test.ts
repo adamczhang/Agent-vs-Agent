@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { linkSync,mkdirSync,unlinkSync,writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { spawn } from 'node:child_process';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { ensureService,startFailure } from '../src/connection.js';
@@ -38,6 +39,20 @@ test('a service that fails to start is reported at once with its reason, not aft
   await assert.rejects(ensureService(lost,tempDir('ava-start-data-'),1500),/did not become ready/);
   const blocked=join(tempDir('ava-start-file-'),'not-a-folder');writeFileSync(blocked,'');
   await assert.rejects(ensureService(failing,join(blocked,'data')),/data folder .* can't be created/);
+});
+
+// The recorded owner may exit while a caller waits for it: an idle shutdown removes its lock, a crash leaves it. Either
+// way the caller starts a service of its own (here one that fails, so the start is visible) instead of waiting it out.
+test('an owner that exits during the wait is replaced, whether it removed its lock or left it',{timeout:60000},async()=>{
+  const failing=fakeService('console.log(JSON.stringify({status:"failed",pid:process.pid,code:"PRIVATE_FILE",error:"replacement started"}));process.exit(1);');
+  for(const removesLock of [true,false]){
+    const data=tempDir('ava-start-owner-'),owner=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore',windowsHide:true});
+    writeFileSync(join(data,'service.lock'),JSON.stringify({pid:owner.pid}));
+    setTimeout(()=>{owner.kill();if(removesLock)unlinkSync(join(data,'service.lock'));},1000);
+    const started=Date.now();
+    await assert.rejects(ensureService(failing,data),/could not start: replacement started/);
+    assert.ok(Date.now()-started<15000,`${removesLock?'idle exit':'crash'}: replaced after ${Date.now()-started} ms, not after the 45 s wait`);
+  }
 });
 
 test('the host handshake succeeds with a broken data folder; commands and /ava doctor say why, and recover once fixed',async(t)=>{

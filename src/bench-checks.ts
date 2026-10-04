@@ -1,5 +1,6 @@
 import { spawn,execFile } from 'node:child_process';
-import { existsSync,lstatSync,mkdtempSync,rmSync } from 'node:fs';
+import { existsSync,lstatSync,mkdtempSync } from 'node:fs';
+import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify,isDeepStrictEqual } from 'node:util';
@@ -48,7 +49,6 @@ async function runCheck(root:string,check:Extract<BenchCheck,{run:string}>,signa
     let output='',reason='',settled=false;const child=spawn(process.execPath,args,{cwd:root,env,windowsHide:true,detached:process.platform!=='win32',stdio:['ignore','pipe','pipe']});
     const finish=(code:number|null)=>{
       if(settled)return;settled=true;clearTimeout(timer);signal?.removeEventListener('abort',cancel);
-      if(scratch)rmSync(scratch,{recursive:true,force:true});
       // A refusal by the guard is named as such, ahead of the verifier's own output.
       const denied=code!==0&&!reason?GUARD_DENIAL.exec(output)?.[0]:undefined;
       resolve({passed:code===0&&!reason,exitCode:code,guarded,backend:guarded?'node-permission':'host',detail:((denied?`Blocked by the verifier guard: ${denied}\n`:'')+(reason||output.trim()||`Exited ${code}`)).slice(0,8000)});
@@ -57,7 +57,10 @@ async function runCheck(root:string,check:Extract<BenchCheck,{run:string}>,signa
     const cancel=()=>terminate('Check cancelled');
     const timer=setTimeout(()=>terminate('Verifier timed out'),check.timeout_ms??10000);
     const collect=(chunk:Buffer)=>{if(output.length<8000)output+=chunk.toString('utf8');if(output.length>=8000)terminate('Verifier output limit exceeded');};
-    child.stdout.on('data',collect);child.stderr.on('data',collect);child.on('error',()=>{reason='Verifier could not start';finish(null);});child.on('close',finish);
+    // The scratch folder goes once the verifier has fully exited (a stopped one may still hold its files for a moment,
+    // and so may an antivirus scan). A folder that still can't be removed stays in the temp folder; it's never an error.
+    const cleanup=()=>{if(scratch)void rm(scratch,{recursive:true,force:true,maxRetries:5,retryDelay:200}).catch(()=>{});};
+    child.stdout.on('data',collect);child.stderr.on('data',collect);child.on('error',()=>{reason='Verifier could not start';finish(null);cleanup();});child.on('close',code=>{finish(code);cleanup();});
     signal?.addEventListener('abort',cancel,{once:true});if(signal?.aborted)cancel();
   });
 }

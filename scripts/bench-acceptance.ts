@@ -9,7 +9,7 @@ import { dirname,join,resolve } from 'node:path';
 import { AvAService,type ServiceFactory } from '../src/service.js';
 import { NativeFactory,loadProviderSetups } from '../src/providers.js';
 import { BenchmarkFactory } from '../test/bench-fakes.js';
-import type { BenchJob } from '../src/bench-runner.js';
+import { requestCeiling,type BenchJob } from '../src/bench-runner.js';
 import { loadSuite } from '../src/bench-tasks.js';
 import { LIVE_CONFIGS } from './live-configs.js';
 import { installedDataRoot } from '../src/paths.js';
@@ -24,7 +24,8 @@ const judge=option('--judge')?LIVE_CONFIGS[option('--judge') as keyof typeof LIV
 // A Gateway judge uses the key stored in the shared folder (read from there; it never enters this process's environment).
 if(judge?.provider==='vercel')process.env.AVA_GATEWAY_KEY_DIR??=installedDataRoot(resolve('.'));
 const tasks=option('--tasks')==='all'?loadSuite(suite??resolve('benchmarks/starter')).map(t=>t.spec.id):(option('--tasks')??'invoice-total,tip-calculator,discount-review').split(',');
-const data=mkdtempSync(join(tmpdir(),'ava-b3-acceptance-')),ceiling=tasks.length*4+(judge?tasks.length*2+1:0);
+// The same ceiling the job enforces: with a judge, a fresh judge session (access check and judgment) per attempt at a rubric task.
+const data=mkdtempSync(join(tmpdir(),'ava-b3-acceptance-')),ceiling=requestCeiling(loadSuite(suite??resolve('benchmarks/starter')).filter(t=>tasks.includes(t.spec.id)),1,!!judge);
 let requests=0;
 const factory:ServiceFactory=live?new NativeFactory(data,loadProviderSetups(data)):new BenchmarkFactory(data);
 const open=factory.open.bind(factory);

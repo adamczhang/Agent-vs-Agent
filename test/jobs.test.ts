@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
+import { existsSync, utimesSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { JobHost } from '../src/jobs.js';
 import { tempDir } from './temp.js';
 
@@ -66,4 +68,23 @@ test('when assignment fails, the launcher still starts the agent, uncontained, a
   const off=process.env.AVA_JOB_OBJECTS;process.env.AVA_JOB_OBJECTS='off';
   try{const launched=await host.launch(['node']);assert.equal(launched.contained,false);assert.match(launched.note,/AVA_JOB_OBJECTS=off/);}
   finally{if(off===undefined)delete process.env.AVA_JOB_OBJECTS;else process.env.AVA_JOB_OBJECTS=off;}
+});
+
+test('a launcher that has gone gets no start signal, old signals are swept, and kept PIDs outside the job don\'t stop it ending whole',{timeout:60000},async(t)=>{
+  if(process.platform!=='win32')return;
+  const data=tempDir('ava-jobs-stale-'),host=new JobHost(data);t.after(()=>host.dispose());
+  const ops:string[]=[],internals=host as unknown as {must(op:string,fields:object):Promise<unknown>},must=internals.must.bind(host);
+  internals.must=(op,fields)=>{ops.push(op);return must(op,fields);};
+  await host.launch(['node']);await host.create('pair/cli1/1/e');
+  const gone=spawn(process.execPath,['-e','0'],{stdio:'ignore',windowsHide:true});await new Promise(r=>gone.once('exit',r));
+  assert.equal(await host.release('pair/cli1/1/e',gone.pid!),false);
+  assert.equal(existsSync(join(data,'jobs',`${gone.pid}.ready`)),false,'no signal is left for the next process with that PID');
+  // A signal older than any launcher waits is removed when the next agent launches.
+  const old=join(data,'jobs','99999.ready');writeFileSync(old,'contained');utimesSync(old,new Date(Date.now()-120_000),new Date(Date.now()-120_000));
+  await host.launch(['node']);assert.equal(existsSync(old),false);
+  // A kept PID that isn't this job's member (another agent's server, or one that has exited) leaves it to end as a whole.
+  const started=await start(host,'pair/cli1/1/f',agent(2));ops.length=0;
+  await host.retire('pair/cli1/1/f',[gone.pid!]);
+  assert.ok(ops.includes('terminate'),`the job was ended whole (${ops.join(', ')})`);
+  assert.ok(await until(()=>started.pids.every(pid=>!alive(pid))));
 });

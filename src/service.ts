@@ -585,10 +585,15 @@ export class AvAService {
     const run=this.store.run(runId),text=this.store.messages(runId).filter(m=>m.sender===seat).at(-1)?.text;
     return text?appTarget(text,participantWorkspace(this.dataRoot,{pairId:run.pairId,seat,generation:run.generations[seat]})):undefined;
   }
-  // The processes of the app servers an agent's Build runs kept, which its close leaves running.
-  private keptServerProcesses(pairId:string,seat:Seat){
-    return this.store.db.prepare("SELECT e.data FROM events e JOIN runs r ON r.id=e.run_id WHERE e.type='build_server' AND r.pair_id=?").all(pairId)
-      .map(r=>JSON.parse(String(r.data)) as {seat:Seat;processes:Array<{pid:number}>}).filter(e=>e.seat===seat).flatMap(e=>e.processes.map(p=>p.pid));
+  // The processes of the app servers an agent's Build runs kept, which its close leaves running. A recorded PID only
+  // counts while it runs with its recorded start time (as at Clear Session): servers stopped since, and PIDs reused by
+  // other processes, aren't kept.
+  private async keptServerProcesses(pairId:string,seat:Seat){
+    const kept=this.store.db.prepare("SELECT e.data FROM events e JOIN runs r ON r.id=e.run_id WHERE e.type='build_server' AND r.pair_id=?").all(pairId)
+      .map(r=>JSON.parse(String(r.data)) as {seat:Seat;processes:Array<{pid:number;started:number}>}).filter(e=>e.seat===seat).flatMap(e=>e.processes);
+    if(!kept.length)return [];
+    const alive=new Map((await this.processes().catch(()=>[] as SystemProcess[])).map(p=>[p.pid,p]));
+    return kept.filter(k=>Math.abs((alive.get(k.pid)?.started??-1e15)-k.started)<2000).map(k=>k.pid);
   }
   // App servers kept running after a build (recorded as build_server events) are stopped with their session: at Clear
   // Session or Clear history. A recorded PID only counts while its start time still matches.

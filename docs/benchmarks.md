@@ -75,9 +75,9 @@ Imported tasks are Build tasks marked `isolation: container`, so their tests run
 ## Rubric scores
 
 A task can carry a `rubric`: what a reviewer should value beyond the checks, such as how well a finding is explained. Name a judge when starting a job (`--judge provider:model` in the CLI, or `judge` in `bench.start`). That third agent scores each attempt at a rubric task from 0 to 10, with a short reason.
-- **What the judge sees:** the task, the rubric and the attempt's answer, plus its source files for Build tasks (never the hidden tests).
+- **What the judge sees:** the task, the rubric and the attempt's answer, plus its source files for Build tasks (never the hidden tests). Each judgment has a fresh session, so no earlier attempt, or the other agent's answer, is in the judge's context.
 - **What's saved:** the score, the reason and the judge's identity, apart from the checks. A score never changes pass or fail.
 - **When the judge fails:** the attempt keeps a null score, with the reason.
-- **Cost:** the request ceiling counts one access check for the judge, plus one request for each judged attempt.
+- **Cost:** two requests for each judged attempt: the fresh session's access check, and the judgment. The request ceiling counts them.
 
 Seven starter tasks have rubrics: the five Review tasks and the two pages.

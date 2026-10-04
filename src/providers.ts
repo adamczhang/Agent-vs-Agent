@@ -90,7 +90,7 @@ export class NativeFactory implements ParticipantFactory {
     const jobs=this.jobs,jobName=`${scope.pairId}/${scope.seat}/${scope.generation}/${randomUUID()}`;
     const launch=jobs?await jobs.launch(argv):{argv,contained:false,note:''};
     let uncontained=false;
-    const retire=async()=>{if(launch.contained)await jobs!.retire(jobName,options.keep?.()??[]).catch(()=>{});};
+    const retire=async()=>{if(launch.contained)await jobs!.retire(jobName,await Promise.resolve(options.keep?.()??[]).catch(()=>[] as number[])).catch(()=>{});};
     const runtime=createAcpRuntime({cwd,sessionStore:createFileSessionStore({stateDir}),agentRegistry:createAgentRegistry({overrides:{[config.provider]:launch.argv}}),
       permissionMode:'deny-all',nonInteractivePermissions:'deny',fs:false,terminal:false,timeoutMs:60_000,
       agentProcessEnv:participantEnvironment(config.provider,this.setups[config.provider]?.env,this.dataRoot,launchedWithInternet,
@@ -199,7 +199,7 @@ export function participantEnvironment(provider:Provider,configured:Record<strin
 // workspace: while a Build run is active for this agent, the folder it may work in (its workspace, which holds its copy).
 // bypass: the agent's permissions are set to bypass, so every tool request is approved (web tools still follow internet).
 // keep: processes to leave running when the agent closes (the app servers it was asked to keep, until Clear Session).
-export interface ParticipantOptions {internet?:()=>boolean;resumeSessionId?:string;workspace?:()=>string|undefined;bypass?:()=>boolean;keep?:()=>number[]}
+export interface ParticipantOptions {internet?:()=>boolean;resumeSessionId?:string;workspace?:()=>string|undefined;bypass?:()=>boolean;keep?:()=>number[]|Promise<number[]>}
 // Claude Code also obeys the user's own permission settings: allow rules or a permissive default mode approve a tool
 // before AvA's gate is asked, and ACPX offers no way to switch those settings off for one session. The agent's screen
 // says so once, rather than the gate appearing to be in charge.

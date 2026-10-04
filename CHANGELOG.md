@@ -1,6 +1,26 @@
 # Changelog
 
-## [0.3.3](https://github.com/adamczhang/Agent-vs-Agent/releases/tag/v0.3.3) - 2026-10-03
+## [0.3.4](https://github.com/adamczhang/Agent-vs-Agent/releases/tag/v0.3.4) - 2026-10-03
+
+### Fixed
+
+- **Rubric judges grade each attempt in a fresh session.** The judge no longer sees earlier attempts, or the other agent's answer, while it scores. Each judged attempt now takes two requests: the new session's access check and the judgment. The request ceiling counts both, and `npm run bench -- run --judge` logs it before starting.
+- **A judge's score is found among the other text in its reply.** Braces before or after the JSON object no longer cost the score.
+- **Review prompts leave out files that may hold secrets.** `.env` files, private keys and credential files, along with build output, are no longer pasted into the prompt. The prompt names them instead, and they stay in each agent's copy. Large files are measured before they're read, and a file that can't be read just means the files aren't inlined.
+- **Docker checks:**
+  - A warning that Docker prints no longer makes a working Linux engine look like Windows containers.
+  - A data folder with a comma in its path now mounts correctly.
+  - The Benchmarks panel runs one Docker check at a time.
+- **Process containment:**
+  - The service no longer stops if its job helper exits while a request is on its way.
+  - An agent's job ends as a whole unless one of its own processes is being kept. Previously, kept app servers that had since stopped prevented that.
+  - No start signal is left behind for a launcher that has already exited.
+- **A verifier's temporary folder** is removed after it has exited, and never fails or stalls the check.
+- **Starting the service:** an owner that stops while a command is waiting for it is now replaced at once, instead of after the full wait.
+- **Shared reports** replace the data and home folders whatever case, slashes or short name a check used.
+- **Imports** check every task before writing any. A bad or repeated entry leaves the suite as it was, and odd exercise names no longer crash the title.
+
+## 0.3.3 - 2026-10-03
 
 ### Fixed
 

@@ -6,7 +6,7 @@ import { readFileSync } from 'node:fs';
 import { resolve,join } from 'node:path';
 import { AvAService } from '../src/service.js';
 import { listen } from '../src/http.js';
-import type { BenchJob } from '../src/bench-runner.js';
+import { parseJudgment,requestCeiling,type BenchJob } from '../src/bench-runner.js';
 import { verifierGuardAvailable } from '../src/bench-checks.js';
 import { BenchmarkFactory,agents,finishJob,startJob } from './bench-fakes.js';
 import { tempDir } from './temp.js';
@@ -52,17 +52,28 @@ test('a judge scores attempts at rubric tasks apart from their checks, within th
     await f.service.call('bench.validate',{taskIds:['discount-review','invoice-total']});
     const judge={provider:'claude',model:'judge',auth:'provider-login'} as const;
     const started=await f.service.call('bench.start',{taskIds:['discount-review','invoice-total'],agents,judge,requestId:'judged',repeats:1}) as BenchJob;
-    assert.equal(started.requestCeiling,8+1+2,'one judge check, and one judgment for each attempt at the rubric task');
+    assert.equal(started.requestCeiling,8+2*2,'for each attempt at the rubric task, a fresh judge session\'s access check and the judgment');
     const job=await finishJob(f.service,started.id);assert.equal(job.status,'completed',job.error??'The job should complete');assert.equal(job.requestsAdmitted,job.requestCeiling);
     const attempts=job.results.map(r=>f.service.benchmarks.attempt(r.id)),review=attempts.filter(a=>a.taskId==='discount-review');
     assert.deepEqual(review.map(a=>[a.seat,a.status,a.rubric?.score,a.rubric?.judge.model]),[['cli1','pass',7,'judge'],['cli2','fail',7,'judge']],'a score never changes the verdict');
     assert.ok(attempts.filter(a=>a.taskId==='invoice-total').every(a=>a.rubric===undefined),'tasks without a rubric are not judged');
     assert.equal(f.factory.judgeRequests,2);assert.ok(f.factory.agents.every(a=>a.closed),'the judge is retired with the job');
+    // Each judgment has a session of its own, so no score is given with another attempt in the judge's context.
+    const judges=f.factory.agents.filter(a=>a.accepted.model==='judge');
+    assert.equal(judges.length,2);assert.equal(new Set(judges.map(a=>a.sessionId)).size,2);assert.ok(judges.every(a=>a.calls.filter(c=>c.request.text.startsWith('You are grading')).length===1));
     // A judge that doesn't answer with a score leaves none, with the reason.
     f.factory.judgeReply='I think it is fine.';
     const again=await finishJob(f.service,(await f.service.call('bench.start',{taskIds:['discount-review'],agents,judge,requestId:'judged-2',repeats:1}) as BenchJob).id);
     assert.deepEqual(f.service.benchmarks.attempt(again.results[0]!.id).rubric,{judge,score:null,error:'The judge did not answer with JSON.'});
   }finally{await f.close();}
+});
+test('a judge\'s score is the last JSON object with a score, whatever prose and braces surround it',()=>{
+  assert.deepEqual(parseJudgment('{"score": 8, "reason": "Precise."}'),{score:8,reason:'Precise.'});
+  assert.deepEqual(parseJudgment('Checked the {discount} branch and {"note":1}. {"score": 6, "reason": "Uses {braces} in a string."} Done {x}'),{score:6,reason:'Uses {braces} in a string.'});
+  assert.deepEqual(parseJudgment('```json\n{"score": 9, "reason": "Fenced."}\n```'),{score:9,reason:'Fenced.'});
+  assert.deepEqual(parseJudgment('{"score": 11}'),{score:null,error:'The judge did not give a whole score from 0 to 10.'});
+  assert.deepEqual(parseJudgment('no JSON {here'),{score:null,error:'The judge did not answer with JSON.'});
+  assert.equal(requestCeiling([{rubric:true},{rubric:false}],2,true),2*2*4+1*2*2*2);assert.equal(requestCeiling([{rubric:true}],1,false),4);
 });
 test('repeats get new sessions and attempt IDs while a check failure remains a scored result',async()=>{
   const f=fixture();f.factory.wrongSeat='cli2';try{

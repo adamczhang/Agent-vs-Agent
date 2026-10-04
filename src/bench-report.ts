@@ -10,13 +10,21 @@ import type { Seat } from './types.js';
 export type ReportFormat = 'html' | 'md';
 const SEATS: Seat[] = ['cli1', 'cli2'];
 
+// A folder as a pattern that matches it however a check detail writes it: any case (Windows paths aren't case
+// sensitive), either separator (single or escaped), and, for a home folder, its 8.3 short name (C:\Users\RUNNER~1).
+const escapeRegex = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+function folderPattern(path: string, shortName: boolean) {
+  const parts = path.replace(/[\\/]+$/, '').split(/[\\/]+/).filter(Boolean), last = parts.pop() ?? '';
+  const sep = '(?:\\\\{1,2}|/)', parent = parts.map(escapeRegex).join(sep) + (parts.length ? sep : '');
+  const short = shortName && /[^A-Za-z0-9]|.{9,}/.test(last) ? `|${escapeRegex(last.replace(/[^A-Za-z0-9]/g, '').slice(0, 6))}~\\d+` : '';
+  return new RegExp(`${path.startsWith('/') ? '/' : ''}${parent}(?:${escapeRegex(last)}${short})(?![A-Za-z0-9_-])`, 'gi');
+}
 function scrubber(dataRoot: string) {
-  const home = homedir(), variants = (path: string) => [path, path.replaceAll('\\', '/'), path.replaceAll('\\', '\\\\')].filter(Boolean);
+  const data = dataRoot ? folderPattern(dataRoot, false) : undefined, home = folderPattern(homedir(), true);
   return (text: string) => {
     let out = text.replace(/(?<!sha256:)\b[a-f0-9]{64}\b|vck_[A-Za-z0-9_-]{20,}/gi, '[redacted]');
-    for (const path of variants(dataRoot)) out = out.split(path).join('<data>');
-    for (const path of variants(home)) out = out.split(path).join('~');
-    return out;
+    if (data) out = out.replace(data, '<data>');
+    return out.replace(home, '~');
   };
 }
 const agentName = (a: BenchAttempt['agent']) => `${a.provider} · ${a.model}${a.effort ? ` · ${a.effort.value}` : ''}`;
