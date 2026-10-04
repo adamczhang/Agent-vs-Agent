@@ -26,7 +26,12 @@ async function debate(service: AvAService, factory: TestFactory, pair: Pair, mot
   const run = await starting; await flush();
   const [one, two] = SEATS.map(s => open(factory).find(a => a.sessionId === service.store.pair(pair.id).slots[s].sessionId)!);
   one!.answer('Opening for'); await flush(); two!.answer('Opening against'); await flush();
-  if (judged) { await until(() => open(factory).some(a => a.calls.length === 2 && !a.calls[1]!.settled && /judge of a formal debate/.test(a.calls[1]!.request.text))); open(factory).find(a => /judge of a formal debate/.test(a.calls[1]?.request.text ?? ''))!.raw(ballot); await until(() => service.store.run(run.id).judgment?.status === 'done'); }
+  if (judged) {
+    await until(() => open(factory).some(a => a.calls.length === 2 && !a.calls[1]!.settled && /judge of a formal debate/.test(a.calls[1]!.request.text))); open(factory).find(a => /judge of a formal debate/.test(a.calls[1]?.request.text ?? ''))!.raw(ballot); await until(() => service.store.run(run.id).judgment?.status === 'done');
+    // G16: each debater's own ballot, asked through its 1:1 line.
+    for (const agent of [one!, two!]) { await until(() => /The debate is over/.test(agent.calls.at(-1)?.request.text ?? '')); agent.raw(ballot); }
+    await until(() => SEATS.every(s => service.store.run(run.id).judgment?.panel?.[s]?.status === 'done'));
+  }
   return run;
 }
 async function debaters(service: AvAService, thread: string) {

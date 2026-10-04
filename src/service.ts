@@ -13,7 +13,8 @@ import { ActivationManager,type ParticipantFactory } from './activation.js';
 import { NativeFactory,loadProviderSetups,type Catalog } from './providers.js';
 import { LABELS,Menus } from './menus.js';
 import { QuickMemory,highEffort,strongestModel } from './quick.js';
-import { debateBrief,judgePrompt,maxEffort,parseBallot,total } from './debate.js';
+import { blindDebate,debateBrief,judgePrompt,maxEffort,panelResult,parseBallot,reviewPrompt,total } from './debate.js';
+import { gameBrief } from './games/referee.js';
 import { promptResult } from './answer-check.js';
 import { huntResult } from './bug-hunt.js';
 import { START_SLACK_MS,listProcesses,notRunning,sessionStart,survivors,systemCensus,type Census,type ProcessLedger,type SystemProcess } from './census.js';
@@ -30,7 +31,7 @@ import { protectPrivatePath } from './private-files.js';
 import type { DoctorReport } from './doctor.js';
 import { Previews,appTarget,pageIn } from './preview.js';
 import { createGatewayKey,forgetGatewayKey,gatewayCredit,gatewayKeyStatus,gatewayModels,type GatewayModel,type RunVercel } from './gateway.js';
-import { AvAError,FULL_COMMIT,PROVIDERS,SEATS,conversationConfig,isRepoUrl,type AgentUsage,type JudgeProvider,type Judgment,type RoomMode,type Pair,type Provider,type ProviderConfig,type Run,type RunConfig,type Seat } from './types.js';
+import { AvAError,FULL_COMMIT,PROVIDERS,SEATS,conversationConfig,isRepoUrl,type AgentUsage,type JudgeProvider,type Judgment,type PanelBallot,type RoomMode,type Pair,type Provider,type ProviderConfig,type Run,type RunConfig,type Seat } from './types.js';
 
 const id=z.string().min(1).max(200),seat=z.enum(SEATS),provider=z.enum(PROVIDERS);
 const resultDate=z.string().datetime({offset:true}).transform(value=>new Date(value).toISOString());
@@ -44,7 +45,9 @@ const presetData=z.object({instructions:z.object({cli1:z.string().max(8000),cli2
 const huntSetup=z.object({commit:z.string().regex(/^[0-9a-f]{7,64}$/i).optional(),exclude:z.array(z.string().min(1).max(300)).max(50).optional(),include:z.array(z.string().min(1).max(300)).max(50).optional(),
   bugs:z.array(z.object({file:z.string().min(1).max(400),find:z.string().min(1).max(8000),replace:z.string().min(1).max(8000),what:z.string().min(1).max(1000),decoy:z.boolean().optional()}).strict()).min(1).max(30),maxReports:z.number().int().min(1).max(100).optional()}).strict()
   .refine(h=>h.bugs.some(b=>!b.decoy),'A scored hunt needs at least one planted bug that isn’t a decoy.');
-const runOptions=z.object({instructions:z.object({cli1:z.string().max(8000),cli2:z.string().max(8000)}).optional(),stopWhen:z.object({cli1:z.string().max(4000),cli2:z.string().max(4000)}).optional(),completion:z.enum(['duration','either','both','rounds']).optional(),rounds:z.number().int().min(1).max(100).optional(),stances:z.object({cli1:z.enum(['for','against']),cli2:z.enum(['for','against'])}).strict().optional(),judge:z.object({provider:z.enum(['claude','codex'])}).strict().optional(),speechMs:z.number().min(30_000).max(1_800_000).optional(),check:z.object({kind:z.enum(['challenge','race']),answers:z.array(z.string().trim().min(1).max(500)).min(1).max(10)}).strict().optional(),durationMs:z.number().positive().max(86400000).optional(),maxRequests:z.number().int().min(2).max(10000).optional(),perTurnMs:z.number().positive().max(3600000).optional(),paceMs:z.number().min(0).max(60000).optional(),lead:seat.optional(),mode:z.enum(['conversation','benchmark','build']).optional(),opening:z.enum(['both','cli1','cli2']).optional()}).strict();
+// A Gamer run's game (J2): which game, Go's board size, who moves first, the time per move and the illegal answers allowed.
+const gameSetup=z.object({kind:z.enum(['chess','checkers','go']),size:z.number().int().optional(),first:seat,moveMs:z.number().min(30_000).max(1_800_000),maxIllegal:z.number().int().min(1).max(10)}).strict();
+const runOptions=z.object({instructions:z.object({cli1:z.string().max(8000),cli2:z.string().max(8000)}).optional(),stopWhen:z.object({cli1:z.string().max(4000),cli2:z.string().max(4000)}).optional(),completion:z.enum(['duration','either','both','rounds']).optional(),rounds:z.number().int().min(1).max(100).optional(),stances:z.object({cli1:z.enum(['for','against']),cli2:z.enum(['for','against'])}).strict().optional(),judge:z.object({provider:z.enum(['claude','codex'])}).strict().optional(),speechMs:z.number().min(30_000).max(1_800_000).optional(),check:z.object({kind:z.enum(['challenge','race']),answers:z.array(z.string().trim().min(1).max(500)).min(1).max(10)}).strict().optional(),durationMs:z.number().positive().max(86400000).optional(),maxRequests:z.number().int().min(2).max(10000).optional(),perTurnMs:z.number().positive().max(3600000).optional(),paceMs:z.number().min(0).max(60000).optional(),lead:seat.optional(),mode:z.enum(['conversation','benchmark','build','game']).optional(),opening:z.enum(['both','cli1','cli2']).optional(),game:gameSetup.optional()}).strict();
 
 // A direct reply is plain text; if the agent answers in the room's JSON envelope out of habit, show just its message.
 function plainReply(text:string){
@@ -152,11 +155,15 @@ export class AvAService {
       return participantWorkspace(this.dataRoot,{pairId,seat,generation:pair.slots[seat].generation});
     };
     // A judge that was working when the service stopped won't finish: its ballot says so, and Judge again can retry.
-    for(const row of this.store.db.prepare(`SELECT id FROM runs WHERE data LIKE '%"judging"%'`).all())this.store.updateRun(String(row.id),r=>{if(r.judgment?.status==='judging')r.judgment={...r.judgment,status:'failed',finishedAt:new Date().toISOString(),error:'The service stopped while the judge was working.'};});
+    for(const row of this.store.db.prepare(`SELECT id FROM runs WHERE data LIKE '%"judging"%' OR data LIKE '%"reviewing"%'`).all())this.store.updateRun(String(row.id),r=>{
+      if(r.judgment?.status==='judging')r.judgment={...r.judgment,status:'failed',finishedAt:new Date().toISOString(),error:'The service stopped while the judge was working.'};
+      // A debater's ballot still coming when the service stopped (G16) won't come.
+      if(r.judgment?.panel)r.judgment={...r.judgment,panel:Object.fromEntries(Object.entries(r.judgment.panel).map(([s,b])=>[s,b?.status==='reviewing'?{status:'failed',error:'The service stopped before this ballot came back.'}:b]))};
+    });
     this.engine.cleanup=run=>this.stopLeftovers(run);
     // A formal debate with a judge is judged once it completes.
     this.engine.ended=run=>{
-      if(run.config.stances&&run.config.judge&&run.status==='completed')try{this.startJudging(run.id,run.config.judge.provider);}catch{/* nothing to judge */}
+      if(run.config.stances&&run.config.judge&&run.status==='completed')try{this.startJudging(run.id,run.config.judge.provider);this.startReviews(run.id);}catch{/* nothing to judge */}
       // A Prompt run with an answer key: each agent's answer checked, and its time.
       if(run.config.check&&run.config.mode==='benchmark')try{this.scorePrompt(run.id);}catch{/* the run stays as it is */}
       // A scored bug hunt: which planted bugs each agent's BUG lines found (H2).
@@ -306,7 +313,7 @@ export class AvAService {
         return {pairs:pairs.map(p=>({pairId:p.id,agents:SEATS.filter(s=>!!this.activation.get(p.id,s)||p.slots[s].state==='verifying').length,running:!!p.activeRunId})).filter(p=>p.agents>0)};
       }
       // mode (E9): the room's pair for that mode, made on first use. pairIds: every pair the room has, for its thread list.
-      case 'room.get':{const p=z.object({roomId:id,mode:z.enum(['conversation','benchmark','build']).optional()}).parse(input);const pairId=this.roomPair(p.roomId,p.mode);return {mode:this.mode,pair:this.pairView(pairId),pairIds:this.roomPairs(p.roomId).map(r=>r.id)};}
+      case 'room.get':{const p=z.object({roomId:id,mode:z.enum(['conversation','benchmark','build','game']).optional()}).parse(input);const pairId=this.roomPair(p.roomId,p.mode);return {mode:this.mode,pair:this.pairView(pairId),pairIds:this.roomPairs(p.roomId).map(r=>r.id)};}
       case 'run.start':{
         const p=z.object({pairId:id,text:z.string().min(1).max(16000),requestId:id,options:runOptions.optional(),attachments:z.array(id).max(8).optional(),
           build:z.object({kind:z.enum(['review','build']),path:z.string().max(1000).optional(),hunt:huntSetup.optional()}).strict().optional()}).parse(input);
@@ -355,7 +362,7 @@ export class AvAService {
             const stale=[...(this.stale.get(p.pairId)??[])];
             // A run of another mode than the thread's starts its own thread too, so a thread never mixes modes.
             const otherMode=!!earlier.length&&(earlier[0]!.config.mode??'conversation')!==mode;
-            if(idle&&earlier.length&&(mode==='benchmark'||mode==='build'||formal||otherMode)){await this.freshThread(p.pairId);debaters=this.activation.participants(p.pairId);}
+            if(idle&&earlier.length&&(mode==='benchmark'||mode==='build'||mode==='game'||formal||otherMode)){await this.freshThread(p.pairId);debaters=this.activation.participants(p.pairId);}
             else if(idle&&stale.length){await this.freshThread(p.pairId,stale);debaters=this.activation.participants(p.pairId);}
             if(config.build){
               // Each agent gets its own copy (or empty folder), inside the workspace of the session that runs it (a fresh one,
@@ -378,6 +385,8 @@ export class AvAService {
             // G6: each debater is briefed through its 1:1 line, and the debate starts once both are ready. A failed brief
             // leaves both sessions to be renewed, so a retry (perhaps with the sides swapped) starts clean.
             if(idle&&formal)try{await this.briefDebaters(p.pairId,config);}catch(error){this.markStale(p.pairId,SEATS);throw error;}
+            // J2: so are a game's players, with the rules, the notation and the form of each turn.
+            if(idle&&mode==='game')try{await this.briefPlayers(p.pairId,config);}catch(error){this.markStale(p.pairId,SEATS);throw error;}
             if(this.shuttingDown||this.stoppingAgents)throw new AvAError('STOPPING_AGENTS','The service is stopping its agents.');
             const run=this.engine.start(p.pairId,config,p.requestId,debaters,attachments);
             if(copied)this.store.event(run.id,'build_copied',{files:copied.files,bytes:copied.bytes,gitSource:copied.gitSource,baseline:copied.baseline});
@@ -474,7 +483,9 @@ export class AvAService {
         });
       }
       case 'run.broadcast':{const p=z.object({runId:id,text:z.string().min(1).max(16000),requestId:id,attachments:z.array(id).max(8).optional()}).parse(input);const pairId=this.store.run(p.runId).pairId;this.assertNoDirect(pairId);this.assertNotRestarting(pairId);
-        if(['benchmark','build'].includes(this.store.run(p.runId).config.mode??''))throw new AvAError('ONE_PROMPT','Each agent answers this prompt once; it takes no further messages.');return {messageId:this.engine.broadcast(p.runId,p.text,p.requestId,this.attachable(pairId,p.attachments))};}
+        if(['benchmark','build'].includes(this.store.run(p.runId).config.mode??''))throw new AvAError('ONE_PROMPT','Each agent answers this prompt once; it takes no further messages.');
+        // A game's players hear only the referee: a message would be a move by neither (J2).
+        if(this.store.run(p.runId).config.mode==='game')throw new AvAError('GAME_RUNNING','A game takes no messages: the players see only the referee’s turns.');return {messageId:this.engine.broadcast(p.runId,p.text,p.requestId,this.attachable(pairId,p.attachments))};}
       case 'run.control':{
         const p=z.object({runId:id,action:z.enum(['pause','resume','step','stop']),requestId:id.optional()}).parse(input);
         return this.once('control',p.requestId??randomUUID(),{runId:p.runId,action:p.action},async()=>{
@@ -571,10 +582,15 @@ export class AvAService {
       status:(shown?.status??(current?'ready':'cleared')) as string,reason:shown?.reason??null,live:!!live,current,participants:last?.participants??slots,empty:!first,
       // A judged debate's result, for the thread list (C): who won, and each side's total out of 15.
       verdict:(()=>{
-        const last=[...thread.runs].reverse().find(r=>r.judgment||r.result||r.hunt);if(!last)return null;
+        const last=[...thread.runs].reverse().find(r=>r.judgment||r.result||r.hunt||r.game?.result);if(!last)return null;
+        // A game's result (J2): who won, or a draw, and why.
+        if(last.game?.result&&!last.judgment&&!last.result&&!last.hunt)return {status:'done' as const,kind:'game' as const,...(last.game.result.winner?{winner:last.game.result.winner}:{}),reason:last.game.result.reason};
         if(last.hunt)return {status:'done' as const,kind:'hunt' as const,...(last.hunt.winner?{winner:last.hunt.winner}:{}),planted:last.hunt.bugs.filter(b=>!b.decoy).length,found:Object.fromEntries(SEATS.map(s=>[s,last.hunt!.seats[s].found.length]))};
         if(last.result)return {status:'done' as const,kind:last.result.kind,...(last.result.winner?{winner:last.result.winner}:{}),correct:Object.fromEntries(SEATS.map(s=>[s,last.result!.seats[s].correct]))};
-        const j=last.judgment!;return j.status!=='done'?{status:j.status,kind:'debate' as const}:{status:j.status,kind:'debate' as const,winner:j.winner,totals:Object.fromEntries(SEATS.map(s=>[s,total(j.scores![s])]))};
+        // With the debaters' own ballots (G16): the side most ballots name, once they are all in.
+        const j=last.judgment!,panel=panelResult(j);if(j.status!=='done')return {status:j.status,kind:'debate' as const};
+        if(j.panel&&!panel)return {status:'judging' as const,kind:'debate' as const};
+        return {status:j.status,kind:'debate' as const,winner:panel?.winner??j.winner,totals:Object.fromEntries(SEATS.map(s=>[s,total(j.scores![s])])),...(panel&&j.panel?{ballots:{won:panel.votes[panel.winner],of:panel.ballots}}:{})};
       })()};
   }
   // Thread names, read once per list or view.
@@ -630,7 +646,7 @@ export class AvAService {
     this.titles=this.store.threadTitles();
     const summary=this.summarize(thread,this.store.runActivity(thread.runs.map(r=>r.id)),pair,this.store.directThreads().find(d=>d.threadId===thread.id));
     const runs=thread.runs.map(r=>{const run=this.engine.snapshot(r.id);return {id:run.id,status:run.status,reason:run.reason,createdAt:run.createdAt??null,elapsedMs:run.elapsedMs,requests:run.requests,
-      config:{topic:run.config.topic,completion:run.config.completion,...(run.config.rounds?{rounds:run.config.rounds}:{}),...(run.config.stances?{stances:run.config.stances}:{}),...(run.config.judge?{judge:run.config.judge}:{}),...(run.config.check?{check:run.config.check}:{}),durationMs:run.config.durationMs,maxRequests:run.config.maxRequests,mode:run.config.mode??'conversation',build:run.config.build?{kind:run.config.build.kind,source:run.config.build.source,folder:run.config.build.folder,...(run.config.build.hunt?{planted:run.config.build.hunt.bugs.filter(b=>!b.decoy).length,decoys:run.config.build.hunt.bugs.filter(b=>b.decoy).length}:{})}:null},participants:run.participants??null,judgment:run.judgment??null,result:run.result??null,hunt:run.hunt??null};});
+      config:{topic:run.config.topic,completion:run.config.completion,...(run.config.rounds?{rounds:run.config.rounds}:{}),...(run.config.stances?{stances:run.config.stances}:{}),...(run.config.judge?{judge:run.config.judge}:{}),...(run.config.check?{check:run.config.check}:{}),...(run.config.game?{game:run.config.game}:{}),durationMs:run.config.durationMs,maxRequests:run.config.maxRequests,mode:run.config.mode??'conversation',build:run.config.build?{kind:run.config.build.kind,source:run.config.build.source,folder:run.config.build.folder,...(run.config.build.hunt?{planted:run.config.build.hunt.bugs.filter(b=>!b.decoy).length,decoys:run.config.build.hunt.bugs.filter(b=>b.decoy).length}:{})}:null},participants:run.participants??null,judgment:run.judgment??null,result:run.result??null,hunt:run.hunt??null,game:run.game??null};});
     const messages=thread.runs.flatMap(r=>{const times=this.store.messageTimes(r.id);return this.store.messages(r.id).map((m,i)=>({...m,time:times.get(m.id)??(i===0?r.createdAt??null:null)}));});
     const pending:Partial<Record<Seat,{partial:string;steps:string[]}>>={};
     for(const seat of SEATS){const entry=this.direct.get(`${thread.pairId}:${seat}`);if(entry&&entry.threadId===thread.id)pending[seat]={partial:entry.partial.slice(-4000),steps:entry.steps.slice(-4)};}
@@ -687,7 +703,9 @@ export class AvAService {
     if(participant&&!busy)await participant.setBuildAccess?.(!!this.activation.workspaceAccess?.(pairId,seat)).catch(()=>{});
     return this.pairView(pairId);
   }
-  private sendDirect(pairId:string,seat:Seat,text:string,tools=false){
+  // reply: what the agent is asked to reply with, instead of plain text (a debater's ballot, G16). offline: the message
+  // says the web is off whatever the agent's setting (a game's brief: games are played without help).
+  private sendDirect(pairId:string,seat:Seat,text:string,tools=false,reply?:string,offline=false){
     const pair=this.store.pair(pairId),slot=pair.slots[seat],participant=this.activation.get(pairId,seat),n=seat==='cli1'?1:2,key=`${pairId}:${seat}`;
     if(slot.state!=='ready'||!participant||!slot.sessionId)throw new AvAError('NOT_READY',`Agent ${n} isn't active. Activate it first.`);
     if(this.direct.has(key))throw new AvAError('DIRECT_BUSY',`Agent ${n} is still answering your last direct message.`);
@@ -708,10 +726,10 @@ export class AvAService {
     const prompt=[
       `Private message from the operator to you (${seat}) only. Your partner in the shared conversation can't see this message or your reply, and neither appears in the shared room.`,
       'Use it in the shared conversation as the operator intends, but don’t quote or mention this private exchange there unless the operator asks you to.',
-      slot.permissions==='bypass'?'You may use your tools, run commands and edit files to do what the operator asks. Reply to the operator directly, in plain text (no JSON).'
+      reply?reply:slot.permissions==='bypass'?'You may use your tools, run commands and edit files to do what the operator asks. Reply to the operator directly, in plain text (no JSON).'
         :tools?'You may use scoped file tools to read, create, or edit files in your working folder. Ask mode refuses command execution: do not run shells, scripts, tests, package managers, or process-control tools. Reply directly in plain text (no JSON), and report any execution you could not perform.'
         :'Reply to the operator directly, in plain text (no JSON). Do not edit files or run commands.',
-      internetNote(slot.internet===true),
+      internetNote(slot.internet===true&&!offline),
       `Message:\n${text}`,
     ].join('\n\n');
     entry.done=(async()=>{
@@ -937,8 +955,19 @@ export class AvAService {
       if(row?.state!=='answered')throw new AvAError('BRIEF_FAILED',`Agent ${seat==='cli1'?1:2} didn’t take its debate brief${row?.error?`: ${String(row.error)}`:'.'}`);
     }));
   }
+  // A game's briefs (J2), through each player's 1:1 line, before the first move: the game and its side, the rules, the
+  // standard notation, the form of each turn and the answer, and the limits. The game starts once both are ready.
+  private async briefPlayers(pairId:string,config:RunConfig){
+    const setup=config.game!;
+    await Promise.all(SEATS.map(async seat=>{
+      const {id:questionId}=this.sendDirect(pairId,seat,gameBrief(setup,seat),false,'Reply to the operator directly, in plain text, with only the line the message asks for. Do not edit files or run commands.',true);
+      await this.direct.get(`${pairId}:${seat}`)?.done;
+      const row=this.store.db.prepare('SELECT state,error FROM direct_messages WHERE id=?').get(questionId);
+      if(row?.state!=='answered')throw new AvAError('BRIEF_FAILED',`Agent ${seat==='cli1'?1:2} didn’t take its game brief${row?.error?`: ${String(row.error)}`:'.'}`);
+    }));
+  }
   // The judge (G7): a fresh session of the CLI's strongest model at its highest effort, with web search to check facts.
-  // It sees the motion and the speeches, never the debaters' briefs or who they are. It runs in the background and saves
+  // It sees the motion and the speeches, never the debaters' briefs or who they are, and judges blind (G17). It runs in the background and saves
   // its ballot with the run; one judging per debate at a time.
   // Each judging has its token, so a judge that has finished clears only its own entry, never a newer Judge again.
   private judging=new Map<string,symbol>();
@@ -955,7 +984,8 @@ export class AvAService {
     return this.store.run(runId).judgment;
   }
   private async judgeDebate(runId:string,provider:JudgeProvider,startedAt:string,token:symbol){
-    const save=(judgment:Judgment)=>{try{this.store.updateRun(runId,r=>{r.judgment=judgment;});}catch{/* the run was deleted meanwhile */}};
+    // The debaters' own ballots (G16) are saved beside the judge's, and kept whatever the judge saves.
+    const save=(judgment:Judgment)=>{try{this.store.updateRun(runId,r=>{r.judgment={...judgment,...(r.judgment?.panel?{panel:r.judgment.panel}:{})};});}catch{/* the run was deleted meanwhile */}};
     let judge:ProviderConfig={provider,model:'',auth:'provider-login'},pairId:string|undefined;
     try{
       const listed=await this.catalog(provider),model=strongestModel(provider,listed.models);
@@ -967,13 +997,34 @@ export class AvAService {
       await this.activation.configure(pair.id,'cli1',judge);this.store.setSlotInternet(pair.id,'cli1',true);
       await this.activation.activate(pair.id,'cli1',judge);
       const participant=this.activation.get(pair.id,'cli1');if(!participant)throw new AvAError('NOT_READY','The judge did not start.');
-      const run=this.store.run(runId);
-      const result=await participant.request({id:randomUUID(),text:judgePrompt(run.config,this.store.messages(runId),internetNote(true)),signal:AbortSignal.timeout(20*60_000),onStarted(){},onEvent(){}});
+      // Blind (G17): the speeches in one typography, without the debaters' model names or any word on who they are.
+      const run=this.store.run(runId),names=SEATS.flatMap(s=>{const p=run.participants?.[s];return p?[p.model,...(p.modelName?[p.modelName]:[])]:[];}),blind=blindDebate(run.config,this.store.messages(runId),names);
+      const result=await participant.request({id:randomUUID(),text:judgePrompt(run.config,blind.messages,internetNote(true)),signal:AbortSignal.timeout(20*60_000),onStarted(){},onEvent(){}});
       if(result.status!=='completed')throw new AvAError('JUDGE_CANCELLED','The judge did not finish.');
-      save({status:'done',judge,startedAt,finishedAt:new Date().toISOString(),...parseBallot(result.text,run.config.stances!)});
+      save({status:'done',judge,startedAt,finishedAt:new Date().toISOString(),...parseBallot(result.text,run.config.stances!),blind:{redacted:blind.redacted}});
     }catch(error){save({status:'failed',judge,startedAt,finishedAt:new Date().toISOString(),error:(error instanceof Error?error.message:String(error)).slice(0,500)});}
     // The judging is over once its ballot is saved: Judge again may start while the judge's session is still being removed.
     finally{if(this.judging.get(runId)===token)this.judging.delete(runId);if(pairId)await this.dropJudge(pairId);}
+  }
+  // Each debater scores the debate too (G16), in its own session through its 1:1 line, so nothing new starts. Its ballot
+  // is saved beside the judge's; one that doesn't come (an agent not active, a failed or late reply) is recorded as
+  // failed, and the result counts the ballots there are. A new debate waits for these replies, as for any 1:1 reply.
+  private startReviews(runId:string){
+    const run=this.store.run(runId),savePanel=(seat:Seat,ballot:PanelBallot)=>{try{this.store.updateRun(runId,r=>{if(r.judgment)r.judgment={...r.judgment,panel:{...r.judgment.panel,[seat]:ballot}};});}catch{/* the run was deleted meanwhile */}};
+    for(const seat of SEATS){
+      let questionId:string;
+      try{questionId=this.sendDirect(run.pairId,seat,reviewPrompt(run.config,seat),false,'Reply to the operator directly with only the JSON ballot the message asks for. Do not edit files or run commands.').id;}
+      catch(error){savePanel(seat,{status:'failed',error:(error instanceof Error?error.message:String(error)).slice(0,300)});continue;}
+      savePanel(seat,{status:'reviewing'});
+      void (async()=>{
+        await this.direct.get(`${run.pairId}:${seat}`)?.done;
+        const asked=this.store.db.prepare('SELECT state,error,thread_id FROM direct_messages WHERE id=?').get(questionId);
+        if(asked?.state!=='answered'){savePanel(seat,{status:'failed',error:String(asked?.error??'No ballot came back.').slice(0,300)});return;}
+        const answer=this.store.db.prepare("SELECT text FROM direct_messages WHERE thread_id=? AND seat=? AND sender='agent' ORDER BY rowid DESC LIMIT 1").get(String(asked.thread_id),seat);
+        try{const ballot=parseBallot(String(answer?.text??''),run.config.stances!);savePanel(seat,{status:'done',scores:ballot.scores,winner:ballot.winner,reason:ballot.reason});}
+        catch{savePanel(seat,{status:'failed',error:'Its reply wasn’t a complete ballot.'});}
+      })();
+    }
   }
   // A judge's session is closed and forgotten once it has scored (Q4): its pair, and its folders, whose saved session state
   // holds the whole debate. Delete thread and Clear history drop the judges of the debates they delete.

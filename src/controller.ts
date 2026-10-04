@@ -1,6 +1,7 @@
 import { Store } from './store.js';
 import { FORMAL_STYLE, SIDE, forfeitText, speechRule, timeRule } from './debate.js';
 import { BUG_FORMAT, huntRules } from './bug-hunt.js';
+import { gameMoves, gameResult, judgeReply, movePrompt, sideOf } from './games/referee.js';
 import { AvAError, SEATS, other, systemClock, type AgentResult, type AttachmentRef, type Clock, type Participant, type RoomMessage, type Run, type RunConfig, type Seat } from './types.js';
 
 interface LiveRun {
@@ -175,7 +176,7 @@ export class ConversationController {
   private finish(id: string) {
     const live = this.live.get(id)!;
     const state = live.failure ?? { reason: 'completed', attention: false };
-    const status = live.uncertain || state.attention ? 'needs_attention' : ['duration_reached', 'agents_done', 'rounds_done', 'benchmark_done', 'build_done', 'agent_unfinished'].includes(state.reason) ? 'completed' : 'stopped';
+    const status = live.uncertain || state.attention ? 'needs_attention' : ['duration_reached', 'agents_done', 'rounds_done', 'benchmark_done', 'build_done', 'agent_unfinished', 'game_over'].includes(state.reason) ? 'completed' : 'stopped';
     const elapsed = this.snapshot(id).elapsedMs;
     live.cancelDeadline(); this.store.finish(id, status, state.reason, elapsed);
     live.anchor = this.clock.now();
@@ -238,7 +239,7 @@ export class ConversationController {
       // Debate (E7): the opening prompt goes to both agents at once. The one who doesn't open is briefed in parallel (it
       // reads the topic and replies READY, which isn't posted) and answers after the opening. Without a request to spare,
       // it isn't briefed: the topic comes with its first turn anyway.
-      if (!parallel && opening && broadcast && seats.length === 1 && !run.config.stances) { try { briefing = this.store.admit(id, [other(seats[0]!)], undefined, undefined, true)[0]; } catch { /* no briefing */ } }
+      if (!parallel && opening && broadcast && seats.length === 1 && !run.config.stances && run.config.mode !== 'game') { try { briefing = this.store.admit(id, [other(seats[0]!)], undefined, undefined, true)[0]; } catch { /* no briefing */ } }
       live.nextStartAt = this.clock.now() + run.config.paceMs;
       await Promise.all([...turns.map(turn => this.reply(id, turn.id, turn.seat, turn.messages)), ...(briefing ? [this.brief(id, briefing.id, briefing.seat, briefing.messages)] : [])]);
       if (live.failure || this.store.run(id).status === 'stopping') continue;
@@ -251,6 +252,8 @@ export class ConversationController {
       // The outcome is fixed before the cleanup (which takes seconds): a Stop or the deadline meanwhile can't change it,
       // and no new work starts.
       if (run.config.mode === 'build') { live.failure ??= { reason: answered ? 'build_done' : 'agent_unfinished', attention: false }; await this.cleanup?.(run).catch(() => {}); this.halt(id, live.failure.reason, false); continue; }
+      // A game (J2) ends when the referee records its result.
+      if (run.config.mode === 'game' && run.game?.result) { this.halt(id, 'game_over', false); continue; }
       // A debate with rounds (G1) ends once each agent has spoken that many times.
       if (run.config.completion === 'rounds' && SEATS.every(s => this.spoken(id, s) >= (run.config.rounds ?? 0))) { this.halt(id, 'rounds_done', false); continue; }
       const explicitStop = SEATS.some(s => !!run.config.stopWhen[s].trim() && run.stopFlags[s]);
@@ -330,6 +333,8 @@ export class ConversationController {
         `(Operator setting for you: ${web})`,
       ].join('\n\n');
     }
+    // A game (J2): the referee's short turn, the opponent's last move and the position (the rules came in the brief).
+    if (run.config.mode === 'game' && run.config.game) return movePrompt(run.config.game, gameMoves(this.store.messages(id)), seat);
     // A formal debate (G6): the speech this round calls for, on the side this agent was assigned.
     if (run.config.stances) {
       const rounds = run.config.rounds ?? Math.max(1, Math.floor(run.config.maxRequests / 2)), round = Math.min(rounds, this.spoken(id, seat) + 1);
@@ -438,7 +443,49 @@ export class ConversationController {
       this.store.event(id, 'activity', { seat, turnId, type: 'status', text: `The briefing didn't finish (${text}); the topic comes with its first turn.`, late: false });
     }
   }
+  // A game's turn (J2): the agent's move, checked by the referee before it counts. An illegal answer is asked again (a
+  // repair turn) with the reason, up to the game's limit, after which the agent loses; so does a move that runs past its
+  // time, and a resignation. The result is recorded for the pump, which then ends the run.
+  private async move(id: string, turnId: string, seat: Seat) {
+    const setup = this.store.run(id).config.game!, side = sideOf(setup, seat);
+    const end = (result: { winner?: Seat; reason: string; score?: string }) => this.store.updateRun(id, r => { r.game = { illegal: r.game?.illegal ?? { cli1: 0, cli2: 0 }, result }; });
+    let currentTurn = turnId, retry: { input: string; reason: string; left: number } | undefined, tries = 0;
+    try {
+      while (true) {
+        const moves = gameMoves(this.store.messages(id));
+        let outOfTime = false;
+        const result = await this.request(id, currentTurn, seat, movePrompt(setup, moves, seat, retry), [], { ms: setup.moveMs, onLimit: () => { outOfTime = true; } });
+        if (!this.permitted(id)) { this.store.turnEnd(currentTurn, 'cancelled'); return; }
+        if (outOfTime) {
+          this.store.turnEnd(currentTurn, 'cancelled', 'Out of time.');
+          this.store.event(id, 'activity', { seat, turnId: currentTurn, type: 'status', text: 'Out of time: this move ran past its limit, which loses the game.', late: false });
+          end({ winner: other(seat), reason: `${side} ran out of time` }); return;
+        }
+        if (result.status !== 'completed') throw new AvAError('PROVIDER_CANCELLED', 'Provider cancelled the turn.');
+        const verdict = judgeReply(setup, moves, result.text);
+        if (verdict.kind === 'move') {
+          this.assertPermitted(id); this.store.commitReply(id, currentTurn, seat, verdict.move, false);
+          if (verdict.outcome) end(gameResult(setup, verdict.outcome));
+          return;
+        }
+        if (verdict.kind === 'resign') { this.store.turnEnd(currentTurn, 'completed'); end({ winner: other(seat), reason: `${side} resigned` }); return; }
+        tries++;
+        this.store.turnEnd(currentTurn, 'invalid');
+        this.store.updateRun(id, r => { const illegal = r.game?.illegal ?? { cli1: 0, cli2: 0 }; r.game = { ...r.game, illegal: { ...illegal, [seat]: illegal[seat] + 1 } }; });
+        this.store.event(id, 'activity', { seat, turnId: currentTurn, type: 'status', text: `Not a legal move${verdict.input ? ` (${verdict.input})` : ''}: ${verdict.reason}.`, late: false });
+        if (tries >= setup.maxIllegal) { end({ winner: other(seat), reason: `${side} gave ${tries} illegal answers in a row` }); return; }
+        try { currentTurn = this.store.admit(id, [seat], undefined, currentTurn)[0]!.id; }
+        catch (error) { if (error instanceof AvAError && error.code === 'REQUEST_LIMIT') { this.halt(id, 'request_limit', false); return; } throw error; }
+        retry = { input: verdict.input, reason: verdict.reason, left: setup.maxIllegal - tries };
+      }
+    } catch (error) {
+      const text = error instanceof Error ? error.message : 'Unknown error';
+      this.store.turnEnd(currentTurn, error instanceof AvAError && error.code === 'UNCERTAIN' ? 'uncertain' : 'failed', text);
+      if (!this.live.get(id)?.failure) this.halt(id, error instanceof AvAError ? error.code.toLowerCase() : 'provider_failure', true);
+    }
+  }
   private async reply(id: string, turnId: string, seat: Seat, messages: RoomMessage[]) {
+    if (this.store.run(id).config.mode === 'game') return this.move(id, turnId, seat);
     let currentTurn = turnId;
     try {
       const speechMs = this.store.run(id).config.stances ? this.store.run(id).config.speechMs : undefined;

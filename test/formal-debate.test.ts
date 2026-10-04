@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import { AvAService } from '../src/service.js';
 import { Store } from '../src/store.js';
 import { ConversationController } from '../src/controller.js';
-import { debateBrief, judgePrompt, maxEffort, parseBallot } from '../src/debate.js';
-import { conversationConfig, SEATS, type Pair, type Run, type Seat } from '../src/types.js';
+import { REMOVED, blindDebate, blindText, debateBrief, judgePrompt, maxEffort, panelResult, parseBallot } from '../src/debate.js';
+import { conversationConfig, SEATS, type Judgment, type Pair, type Run, type Seat } from '../src/types.js';
 import { FakeClock, FakeParticipant, TestFactory, flush } from './fakes.js';
 import { tempDir } from './temp.js';
 
@@ -172,5 +172,82 @@ test('a debater that can\'t take its brief stops the start; a debate without a j
     await new Promise(r => setTimeout(r, 50));
     assert.equal(service.store.run(run.id).judgment, undefined, 'no judge chosen: not judged');
     assert.equal(factory.agents.length, 4, 'and no judge started');
+  } finally { await close(); }
+});
+
+test('G17: the judge reads the debate blind: one plain typography, no model names, no word on who a debater is', () => {
+  const blind = blindText('It’s “settled” — the data (2019–2021) show a −5% fall… **Bold**. I’m Codex; as Claude, I’d add that gpt-6.1-sol and Opus 5.5 agree.', ['gpt-6.1-sol', 'Opus 5.5', 'opus']);
+  assert.equal(blind.text, `It's "settled" - the data (2019-2021) show a -5% fall... Bold. ${REMOVED}; ${REMOVED}, I'd add that ${REMOVED} and ${REMOVED} agree.`);
+  assert.equal(blind.redacted, 4);
+  // What can be evidence stays: a system named in the third person, a person called Claude, a word such as "opus".
+  const kept = 'As Claude Shannon argued, entropy matters. OpenAI released GPT-4 in 2023, and Anthropic trains Claude. A magnum opus; 2*3*4.';
+  assert.deepEqual(blindText(kept, ['opus', 'claude-opus']), { text: kept, redacted: 0 });
+  const config = conversationConfig('This house would ban smartphones in schools', { completion: 'rounds', stances: { cli1: 'for', cli2: 'against' } });
+  const messages = [{ id: 'u', seq: 1, runId: 'r', sender: 'user' as const, text: config.topic, state: 'committed' as const, turnId: null },
+    { id: 'a', seq: 2, runId: 'r', sender: 'cli1' as const, text: 'As Codex, I say phones distract — “a lot”.', state: 'committed' as const, turnId: 't1' }];
+  const view = blindDebate(config, messages, []), prompt = judgePrompt(config, view.messages, '');
+  assert.equal(view.redacted, 1); assert.equal(messages[1]!.text, 'As Codex, I say phones distract — “a lot”.', 'the room keeps the original');
+  assert.match(prompt, /Proposition, round 1:\n\[name removed\], I say phones distract - "a lot"\./); assert.doesNotMatch(prompt, /Moderator: This house/, 'the motion isn’t repeated');
+  assert.match(prompt, /The debaters are anonymous.*don’t try to work out which AI system wrote which speech/);
+  assert.match(debateBrief(config, 'cli1', '', ''), /Stay anonymous: don’t name yourself, your model or the company that made you/);
+});
+
+test('G17: a judged debate is judged blind, and the ballot says so; the room keeps every speech as it was', async () => {
+  const { factory, service, close } = fixture();
+  try {
+    const pair = await service.call('pair.create', { thread: 'formal-blind' }) as Pair;
+    for (const seat of SEATS) { await service.call('slot.configure', { pairId: pair.id, seat, config: { provider: 'codex', model: 'gpt-6.1-sol', auth: 'provider-login' } }); await service.call('slot.activate', { pairId: pair.id, seat }); }
+    const starting = service.call('run.start', { pairId: pair.id, text: 'This house would ban smartphones in schools', requestId: 'blind', options }) as Promise<Run>;
+    await until(() => factory.agents.every(a => a.calls.length === 2));
+    factory.agents[0]!.raw('READY, for.'); factory.agents[1]!.raw('READY, against.');
+    const run = await starting; await flush();
+    assert.match(factory.agents[0]!.calls.at(-1)!.request.text, /Stay anonymous/, 'every speech prompt asks for it');
+    factory.agents[0]!.answer('I’m Codex — gpt-6.1-sol — and phones distract.'); await flush(); factory.agents[1]!.answer('Evidence is “mixed”.'); await flush();
+    await until(() => factory.agents.length === 3 && factory.agents[2]!.calls.length === 2);
+    const judgeText = factory.agents[2]!.calls[1]!.request.text, debate = judgeText.slice(judgeText.indexOf('The debate, in speaking order'), judgeText.indexOf('Score each debater'));
+    assert.doesNotMatch(debate, /Codex|gpt-6\.1-sol|[“”’—]/, 'the speeches as the judge reads them'); assert.match(judgeText, /\[name removed\] - \[name removed\] - and phones distract\./);
+    factory.agents[2]!.raw(ballot('opposition')); await until(() => service.store.run(run.id).judgment?.status === 'done');
+    assert.deepEqual(service.store.run(run.id).judgment?.blind, { redacted: 2 });
+    assert.ok(service.store.messages(run.id).some(m => m.text === 'I’m Codex — gpt-6.1-sol — and phones distract.'), 'the room keeps the speech as it was');
+  } finally { await close(); }
+});
+
+test('G16: three ballots: the side most of them name wins, the judge breaking a tie; the result waits for every ballot', () => {
+  const done = (winner: Seat) => ({ status: 'done' as const, winner, scores: { cli1: { evidence: 3, clash: 3, stance: 3 }, cli2: { evidence: 3, clash: 3, stance: 3 } } });
+  const judgment = (winner: Seat, panel?: Judgment['panel']): Judgment => ({ status: 'done', judge: { provider: 'claude', model: 'm', auth: 'provider-login' }, startedAt: 'x', winner, scores: done(winner).scores, ...(panel ? { panel } : {}) });
+  assert.deepEqual(panelResult(judgment('cli1', { cli1: done('cli1'), cli2: done('cli2') })), { winner: 'cli1', votes: { cli1: 2, cli2: 1 }, ballots: 3, tie: false }, 'each votes for itself: the judge decides');
+  assert.deepEqual(panelResult(judgment('cli1', { cli1: done('cli2'), cli2: done('cli2') }))?.winner, 'cli2', 'a debater that concedes outvotes the judge with its opponent');
+  assert.deepEqual(panelResult(judgment('cli2', { cli1: done('cli1'), cli2: { status: 'failed', error: 'late' } })), { winner: 'cli2', votes: { cli1: 1, cli2: 1 }, ballots: 2, tie: true }, 'a missing ballot: the judge breaks the tie');
+  assert.equal(panelResult(judgment('cli1', { cli1: done('cli1'), cli2: { status: 'reviewing' } })), null, 'not until every ballot is in');
+  assert.deepEqual(panelResult(judgment('cli2'))?.ballots, 1, 'no debater ballots: the judge alone');
+  assert.equal(panelResult({ ...judgment('cli1'), status: 'judging' }), null);
+});
+
+test('G16: when a judged debate ends, each debater scores it through its 1:1 line beside the judge, and the thread shows the result', async () => {
+  const { factory, service, close } = fixture();
+  try {
+    const pair = await debaters(service, 'formal-panel');
+    const starting = service.call('run.start', { pairId: pair.id, text: 'This house would ban smartphones in schools', requestId: 'panel', options }) as Promise<Run>;
+    await until(() => factory.agents.every(a => a.calls.length === 2));
+    factory.agents[0]!.raw('READY, for.'); factory.agents[1]!.raw('READY, against.');
+    const run = await starting; await flush();
+    factory.agents[0]!.answer('Opening for'); await flush(); factory.agents[1]!.answer('Opening against'); await flush();
+    // The debaters' reviews go to their own sessions; the judge is the only new session.
+    await until(() => factory.agents[0]!.calls.length === 4 && factory.agents[1]!.calls.length === 4 && factory.agents.length === 3);
+    const review = factory.agents[0]!.calls[3]!.request.text;
+    assert.match(review, /Private message from the operator/); assert.match(review, /Reply to the operator directly with only the JSON ballot/); assert.doesNotMatch(review, /in plain text \(no JSON\)/);
+    assert.match(review, /The debate is over\. Now score it.*yourself included/s); assert.match(review, /You argued the Proposition, for the motion\. Your ballot is one of three/);
+    assert.deepEqual(service.store.run(run.id).judgment?.panel, { cli1: { status: 'reviewing' }, cli2: { status: 'reviewing' } });
+    // A new debate waits for the debaters' ballots, as for any 1:1 reply.
+    await assert.rejects(service.call('run.start', { pairId: pair.id, text: 'Next motion', requestId: 'next', options }), /still answering/);
+    // Agent 1 (Proposition) concedes; Agent 2's reply isn't a ballot; the judge picks the Proposition.
+    factory.agents[0]!.raw(ballot('opposition')); factory.agents[1]!.raw('I think I won, clearly.');
+    await until(() => factory.agents[2]!.calls.length === 2); factory.agents[2]!.raw(ballot('proposition'));
+    await until(() => !!service.store.run(run.id).judgment?.panel?.cli2 && service.store.run(run.id).judgment!.panel!.cli2!.status !== 'reviewing' && service.store.run(run.id).judgment?.status === 'done');
+    const judgment = service.store.run(run.id).judgment!;
+    assert.deepEqual([judgment.winner, judgment.panel?.cli1?.status, judgment.panel?.cli1?.winner, judgment.panel?.cli2?.status], ['cli1', 'done', 'cli2', 'failed'], 'the panel survives the judge’s save');
+    assert.deepEqual(panelResult(judgment), { winner: 'cli1', votes: { cli1: 1, cli2: 1 }, ballots: 2, tie: true }, '1 against 1: the judge breaks the tie, for the Proposition');
+    const verdict = (await service.call('threads.list', { pairId: pair.id }) as { threads: Array<{ verdict?: { winner?: Seat; ballots?: { won: number; of: number } } | null; runIds: string[] }> }).threads.find(t => t.runIds.includes(run.id))!.verdict;
+    assert.deepEqual(verdict?.ballots, { won: 1, of: 2 });
   } finally { await close(); }
 });

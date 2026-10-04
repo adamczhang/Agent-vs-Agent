@@ -4,6 +4,7 @@ import type { ConfiguredParticipant } from './activation.js';
 import type { ServiceFactory } from './service.js';
 import type { ProcessLedger } from './census.js';
 import type { AgentRequest, AgentResult, ProviderConfig, Seat } from './types.js';
+import { GAMES } from './games/index.js';
 
 // Scripted participants for UI development (scripts/dev-sim.ts). No provider process, no model request.
 // Each seat has its own voice (Agent 1 builds a case, Agent 2 pushes back) so simulated rooms read like two speakers.
@@ -29,6 +30,16 @@ const LINES: Record<Seat, string[]> = {
     'Then we agree more than we disagree: it is a tool with conditions, not a default.',
   ],
 };
+// A simulated player's move: any legal move in the position (passing in Go only when nothing else is legal).
+function simulatedMove(text: string) {
+  for (const engine of Object.values(GAMES)) {
+    let state: unknown;
+    try { state = engine.fromPosition(text); } catch { continue; }
+    const legal = engine.legal(state).filter(m => m !== 'pass');
+    return legal[Math.floor(Math.random() * legal.length)] ?? 'pass';
+  }
+  return 'resign';
+}
 export class SimulatedParticipant implements ConfiguredParticipant {
   readonly sessionId = 'sim-' + randomUUID();
   readonly evidence = 'simulation';
@@ -56,16 +67,25 @@ export class SimulatedParticipant implements ConfiguredParticipant {
       const marker = request.text.match(/AVA_READY_[\w-]+/);
       if (marker) { at(50, () => finish({ status: 'completed', text: marker[0] })); return; }
       // A direct (1:1) message gets a plain-text acknowledgement, like a real agent would give.
-      const direct = /^Private message from the operator/.test(request.text) ? request.text.split('Message:\n').at(-1)!.trim() : '';
+      const direct = /^Private message from the operator/.test(request.text) && !/The debate is over\. Now score it/.test(request.text) ? request.text.split('Message:\n').at(-1)!.trim() : '';
       if (direct) {
-        const reply = `Understood. I'll keep "${direct.slice(0, 80)}${direct.length > 80 ? '…' : ''}" in mind in the shared conversation, without mentioning it there. (simulated)`;
+        const ready = direct.match(/Reply with one line: (READY[^\n]*)/)?.[1];
+        const reply = ready ? `${ready} (simulated)` : `Understood. I'll keep "${direct.slice(0, 80)}${direct.length > 80 ? '…' : ''}" in mind in the shared conversation, without mentioning it there. (simulated)`;
         at(this.delayMs * 0.3, () => request.onEvent({ type: 'output', text: reply.slice(0, 40) }));
         at(this.delayMs * 0.6, () => request.onEvent({ type: 'output', text: reply.slice(40) }));
         at(this.delayMs * 0.7, () => finish({ status: 'completed', text: reply }));
         return;
       }
-      // A formal debate's judge (G7): a ballot with scores that vary, so the room shows both outcomes.
-      if (/^You are the judge of a formal debate/.test(request.text)) {
+      // A game's turn (J2): a random legal move in the position the turn gives, as a player who knows the rules would.
+      if (/Reply with: MOVE: <move>$/.test(request.text)) {
+        const move = simulatedMove(request.text);
+        at(this.delayMs * 0.3, () => request.onEvent({ type: 'thought', text: 'Reading the position and choosing a move (simulated).' }));
+        at(this.delayMs * 0.6, () => finish({ status: 'completed', text: `MOVE: ${move}` }));
+        return;
+      }
+      // A formal debate's judge (G7), or a debater scoring it afterwards (G16): a ballot with scores that vary, so the room
+      // shows both outcomes.
+      if (/^You are the judge of a formal debate/.test(request.text) || /The debate is over. Now score it/.test(request.text)) {
         const score = () => 2 + Math.floor(Math.random() * 4), side = (): Record<string, number> => ({ evidence: score(), clash: score(), stance: score() }), proposition = side(), opposition = side();
         const sum = (s: Record<string, number>) => s.evidence! + s.clash! + s.stance!, winner = sum(proposition) >= sum(opposition) ? 'proposition' : 'opposition';
         const ballot = { scores: { proposition, opposition }, winner, reason: `The ${winner} answered the other side’s strongest point more directly and backed its case with more specific evidence. (simulated)`, notes: { proposition: 'Clear opening case. (simulated)', opposition: 'Sharp rebuttals. (simulated)' }, issues: [{ debater: winner === 'proposition' ? 'opposition' : 'proposition', claim: 'A figure quoted without a source', problem: 'Not supported by the evidence given. (simulated)' }] };

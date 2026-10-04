@@ -101,10 +101,13 @@ test('a formal debate: each agent is briefed in its 1:1 line, then the judge\'s 
   await page.getByRole('button',{name:'Start',exact:true}).click();
   const ballot=page.getByRole('region',{name:'Judge’s ballot'});
   await expect(ballot).toBeVisible({timeout:30_000});
-  await expect(ballot).toContainText('Winner:');await expect(ballot).toContainText('/15');
+  // G16: the debaters' own ballots beside the judge's, and the side most of them name.
+  await expect(ballot).toContainText(/Result: .* of 3 ballots/,{timeout:30_000});await expect(ballot).toContainText('/15');
+  await expect(ballot.getByRole('table',{name:'The three ballots'}).getByRole('row')).toHaveCount(4);await expect(ballot).toContainText('Judge’s pick:');
   await expect(ballot.getByRole('row',{name:/Factual accuracy & evidence/})).toBeVisible();
+  await expect(ballot).toContainText('Judged blind: the judge didn’t know which agent argued which side');
   const run=room.service.store.run(room.service.store.pair(room.pairId).lastRunId??'');
-  expect(run.judgment?.status).toBe('done');
+  expect(run.judgment?.status).toBe('done');expect(run.judgment?.blind).toEqual({redacted:0});
   expect(room.service.store.db.prepare("SELECT count(*) n FROM direct_messages WHERE sender='user' AND text LIKE '%formal debate%'").get()).toEqual({n:2});
 });
 
@@ -233,4 +236,33 @@ test('the Bug hunt builder checks the repository and each planted bug, then save
   await expect(builder.getByLabel('What counts as a bug',{exact:true})).toHaveValue(/^Code that does the wrong thing/);
   await expect(builder.getByLabel('What to hunt for',{exact:true})).not.toHaveValue(/## What counts/);
   await expect(builder.getByText('Planted decoy 7',{exact:true})).toBeVisible();await expect(builder.getByLabel('BUG lines that count',{exact:true})).toHaveValue('8');
+});
+
+test('Gamer: a game is set up beside its board, both players are briefed in their 1:1 lines, and the board follows the moves',async({page,room})=>{
+  test.setTimeout(60_000);
+  await page.goto(room.url);
+  await page.getByRole('radio',{name:'Gamer',exact:true}).click();
+  await expect(page.getByRole('button',{name:'Debate builder',exact:true})).toHaveCount(0);
+  // Gamer has agents of its own in the room (E9), set up as last verified: activate them (past the agent-limit warning;
+  // the fixture's debate and build pairs hold four agents).
+  await room.service.call('resources.configure',{maxActiveAgents:6,requestId:'gamer-limit'});
+  await page.getByRole('button',{name:'Activate both',exact:true}).click();await page.getByRole('alertdialog').getByRole('button',{name:'Activate anyway',exact:true}).click();
+  const setup=page.getByRole('region',{name:'Game setup',exact:true});
+  await setup.getByRole('radio',{name:'Checkers',exact:true}).click();await expect(page.getByRole('img',{name:'Checkers board',exact:true})).toBeVisible();
+  await setup.getByRole('radio',{name:'Claude Code',exact:true}).click();
+  await setup.getByRole('button',{name:'Start checkers',exact:true}).click();
+  await expect(page.getByRole('heading',{name:'Checkers: Claude Code (Black) vs Codex (White)',exact:true})).toBeVisible({timeout:20_000});
+  const moves=page.getByRole('region',{name:'Moves',exact:true});
+  await expect(moves.getByRole('listitem').nth(1)).toBeVisible({timeout:20_000});
+  await expect(page.getByRole('region',{name:'Players',exact:true}).getByRole('status')).toContainText(/to move · move \d+/);
+  await page.getByRole('button',{name:'Stop',exact:true}).click();
+  await expect(page.getByRole('region',{name:'Players',exact:true}).getByRole('status')).toContainText('Stopped at move');
+  const gamer=JSON.parse(String((room.service.store.db.prepare("SELECT data FROM pairs WHERE thread LIKE 'room-mode:%:game'").get() as {data:string}).data)) as {lastRunId:string};
+  const run=room.service.store.run(gamer.lastRunId);
+  expect(run.config.game).toMatchObject({kind:'checkers',first:'cli2'});expect(run.game).toBeUndefined();// no illegal answer, and stopped before a result
+  expect(room.service.store.db.prepare("SELECT count(*) n FROM direct_messages WHERE sender='user' AND text LIKE '%You are about to play Checkers%'").get()).toEqual({n:2});
+  // Stepping back through the game, then a new one set up in place of the moves.
+  await moves.getByRole('button',{name:'First position',exact:true}).click();await expect(moves.getByRole('button',{name:'Latest position',exact:true})).toBeEnabled();
+  await page.getByRole('button',{name:'New game',exact:true}).click();await expect(setup).toBeVisible();await expect(moves).toHaveCount(0);
+  await setup.getByRole('button',{name:'Back to this game',exact:true}).click();await expect(moves).toBeVisible();
 });

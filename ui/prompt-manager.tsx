@@ -19,7 +19,9 @@ function download(name: string, data: Blob) {
   const url = URL.createObjectURL(data), link = document.createElement('a'); link.href = url; link.download = name; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 // A Debate prompt always carries the debate template (G2): its own setup, or the default one.
-const blank = (mode: Mode, buildKind: 'build' | 'review', debate?: DebateSetup): Editor => ({ id: crypto.randomUUID(), revision: null, name: '', text: '', mode, buildKind, files: [], ...(mode === 'conversation' ? { debate: debate ?? defaultDebate() } : {}) });
+// Gamer mode has no prompts of its own (J3): there, a new prompt is for any mode.
+const promptMode = (mode: Mode): PromptMode => mode === 'game' ? 'all' : mode;
+const blank = (mode: Mode, buildKind: 'build' | 'review', debate?: DebateSetup): Editor => ({ id: crypto.randomUUID(), revision: null, name: '', text: '', mode: promptMode(mode), buildKind, files: [], ...(mode === 'conversation' ? { debate: debate ?? defaultDebate() } : {}) });
 const edit = (prompt: SavedPrompt): Editor => ({ id: prompt.id, revision: prompt.revision, name: prompt.name, text: prompt.text, mode: prompt.mode, buildKind: prompt.buildKind, files: prompt.files, ...(prompt.mode === 'conversation' ? { debate: prompt.debate ?? defaultDebate() } : {}), ...(prompt.check ? { check: prompt.check } : {}), ...(prompt.build ? { build: prompt.build } : {}) });
 const payload = ({ files, debate, check, build, ...data }: Editor): PromptSave => ({ ...data, ...(data.mode === 'build' && build && (build.project?.trim() || build.hunt) ? { build: { ...(build.project?.trim() ? { project: build.project.trim() } : {}), ...(build.hunt && data.buildKind === 'review' ? { hunt: build.hunt } : {}) } } : {}), files: files.map(({ id, name, attachmentId }) => ({ id, name, ...(attachmentId ? { attachmentId } : {}) })), ...(data.mode === 'conversation' && debate ? { debate } : {}), ...(data.mode === 'benchmark' && check?.answers.some(a => a.trim()) ? { check: { kind: check.kind, answers: check.answers.map(a => a.trim()).filter(Boolean) } } : {}) });
 const roundsValid = (editor: Editor) => editor.mode !== 'conversation' || !!editor.debate && Number.isInteger(editor.debate.rounds) && editor.debate.rounds >= 1 && editor.debate.rounds <= 100;
@@ -32,7 +34,7 @@ export function PromptManager({ mode, buildKind, draft, draftFiles, draftDebate,
   onUse: (prepared: PreparedPrompt, run: boolean) => Promise<void>; onClose: () => void;
 }) {
   const [items, setItems] = useState<PromptSummary[]>([]), [directory, setDirectory] = useState(''), [warnings, setWarnings] = useState<string[]>([]);
-  const [query, setQuery] = useState(''), [filter, setFilter] = useState<PromptMode | '*'>(mode);
+  const [query, setQuery] = useState(''), [filter, setFilter] = useState<PromptMode | '*'>(mode === 'game' ? '*' : mode);
   const [editor, setEditor] = useState<Editor>(() => blank(mode, buildKind)), [baseline, setBaseline] = useState('');
   const [busy, setBusy] = useState(''), [error, setError] = useState(''), [notice, setNotice] = useState('');
   const [preview, setPreview] = useState<{ name: string; kind: 'text' | 'image'; mediaType: string; data: string } | null>(null);

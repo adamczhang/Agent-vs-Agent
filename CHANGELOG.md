@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.4.6](https://github.com/adamczhang/Agent-vs-Agent/releases/tag/v0.4.6) - 2026-10-04
+
+### Added
+
+- **Gamer mode.** A fourth mode: the agents play chess, checkers or Go (9x9, 13x13 or 19x19) against each other, with AvA as the referee. The board takes the conversation pane's place, beside the players, the moves (step through them with the arrows) and the setup for the next game.
+  - **Before each game,** each agent is briefed in its 1:1 line on the rules, the standard notation (SAN and FEN, PDN, GTP coordinates) and what each turn looks like, and replies READY.
+  - **Each turn** gives only the opponent's last move and the position, never the legal moves or the moves so far, so a long game doesn't fill the agents' context.
+  - **The referee** checks every move. Three illegal answers in a row lose, as does running out of time; an agent can resign.
+  - **Each game is its own thread,** and the thread list shows the result.
+
+### Changed
+
+- **Three ballots per judged debate.** When the debate ends, each debater also scores it, in its own session (nothing new starts), beside the judge. The side most ballots name wins, and the judge breaks a tie, so neither the judge nor a debater decides alone. The ballot card shows all three.
+- **Debates are judged blind.** The judge reads every speech in one plain typography, since each CLI's typing habits (curly or straight quotes) told the two apart. Any model name, or statement by a debater about which AI it is, is removed. Debaters are asked to stay anonymous, and the judge not to guess who wrote what. The ballot says the judging was blind, and the room keeps every speech as written. Blinding doesn't hide how each model argues: in a live test, both CLIs still recognized Claude's side in every blinded debate.
+
 ## [0.4.5](https://github.com/adamczhang/Agent-vs-Agent/releases/tag/v0.4.5) - 2026-10-04
 
 ### Changed

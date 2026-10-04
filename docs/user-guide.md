@@ -85,6 +85,13 @@ Every debate runs like a competitive debate:
 - **An independent judge.** When the debate completes, a fresh session of the strongest model at its highest effort reads the speeches and scores each side.
   - **Who judges:** Claude Code (Opus at max effort) by default, Codex, or no judge, chosen in Options.
   - **What it sees:** the motion and the speeches, never the briefs or which CLI argued which side. It can search the web to check facts.
+  - **Judged blind:** the judge reads every speech in one plain typography (straight quotes, plain dashes, no Markdown emphasis), because each CLI's typing habits told the two apart. A debater's model name, or anything it says about being a particular AI system, is replaced with [name removed]. A system named in the third person stays, since it can be evidence. The debaters are asked to stay anonymous, and the judge not to guess who wrote what. The room keeps every speech as it was, and the ballot says the judging was blind.
+    - **Three ballots:** when a judged debate ends, each debater also scores it, in its own session through its 1:1 line, so nothing new starts. Each is told its ballot is one of three.
+      - **The result:** the side most ballots name wins. Two debaters that each vote for themselves cancel out and the judge decides; one that concedes gives the other side the win.
+      - **On the card:** all three ballots, then the judge's full scores.
+      - **Missing ballots:** a ballot that doesn't come (an agent that isn't active, a reply that isn't a ballot) is shown as missing, and the result counts the ballots there are.
+      - **Waiting:** the next debate waits for the debaters' ballots, as for any 1:1 reply. **Judge again** asks the judge only.
+    - **A limit:** blinding hides typing habits and names, not how each model argues. In a live test, Claude Code and Codex still told which debater was Claude in every blinded debate. A judge from a CLI that also debated may recognize its own side.
   - **The score:** 1 to 5 for each debater in three categories (factual accuracy and evidence; challenging the opposition's strongest points; a cohesive stance), plus a winner and the reasons.
   - **The ballot** appears below the debate, with any factual claims the judge questioned. **Judge this debate** or **Judge again** asks it on demand, for example after a debate you stopped.
 - **The library's built-in debates** are formal motions, each with briefs for both sides. Ten are on general topics:
@@ -131,7 +138,7 @@ Every debate runs like a competitive debate:
 ## The room
 
 A white, three-part window:
-- **Left:** the mode switch and a three-button tools row (Prompt library, the builder for the current mode, and Settings). A faint divider separates these controls from Search and the thread list below.
+- **Left:** the mode switch and a tools row (Prompt library, the builder for the current mode, and Settings; Gamer has no builder). A faint divider separates these controls from Search and the thread list below.
 - **Upper panes:** each agent's own screen (thinking, tool use and output as its CLI exposes them). Drag the divider between the two agents to change their widths.
 - **Lower pane:** the shared channel, with the text box along the bottom edge. Drag the horizontal line above it up or down to give more space to the CLI screens or the lower pane. This also works in Stats and Results. Double-click a divider (or focus it and press Enter) to reset that split; arrow keys adjust it, with Shift for larger steps. Both proportions are remembered in this browser.
 
@@ -175,10 +182,16 @@ Switched at the top of the sidebar. Each mode has its own thread and its own two
     - Codex switches to its own `workspace-write` sandbox for the build, and back after.
     - A command that mentions the working folder is still refused: its effects are not confined by that path. Builds that need execution must wait for execution isolation or use an explicitly chosen Bypass mode.
   - **Limits:** 30 minutes by default, set in Options.
+- **Gamer:** the agents play chess, checkers or Go against each other, with AvA as the referee. The board takes the conversation pane's place. Beside it, set up a game (the game, Go's board size, who moves first, the time per move) and press **Start**.
+  - **The brief:** before the game, each agent gets one message in its 1:1 line and replies READY. It holds its side, the rules, the standard notation (SAN and FEN in chess, PDN in checkers, GTP coordinates and a grid in Go), what each turn looks like, and how to answer.
+  - **Each turn** gives the agent to move only its opponent's last move and the position, never the legal moves or the moves so far, so each turn stays short however long the game runs. It answers `MOVE: <move>`.
+  - **The referee** checks every move against the one board it keeps. An illegal answer is refused with the reason and asked again; three in a row lose. A move past its time limit loses, and `MOVE: resign` resigns. The agents never see each other's replies, only the moves.
+  - **Each game is its own thread,** with fresh sessions. Step through a game with the arrows above its moves; **New game** sets up the next one.
+  - **For a fair game,** keep both agents' internet off. The brief asks them not to use the web, but the switch is what turns their web tools off.
 
 ### Threads
 
-A thread is one continuous session with both agents. In a plain conversation, send as many prompts as you like; the agents remember the whole thread. A Prompt run, a formal debate and a build each get a thread of their own, with the same agents in fresh sessions.
+A thread is one continuous session with both agents. In a plain conversation, send as many prompts as you like; the agents remember the whole thread. A Prompt run, a formal debate, a build and a game each get a thread of their own, with the same agents in fresh sessions.
 
 - **Close thread** (in the thread's header, or **⋯ → Close thread**) stops the conversation, closes both agents and any app server they left running, and keeps the thread in the list. Both agents keep their settings (CLI, model, effort, speed, permissions, internet): **Activate both** starts the next thread with one short check each.
 - **New thread** (the compose button at the top of the sidebar) opens a clean page in the current mode, with its own two agents to activate. Each thread with live agents runs two CLI processes on this computer. From the third, AvA asks before opening another and again before activating its agents; you can go ahead anyway.

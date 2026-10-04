@@ -262,7 +262,9 @@ The owner is going through the modes one at a time, Debate first. In their tests
 | G13 | Publish v0.4.3 (0.4.0 to 0.4.3) | user | done |
 | G14 | Install 0.4.3 in both hosts (the running 0.4.1 service steps aside for it once idle) | user | done |
 | G15 | Harder debates: technical motions where easy talking points lose, two of them closed book (internet off), judged as before | live | done |
-| G16 | Panel judging: both the strongest Claude Code and Codex models judge a debate, and the ballot combines them, so neither judge favors its own CLI | offline + live | todo |
+| G16 | Three ballots: each debater scores the debate in its own session (nothing new starts), beside the blind judge; the side most ballots name wins, and the judge breaks a tie | offline + live | done |
+| G17 | Blind judging: the judge reads the speeches in one typography, with no model names or self-identification; debaters are asked to stay anonymous; a live probe measures whether authorship still shows | offline + live | done |
+| G18 | Publish v0.4.6 (Gamer mode, blind judging and three ballots) and install it in both hosts | user | next |
 
 - **G1:** the agents still answer with stop_requested, but with rounds only a stop condition the operator wrote ends the debate early. An hour is the time limit's backstop, and the request limit is two per round plus the briefing.
 - **G2:** the template lives in `debate.json` beside `prompt.md`, so versions before it still read a debate prompt (as its topic alone). Internet is chosen per agent, so one agent can have the web and the other not. It's applied through each agent's own switch when the debate starts, because Codex and Grok Build restart to change it.
@@ -284,6 +286,29 @@ The owner is going through the modes one at a time, Debate first. In their tests
   - **The run:** briefs were answered READY in under half a minute, and speeches averaged about 530 words.
   - **Evidence:** pilot-evidence/stage-d/g7-formal-debate-judge-live.json.
 - **G14:** both hosts run 0.4.3. The idle 0.4.1 service stepped aside on the first 0.4.3 call (the handover's first real use), and the library holds the ten formal debates. Codex couldn't move its old 0.4.1 folder aside while its open sessions use it; it loads 0.4.3 and drops the old folder after a restart.
+- **G16 (owner, 2026-10-04: "each of the agents should review and then the judge should review and then that's the three scores"):** the owner preferred this to a neutral third judge or a panel of judges, so no new sessions start.
+  - **How it works:** when a judged debate ends, each debater scores it in its own session through its 1:1 line, beside the blind judge. The side most ballots name wins, and the judge breaks a tie.
+  - **Live (2026-10-04, 28 requests, the ceiling):** two hard debates of 3 rounds each, Claude Code (Opus 5.5) against Codex (6.1 Sol). Every ballot came back and parsed, and each debate took 8.6 minutes plus its ballots.
+    - **The replication crisis:** Claude Code argued for, Codex against, and Claude Code judged. The judge chose Claude Code 13 to 12. Claude Code's own ballot chose itself; Codex's conceded. The result: Claude Code, 3 of 3.
+    - **Nominal GDP targeting:** Codex argued for, Claude Code against, and Codex judged. The judge chose Codex 14 to 12. Codex's own ballot conceded, and Claude Code's chose itself, so the debaters outvoted the judge: Claude Code, 2 of 3.
+  - **Patterns to watch (two debates are too few to tell):**
+    - **The judges:** each picked its own CLI again. That's 5 of the 6 judged debates so far.
+    - **The debaters:** Claude Code voted for itself both times and Codex conceded both times, so the models' habits in judging themselves now tip results, in place of the judge's lone say.
+  - **Evidence:** `pilot-evidence/stage-d/g16-three-ballots-live.json`.
+- **G17 (owner, 2026-10-04: "does the judge actually know the model and CLI of each debater? They should be blinded"):**
+  - **What the judge knew:** not who was who.
+    - **Its prompt:** labels speeches Proposition and Opposition only.
+    - **Its session:** fresh, with no room history, and its only tools are web search.
+    - **The debaters:** each is told only its seat ("cli1"), never the other's CLI.
+    - **The speeches:** none of the 56 speeches so far named a CLI, vendor or model.
+  - **What told them apart:** the speeches reached the judge verbatim, and typography alone separated them perfectly. Per 1,000 words, Codex wrote 13.4 curly quotes and apostrophes and no straight ones; Claude Code wrote 11.1 straight ones and no curly ones. Semicolons were 6.3 against 0.3.
+  - **The change:** the judge now reads a blind copy, in one typography, with the debaters' model names and any first-person identity statements removed. Debaters are asked to stay anonymous, the judge not to guess, and the ballot records the blinding. The room keeps the original text.
+  - **The probe (live, 2026-10-04, 26 requests over two attempts, ceiling 32 each):** Claude Code and Codex were each asked which side Claude argued, in each judged debate, raw and blind. Each question had its own fresh sessions.
+    - **Result:** in the three debates that ran, both named Claude's side correctly every time: 6 of 6 raw and 6 of 6 blind, where guessing would get about half.
+    - **How they knew:** by argument habits, not typography. Claude admits what it can't verify ("from memory"), corrects itself openly and names sources in prose. Codex pastes links and writes methodical qualifications.
+    - **The fourth debate** didn't run: twice, OpenAI's service briefly answered Codex's readiness check with "model 'gpt-6.1-sol' is not enabled". It cleared within two minutes each time.
+  - **Finding:** blinding removes the cheap tells and any explicit identity, but authorship still shows. A judge whose CLI also debated can recognize its own side. Independence needs a judge that isn't one of the debaters (another CLI), or a panel that cancels self-preference (G16).
+  - **Evidence:** `pilot-evidence/stage-d/g17-authorship-probe-live.json` and `g17-authorship-probe-attempt1.json`.
 - **G15 (2026-10-04, about 38 requests, ceiling 40):** five hard debates, built in alongside the ten:
   - **The motions:** ranked-choice voting, the replication crisis, nominal GDP targeting, the strategic bombing of Germany (closed book) and living standards in the Industrial Revolution (closed book).
   - **What makes them hard:** each is technical, and its briefs ask for exact figures and the strongest counter-mechanisms. The closed-book ones tell both sides the judge will test every figure.
@@ -363,10 +388,11 @@ The owner moved on to Build mode: a dedicated mode for two kinds of task, app bu
 | H7 | Portable hunts: a hunt's repository can be a public git address; AvA fetches one commit (no history, only the slice's files) into a cache and copies from it; the built-in hunts use CLI-MODE on GitHub | offline + live | done |
 | H8 | Harder app builds: specifications with exact, checkable behavior that the strongest agents get partly wrong | live | done |
 | H9 | Publish v0.4.5 (Build: app builds and bug hunts, portable and expert hunts, and the harder prompts of every mode) and install it in both hosts | user | done |
-| H10 | Publish the CI fix for v0.4.5 (a test's line endings) as a snapshot on public main, without a new tag | user | next |
+| H10 | Publish the CI fix for v0.4.5 (a test's line endings) as a snapshot on public main, without a new tag | user | done |
 
 - **Harder prompts in every mode (owner, 2026-10-04: "add harder prompts in all modes"):** H6 (hunts), P9 (challenges), H8 (app builds) and G15 (debates), in that order, each calibrated live against Claude Code and Codex at their strongest.
 
+- **H10 (2026-10-04):** the test fix went to public main as a snapshot (dd9f9d2, on top of the v0.4.5 release commit 249468e), with no new tag. Windows CI passed. The v0.4.5 tag and release are unchanged.
 - **H9 (2026-10-04):**
   - **Published:** v0.4.5 on GitHub (public main 249468e, the tag and the release).
   - **Windows CI failed one test:** a hunt's copy from a local commit gets CRLF line endings where `core.autocrlf` is on, as on GitHub's runner, and the test expected LF. Only the test was wrong: copies from a local commit follow the user's git settings, as their checkouts do, and planting already handles CRLF. Copies from the web always keep stored line endings.
@@ -417,6 +443,43 @@ The owner moved on to Build mode: a dedicated mode for two kinds of task, app bu
   - **A limit:** the hunts name this machine's checkout, and that commit may exist only in its local history.
 - **H2:** no clone step. A hunt's copy is a working-tree (or one-commit) copy without git history, made by the worker at the start, so the history can't give a planted bug away, and each thread keeps its own copy. One BUG line finds at most one planted bug.
 - **H1:** a build used to hold its thread, so the next one needed Clear Session (and the agents briefly showed as closed). Now the next build renews both sessions beside the current ones, as P5 does for Prompt runs.
+
+## Phase J — Gamer mode (owner, 2026-10-04)
+
+A fourth, adversarial mode: the two agents play abstract strategy games against each other, starting with chess, checkers and Go. The owner asked for a game selector, a board in place of the conversation pane, and engines of our own, light and built for agent-against-agent play, checked against open-source references.
+
+| ID | Item | Gate | Status |
+| --- | --- | --- | --- |
+| J1 | Game engines: chess, checkers (English draughts) and Go (9x9, 13x13, 19x19), each small and complete, with moves in and out as players write them | offline | done |
+| J2 | The referee: a Gamer run in the controller. A brief before each game; each turn gives the position in standard notation and the opponent's last move, never the legal moves; its MOVE line is checked before it counts; an illegal move is asked again, up to three times; a time limit per move; resignation; the result | offline | done |
+| J3 | The Gamer tab: the fourth mode on the slider, a game selector, the board in place of the conversation, the move list and replay, and the result | offline | done |
+| J4 | Live: a game of each with Claude Code and Codex | live | done |
+| J5 | The README: a Gamer section with a live screenshot | offline | done |
+
+- **J4 (2026-10-04, 237 requests of a 612 ceiling):** one game of each at once, Claude Code (Opus 5.5) against Codex (6.1 Sol), both at high effort under Ask with internet off, as Quick activate sets them up.
+  - **Chess** (Claude Code White): Codex won in 54 moves, when White resigned against a pawn about to queen. 26 minutes.
+  - **Checkers** (Codex Black, first): a draw by threefold repetition after 36 moves each. 28 minutes.
+  - **Go 9x9** (Claude Code Black): Claude Code won when White resigned at move 43. 13 minutes.
+  - **No illegal answer** in 223 moves, without a list of legal moves. Every brief was answered READY within 7 seconds.
+  - **Time:** on average Claude Code took 8 to 22 seconds a move and Codex 20 to 26; the longest took 88. The referee's own check took 9 ms a turn in chess at move 59 and under 1 ms in checkers and Go, so the time is all the agents' thinking. Lower effort or a faster model is what would speed a game up.
+  - **Context:** turns stayed the same size (124 to 157 characters in chess, 130 to 156 in checkers, 245 to 252 in Go). Each agent's context grew only by its own replies and reasoning: in chess, Claude Code's from 35k to 68k tokens over 54 moves, Codex's from 22k to 45k.
+- **J3 (2026-10-04):** the Gamer tab.
+  - **The view:** in Gamer mode the board (SVG: slate squares for chess and checkers, wood for Go, the last move in the room's blue) takes the conversation pane's place. Beside it: the players (side, illegal answers, who is thinking, the winner), the moves with replay, and the setup (the game, Go's board size, who moves first, the time per move). A finished game offers **New game** in place of its moves.
+  - **Elsewhere:** the slider has four modes, the sidebar has no builder in Gamer, the thread list counts games and shows the result, and the header shows the move.
+  - **The simulator** plays a random legal move in each turn's position, read back with each engine's `fromPosition`, and answers the brief READY.
+- **J2 (2026-10-04):** a Gamer run (mode `game`) uses the same turn engine as a debate. Whoever moves first opens, then the agents alternate.
+  - **The brief (owner, 2026-10-04):** before the game, each agent gets the rules, the standard notation, a sample turn, the answer form and the limits through its 1:1 line, and replies READY. A failed brief refuses the start.
+  - **The prompt:** each turn is three lines: the move number, the side and the opponent's last move; the position in standard notation (FEN in chess, PDN FEN in checkers, a grid with the side to play in Go); and the answer form. No move history and no legal moves (owner, 2026-10-04): an agent must know the rules, and a turn doesn't grow as the game goes on. The agents never see each other's replies, only the moves.
+  - **The referee:** it judges the agent's last MOVE line. A legal move is recorded as the game writes it (Qh4#, 22x15x8, D4), so a game's moves are its committed messages and replay to its position.
+  - **Illegal answers:** an illegal answer, or none, is asked again with the reason, through the same repair turn a debate uses. Three in a row lose.
+  - **Losing otherwise:** a move past its time limit (5 minutes by default) loses on time, and MOVE: resign resigns.
+  - **The end:** the result (winner or draw, the reason, and Go's score) is saved on the run, which ends as game_over. The thread list shows it.
+  - **Threads:** each game is its own thread, with fresh sessions.
+- **J1 (2026-10-04):** `src/games/`, with no dependencies, shared by the service and the room.
+  - **Chess:** every rule a move must pass (castling, en passant, promotion, check, mate, stalemate, threefold repetition, the fifty-move rule, insufficient material), with moves in standard algebraic notation (UCI accepted). It matches the standard perft counts on five positions (the start, Kiwipete and positions 3 to 5), as open-source generators such as chess.js are checked.
+  - **Checkers:** English draughts with the standard 1-32 numbering, compulsory and chained captures, crowning that ends a move, and the 40-move and repetition draws. It matches the published perft counts from the start (7, 49, 302, 1469, 7361).
+  - **Go:** no-suicide Tromp-Taylor rules, positional superko, two passes to end, area scoring with 7.5 komi.
+  - **References:** chess.js (BSD-2) and chessboard.js (MIT) for chess; draughtsboard for checkers; the Tromp-Taylor rules for Go. Nothing is copied: each engine is our own, a few hundred lines.
 
 ## Phase D — reach (later; versions assigned when scope is accepted)
 

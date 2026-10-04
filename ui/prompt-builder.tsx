@@ -14,7 +14,7 @@ import type { PreparedPrompt } from './prompt-manager.js';
 // copy, what to leave out and the bugs to plant. The grey hints in each box say what a good entry looks like and
 // disappear as you type. Every builder saves to the prompt library and can open a saved prompt of its mode to edit.
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
-const TITLES: Record<Mode, string> = { conversation: 'Debate builder', benchmark: 'Prompt builder', build: 'Build builder' };
+const TITLES: Record<Mode, string> = { conversation: 'Debate builder', benchmark: 'Prompt builder', build: 'Build builder', game: 'Prompt builder' };
 interface Side { brief: string; internet: boolean }
 interface DebateForm { name: string; motion: string; definitions: string; agent1: Stance; sides: Record<Stance, Side>; rounds: number; speech: number }
 // Build (H3): an app build, or a bug hunt in a repository, scored when it plants bugs.

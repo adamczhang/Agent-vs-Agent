@@ -1,3 +1,4 @@
+import type { GameKind } from './games/engine.js';
 export const SEATS = ['cli1', 'cli2'] as const;
 export type Seat = typeof SEATS[number];
 // vercel: the Vercel AI Gateway (hundreds of models from many makers), driven by the Codex agent; see src/gateway.ts.
@@ -37,8 +38,11 @@ export interface AttachmentRef { id: string; name: string; mediaType: string; si
 export interface RunConfig {
   // conversation (shown as Debate): the agents talk to each other. benchmark: both get the same prompt at the same
   // moment, each answers once in plain text, and the run ends. build: like a benchmark, but each agent works in its own
-  // copy of a project and may read, edit and run commands there (absent on older runs: conversation).
-  mode?: 'conversation' | 'benchmark' | 'build';
+  // copy of a project and may read, edit and run commands there (absent on older runs: conversation). game (shown as
+  // Gamer, J2): the agents play a board game against each other, move by move, with AvA as the referee.
+  mode?: 'conversation' | 'benchmark' | 'build' | 'game';
+  // Gamer runs: the game and its setup.
+  game?: GameSetup;
   // Build runs: the task kind (review is shown as Bug hunt), the project it started from, and the folder (inside each
   // agent's workspace) that holds that agent's own copy. hunt: a scored bug hunt's setup (H2). A project on the web (H7)
   // is its address, and commit the one its copies were made from.
@@ -82,7 +86,14 @@ export interface Run {
   result?: PromptResult;
   // A scored bug hunt's result (H2).
   hunt?: HuntResult;
+  // A Gamer run (J2): each agent's illegal answers so far, and the result once the game is over.
+  game?: GameRecord;
 }
+// A game's setup (J2): which game, the board size (Go), which agent moves first (White in chess, Black in checkers and Go),
+// the time for each move, and how many illegal answers in a row an agent may give before it loses.
+export interface GameSetup { kind: GameKind; size?: number; first: Seat; moveMs: number; maxIllegal: number }
+export interface GameRecord { illegal: Record<Seat, number>; result?: { winner?: Seat; reason: string; score?: string } }
+export const GAME_DEFAULTS = { moveMs: 300_000, maxIllegal: 3 };
 // A bug planted in every copy of a scored bug hunt (H2): an exact piece of the original code (find), what it becomes
 // (replace), and what's wrong with it. line and endLine: where it ended up, worked out when the copies are made.
 // A decoy (H6) is planted the same way but keeps the code correct while making it look wrong: a BUG line on it counts
@@ -124,8 +135,14 @@ export interface Judgment {
   notes?: Partial<Record<Seat, string>>;
   // Factual claims the judge found wrong or unsupported.
   issues?: Array<{ seat: Seat; claim: string; problem: string }>;
+  // Judged blind (G17): the speeches in one typography, with this many identifying names removed.
+  blind?: { redacted: number };
+  // Three ballots (G16): each debater's own scoring of the debate, beside the judge's. The side most ballots name wins.
+  panel?: Partial<Record<Seat, PanelBallot>>;
   error?: string;
 }
+// A debater's own ballot (G16), asked through its 1:1 line once the debate is over.
+export interface PanelBallot { status: 'reviewing' | 'done' | 'failed'; scores?: Record<Seat, Record<JudgeCategory, number>>; winner?: Seat; reason?: string; error?: string }
 export interface RoomMessage {
   id: string; seq: number; runId: string; sender: Seat | 'user'; text: string;
   state: 'queued' | 'admitted' | 'committed' | 'not_delivered';
@@ -171,6 +188,7 @@ export const MAX_ROUNDS = 100;
 // A formal debate's default time per speech (owner, 2026-10-03); 0 means no limit.
 export const DEFAULT_SPEECH_MINUTES = 2;
 export function conversationConfig(topic: string, overrides: Partial<RunConfig> = {}): RunConfig {
+  if (overrides.mode === 'game') return gameConfig(topic, overrides);
   const benchmark = overrides.mode === 'benchmark' || overrides.mode === 'build';
   // A benchmark prompt is sent as written, so "…for 15 minutes" in it is part of the task, not a time limit.
   const duration = benchmark ? null : topic.match(/\bfor\s+(\d+(?:\.\d+)?)\s*(minutes?|mins?|m|seconds?|secs?|s)\s*[.!]?$/i);
@@ -184,6 +202,7 @@ export function conversationConfig(topic: string, overrides: Partial<RunConfig> 
     maxRequests: 20, perTurnMs: benchmark ? 3_600_000 : 300_000, paceMs: benchmark ? 0 : 5000, lead: 'cli1', opening: benchmark ? 'both' : 'cli1', ...overrides,
   };
   if (benchmark) { delete config.stances; delete config.judge; delete config.speechMs; }
+  delete config.game;
   // A formal debate (sides) always runs by its rounds: its format (opening, rebuttals, closing) and its judging need every
   // speech, so a time in the topic or the options doesn't end it (Q3).
   if (config.stances) config.completion = 'rounds';
@@ -224,4 +243,18 @@ export function conversationConfig(topic: string, overrides: Partial<RunConfig> 
     throw new AvAError('INVALID_CONFIG', 'Run limits are outside supported bounds.');
   }
   return config;
+}
+// A Gamer run (J2): the game sets the order (whoever moves first opens, then they alternate) and the end (the referee's
+// result). The time limit is a backstop of eight hours; each move has its own limit, and the turn's backstop leaves room
+// for it to act first. Requests cover the longest game and an illegal answer for every move.
+function gameConfig(topic: string, overrides: Partial<RunConfig>): RunConfig {
+  const game = overrides.game;
+  if (!game || !['chess', 'checkers', 'go'].includes(game.kind)) throw new AvAError('INVALID_CONFIG', 'Choose a game: chess, checkers or Go.');
+  if (game.kind === 'go' ? ![9, 13, 19].includes(game.size ?? 9) : game.size !== undefined) throw new AvAError('INVALID_CONFIG', 'Go is played on 9x9, 13x13 or 19x19; other games have one board.');
+  if (!Number.isFinite(game.moveMs) || game.moveMs < 30_000 || game.moveMs > 1_800_000) throw new AvAError('INVALID_CONFIG', 'A move time limit must be from 30 seconds to 30 minutes.');
+  if (!Number.isInteger(game.maxIllegal) || game.maxIllegal < 1 || game.maxIllegal > 10) throw new AvAError('INVALID_CONFIG', 'Allow 1 to 10 illegal answers before a game is lost.');
+  if (!topic.trim() || topic.length > 16000) throw new AvAError('INVALID_CONFIG', 'Enter a topic of 1–16000 characters.');
+  return { topic, instructions: { cli1: '', cli2: '' }, stopWhen: { cli1: '', cli2: '' }, completion: 'duration', durationMs: 28_800_000, maxRequests: 4000,
+    perTurnMs: Math.min(3_600_000, game.moveMs + 60_000), paceMs: overrides.paceMs ?? 1000, mode: 'game', game: { ...game, ...(game.kind === 'go' ? { size: game.size ?? 9 } : {}) },
+    opening: game.first, lead: other(game.first) };
 }

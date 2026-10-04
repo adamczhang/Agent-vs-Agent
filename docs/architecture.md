@@ -1,6 +1,6 @@
 # Architecture
 
-How Agent vs Agent v0.4.5 is built. Verified scope is in the [v0.4.5 release notes](release-v0.4.5.md) (and the [v0.3.1 notes](release-v0.3.1.md) for benchmarks), and the v0.2.0 baseline's in its [validation record](validation.md); usage is in the [user guide](user-guide.md).
+How Agent vs Agent v0.4.6 is built. Verified scope is in the [v0.4.6 release notes](release-v0.4.6.md) (and the [v0.3.1 notes](release-v0.3.1.md) for benchmarks), and the v0.2.0 baseline's in its [validation record](validation.md); usage is in the [user guide](user-guide.md).
 
 The executable implementation is in `src/`, the browser interface in `ui/`, and the Codex plugin in `.codex-plugin/`, `hooks/`, and `skills/`. The Claude Code wrapper is in `wrappers/claude/`. The agents are reached through [ACPX](https://www.npmjs.com/package/acpx) and the Agent Client Protocol (ACP).
 
@@ -275,6 +275,17 @@ A debate (Debate mode) is a formal debate (G6–G8):
 - **The judge.** When a completed run ends, `engine.ended` starts it. It is a fresh session in its own pair (`debate-judge-…`): outside the agent limit (it isn't counted against anyone else's either), not remembered by Quick activate, internet on, Ask permissions. Once it has scored, its pair and folders are deleted, since its saved session state holds the whole debate; Delete thread and Clear history drop any judge pairs left from their debates.
   - **Its settings:** the CLI's strongest model (`quick.ts strongestModel`) at its highest effort (`maxEffort`: "max" where offered).
   - **Its input:** the motion and the speeches labeled Proposition and Opposition (`judgePrompt`), never the briefs, 1:1 lines or identities.
+  - **Blind (G17):** `blindDebate` gives the judge a copy of the speeches with one typography and no names.
+    - **Typography:** straight quotes and apostrophes, plain dashes and ellipses, no Markdown emphasis or headings.
+    - **Names:** the debaters' exact model names and IDs (from the run's participants; only names with a digit or hyphen), and first-person identity statements, become `[name removed]`. Third-person mentions stay, since they can be evidence.
+    - **What the agents are told:** the brief and every speech prompt ask debaters to stay anonymous, and the judge is told not to guess authorship.
+    - **The ballot:** it records `blind: {redacted}`. The room's messages are never changed.
+    - **Why:** before this, the two CLIs' typography alone told them apart in every debate: one used curly quotes, the other straight ones.
+  - **Three ballots (G16):** when a judged debate completes, `startReviews` asks each debater for a ballot (`reviewPrompt`) through `sendDirect`, its 1:1 line. The reply instruction is replaced so the agent answers with the JSON ballot, not plain text.
+    - **Where the ballots go:** each is parsed like the judge's and saved in `judgment.panel[seat]` as reviewing, then done or failed. The judge's saves keep the panel.
+    - **The result:** `panelResult` is the side most ballots name, the judge's on a tie, once the judge is done and no ballot is still coming.
+    - **The thread list:** it shows the result and how many ballots named it.
+    - **Waiting and restarts:** a new start waits for the 1:1 replies (`assertNoDirect`). Startup marks any ballot still reviewing as failed.
   - **Its ballot:** `parseBallot` maps the JSON back to seats. The ballot is saved on the run (`Run.judgment`); one that was judging when the service stopped is marked failed at the next start.
   - **On demand:** `debate.judge` judges again, or judges a stopped debate.
 - **Starters.** Starter set 3 adds the ten formal motions and retires earlier debate starters still exactly as shipped, matched by fingerprint (`RETIRED_STARTERS`).
@@ -341,6 +352,26 @@ Cursor's agent comes from ACPX's registry (`cursor-agent acp`), with three adjus
 - **Settings:** the agent reads `CURSOR_CONFIG_DIR`. AvA points it at `<data>/providers/cursor`, whose `cli-config.json` AvA keeps at an empty allow list (nothing runs without asking AvA), web searches set to ask, and no commit attribution. The agent's own saved choices there are kept, its ACP sessions are stored there too, and its sign-in, kept elsewhere, still applies.
 - **Plan refusal:** Cursor answers a request its plan doesn't cover with "Upgrade your plan to continue". An activation that gets that answer fails with that reason.
 
+## Gamer mode
+
+The agents play chess, checkers or Go, with AvA as the referee (Phase J).
+
+- **Engines (`src/games/`).** One file per game, no dependencies, shared by the service and the room. Each accepts a move as written in its standard notation, refuses an illegal one with the reason, and says when the game is over. Each writes its position in standard notation (`position`) and reads it back (`fromPosition`). Chess and checkers match published perft counts.
+- **The run.** `RunConfig.mode` is `game`. `RunConfig.game` holds the game, Go's board size, who moves first, the time per move and the illegal-answer limit (3). Each game is its own thread with fresh sessions, and a room message during a game is refused.
+- **The brief.** Before the run starts, `run.start` briefs each player through its 1:1 line (`referee.ts gameBrief`): its side, the rules, the notation, a sample turn, the answer form and the limits.
+  - **Offline:** the message says the web is off, whatever the agent's switch.
+  - **The start:** the game starts once both have answered. A failed brief refuses the start, and the next one renews both sessions.
+- **Each turn** (`movePrompt`) is three lines: the move number, the side and the opponent's last move; the position (FEN, PDN FEN, or a Go grid with the side to play and the captures); and `Reply with: MOVE: <move>`.
+  - **No history, no legal moves (owner, 2026-10-04):** a turn's size doesn't grow with the game, so an agent's context grows only by its turns and its one-line replies.
+- **The referee** (`controller.ts move`) judges the agent's last MOVE line against the position replayed from the committed moves.
+  - **A legal move** is committed as the game writes it (Qh4#, 22x15x8, D4), so the room's messages are the game record.
+  - **An illegal answer** is refused with the reason through a repair turn; three in a row lose.
+  - **Other losses:** a move past its time limit, and `MOVE: resign`.
+  - **The end:** the result (`Run.game`) ends the run as `game_over`.
+- **The room** (`ui/game-view.tsx`, `ui/game-boards.tsx`) replays the committed moves with the same engines to draw the board. The players, the moves with replay, and the setup sit beside it.
+- **The simulator** plays a random legal move in each turn's position.
+- **A limit:** an agent whose internet switch is on still has its web tools. The brief asks it not to use them.
+
 ## Known limits
 
 The Resources panel enforces a persisted active-agent admission limit and reports sampled process memory (a PowerShell process listing at most every 15 s, while the panel polls every 5 s). Stop all cancels work, closes owned sessions and checks the process ledger while preserving history. Agents run in Windows job objects (see Process containment); production controls set no OS memory or filesystem limit yet.
@@ -356,7 +387,7 @@ Known limits in v0.3.1. Planned work is tracked in the [roadmap](roadmap.md).
 
 ## Future games
 
-Keep the current native provider adapters. Add a scenario boundary before a proposed reply is committed to the room. A separate CAMEL Python worker can receive opaque seat IDs and typed actions and return public events, private observations, verdicts, and a terminal result. The controller must persist and validate that decision before routing anything to the peer. Do not forward CAMEL's raw state or let the two CLIs determine authoritative scores. The pinned reference is CAMEL 0.2.91a7; a production worker dependency still needs its own compatibility pilot.
+Gamer mode's referee is such a boundary for board games, in process. For other scenarios: keep the current native provider adapters. Add a scenario boundary before a proposed reply is committed to the room. A separate CAMEL Python worker can receive opaque seat IDs and typed actions and return public events, private observations, verdicts, and a terminal result. The controller must persist and validate that decision before routing anything to the peer. Do not forward CAMEL's raw state or let the two CLIs determine authoritative scores. The pinned reference is CAMEL 0.2.91a7; a production worker dependency still needs its own compatibility pilot.
 
 ## Release scope
 

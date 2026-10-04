@@ -2,62 +2,112 @@
 
 [![Windows CI](https://github.com/adamczhang/Agent-vs-Agent/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/adamczhang/Agent-vs-Agent/actions/workflows/ci.yml) [![Release](https://img.shields.io/github/v/release/adamczhang/Agent-vs-Agent)](https://github.com/adamczhang/Agent-vs-Agent/releases/latest) [![MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-## Welcome to Agent vs Agent
+**Agent vs Agent (AvA)** puts two AI coding agents side by side in one room on your own machine, gives them the same task, and shows you how they differ. Each agent is its real CLI (Codex, Claude Code, Grok Build or Antigravity, or any model through the Vercel AI Gateway) running with your own sign-in, so what you compare is what each agent actually does.
 
-**Agent vs Agent (AvA)** is a platform for testing AI coding agents one on one. It puts two agents side by side in a single room on your own machine, gives them the same task, and shows you how they differ: in their answers, in a debate with each other, in the apps they build, and in their scores on repeatable benchmarks. Each agent runs as its real CLI with your own sign-in, and no third model relays or rewrites their turns, so what you compare is what each agent actually does.
+AvA installs as a plugin for Codex or Claude Code. Type `/ava start` in either one and the room opens in your browser.
 
-AvA installs as a plugin for Codex or Claude Code. Type `/ava start` in either one and the room opens in your browser. Either host can run any pairing, including the same agent twice with different models or settings. Choose each agent's model from its CLI's own lineup, or from 250+ more through the Vercel AI Gateway.
+[Modes](#four-modes) · [How a room works](#how-a-room-works) · [Quick install](#quick-install) · [Supported agents](#supported-agents) · [Permissions and data](#permissions-and-data) · [Docs](#documentation-and-development)
 
-| **Host** | Plugin for Codex or Claude Code |
-| --- | --- |
-| **Agents** | Codex, Claude Code, Grok Build or Antigravity CLI agents, with any model |
+## Four modes
 
-![Full desktop layout of AvA showing two Grok Build agents debating how to keep a Mars greenhouse running without internet](docs/images/room.png)
+### Prompt: the same question, answered independently
 
-*Recorded live test: two Grok Build agents discuss a Mars greenhouse, then respond to an added offline-operation constraint.*
+![Prompt mode: Claude Code and Codex solve the same hard challenge; the result card shows both right answers, the times and the winner](docs/images/mode-prompt.png)
 
-**Highlights**
+*A hard challenge, live: both agents worked out the same expected value. Claude Code answered in 35 seconds, Codex in 1 minute 16, both right.*
 
-- **Prompt:** both agents answer the same prompt and attachments at the same moment, independently. Compare their answers, timing and speed. Challenges and races come with a hidden answer key: AvA checks each agent's final answer and names the winner, the right answer or the faster one. Each prompt runs in a clean thread of its own, with the same agents.
-- **Debate:** a formal debate. Each agent argues an assigned side after a private brief, in timed speeches over a set number of rounds. An independent judge (the strongest Claude Code or Codex model at max effort) then scores both on evidence, clash and a cohesive case, and names a winner. A Debate builder and fifteen built-in motions (five of them hard) help you set one up.
-- **Build:** app builds and bug hunts. Both agents build the same app, each in its own folder, and you open the two side by side and compare their changes. Or both hunt for bugs in their own copies of a repository, a local one or one on GitHub. A scored hunt plants bugs (and decoys) first and shows which ones each agent found.
-- **Benchmarks:** validated tasks with deterministic checks, so every attempt is saved with an explicit pass or fail. Repeat runs, a scoreboard, exports, and shareable HTML or Markdown reports, with 20 starter tasks. Add optional rubric scores from a judge agent, or import Exercism and JSON Lines tasks.
-- **Prompt library:** saved Markdown prompts and reference files in every mode, with 45 editable built-ins (fifteen formal debates, fifteen challenges and races, nine app builds and six bug hunts) and a builder for each mode.
-- **In the room:** private 1:1 lines to brief each agent on its own, a context ring per agent, searchable history, replay and usage statistics.
-- **Control:** permissions and internet access per agent, and a Settings view of running agents and their memory, with an activation limit and Stop all. Everything runs locally, behind a random token.
+Both agents get the same prompt, with any attached files, at the same moment, and each answers on its own.
 
-The [user guide](docs/user-guide.md) and [benchmark guide](docs/benchmarks.md) cover each feature in detail.
+- **Challenges and races:** a prompt can carry an answer key the agents never see. AvA checks each agent's final answer and shows a result card: each answer, right or wrong, the time, and the winner (the right answer, or the faster of two).
+- **Fifteen built-in prompts:** six challenges, four races and five hard challenges, every answer computed by program. The Prompt builder sets up your own.
+- **Timing and speed:** every answer shows how long it took; Stats has the details.
+
+**Use it to:** compare two models' reasoning and speed on questions with one right answer; try one CLI with two models or two effort levels; check a model on your own questions before you rely on it.
+
+### Debate: two agents argue, then three ballots decide
+
+![Debate mode: Claude Code and Codex debate banning smartphones in schools; above, their closing speeches; below, the ballots card with the judge's ballot and each debater's own](docs/images/mode-debate.png)
+
+*A two-round formal debate, live, on banning smartphones in schools. Above: the closing speeches. Below: three ballots. The blind judge and both debaters, Claude Code included, named the Opposition (Codex).*
+
+The agents talk to each other: freely, each primed with its own private instructions, or as a formal debate.
+
+- **Formal debates:** each agent argues an assigned side after a private brief, in timed speeches (opening, rebuttals, closing) over a set number of rounds. A speech that runs over its time is forfeited.
+- **Judged blind:** at the end, an independent judge (the strongest Claude Code or Codex model at max effort) scores each side on evidence, clash and a cohesive case. It reads the speeches without knowing who wrote them, and lists the claims it questioned.
+- **Three ballots:** each debater also scores the debate. The side most ballots name wins, so no single model decides.
+- **Fifteen built-in motions,** five of them hard (two argued without the internet), and a Debate builder for your own.
+
+**Use it to:** test an argument or a decision from both sides; compare how well each model uses evidence and answers the other side; run role plays such as a negotiation or an interview, briefing each agent privately.
+
+### Build: app builds and bug hunts
+
+![Build mode: Claude Code and Codex each built the same Pomodoro timer; the Results panel shows both apps side by side](docs/images/mode-build.png)
+
+*An app build, live: both agents built the same Pomodoro timer from one spec, shown side by side in Results.*
+
+Each agent works in its own copy of a project (or an empty folder), so the two never touch each other's work or your original.
+
+- **App build:** both build the same app from the same spec. Open the two apps side by side, or compare what each changed, file by file.
+- **Bug hunt:** both hunt for bugs in their own copies of a repository, a local folder or one on GitHub. A scored hunt plants bugs (and decoys) in both copies first; each agent reports what it finds, and a result card shows which planted bugs each found, and how fast.
+- **Fifteen built-in Build prompts:** nine app builds (three hard ones, such as chess with every rule, that you can check from the browser's console), five scored bug hunts of increasing difficulty in a real open-source plugin, and one hunt for any repository you choose. The Build builder sets up your own, and checks a hunt's repository and planted bugs before you save.
+
+**Use it to:** see which agent builds the better app from the same spec; measure bug-finding on your own code against bugs you know are there; compare two agents' reviews of the same project.
+
+### Gamer: chess, checkers and Go, refereed
+
+![Gamer mode: Claude Code (White) and Codex (Black) play chess; the board fills the lower pane, beside the players and the moves, while Codex thinks about its reply](docs/images/mode-gamer.png)
+
+*Chess, live: Claude Code (White) and Codex (Black) at move 11 of a Ruy Lopez, with Codex thinking. Codex won at move 54, when Claude Code resigned against a pawn about to queen. In the same session, checkers was drawn by repetition and Claude Code won at 9x9 Go; neither agent made an illegal move.*
+
+The agents play a board game against each other, and AvA is the referee: it keeps the one board and checks every move in code before it counts.
+
+- **Three games:** chess, checkers (English draughts) and Go on a 9x9, 13x13 or 19x19 board. The engines are AvA's own; chess and checkers match published move counts.
+- **Fair and lean:** before the game, each agent is briefed in its 1:1 line on the rules, the standard notation (SAN and FEN, PDN, GTP coordinates) and what each turn looks like. Each turn then gives it only the opponent's last move and the position, never the legal moves or the moves so far, so a long game doesn't fill its context. Neither sees the other's replies, only its moves.
+- **Strict:** an illegal move is refused with the reason, and three in a row lose, as does running past the time for a move. An agent can resign.
+- **Replay:** step through any game move by move; the thread list keeps each result.
+
+**Use it to:** see which model plays better under the same rules; check whether a model can keep track of a game it only reads as text; compare two models or effort levels at a task that has a clear winner.
+
+### Benchmarks
+
+For repeatable measurement, Benchmarks runs validated tasks with deterministic checks, so every attempt is saved with an explicit pass or fail: repeat runs, a scoreboard, exports, and shareable HTML or Markdown reports, with 20 starter tasks. Add optional rubric scores from a judge agent, or import Exercism and JSON Lines tasks. A task's checks run under a guard against accidents, not a sandbox, so validate only tasks you trust; imported ones run in Docker. See the [benchmark guide](docs/benchmarks.md).
+
+## How a room works
+
+- **Two agents, two sessions.** Each agent runs as its own CLI process with its own session. AvA sits in the middle: it sends both the same prompt at the same moment, and passes each speech on to the other as it was written, without rewriting it.
+- **One thread per run.** Every prompt, debate, build and game is its own thread, with the same agents in fresh sessions. History keeps each thread with its result; search it, replay it, or see its usage statistics.
+- **Private 1:1 lines** let you brief each agent on its own, out of the other's sight.
+- **A prompt library** holds your saved prompts and reference files for every mode, with 45 editable built-ins and a builder for Prompt, Debate and Build.
+- **Settings** shows the running agents and their memory, with an activation limit and Stop all.
+
+The [user guide](docs/user-guide.md) covers every feature in detail.
 
 ## Quick install
 
 Requires **Windows**, **Node.js 24+**, **Git**, and **Codex or Claude Code** as the plugin host. Install and sign in to the CLI agents you want to use; see [supported agents](#supported-agents).
 
 ```powershell
-git clone --branch v0.4.5 --depth 1 https://github.com/adamczhang/Agent-vs-Agent.git
+git clone --branch v0.4.6 --depth 1 https://github.com/adamczhang/Agent-vs-Agent.git
 cd Agent-vs-Agent
 npm ci
 npm run package
 ```
 
-Install the built plugin into either host, or both:
-
-**Codex host**
+Then install the built plugin into either host, or both. In **Codex**:
 
 ```powershell
 codex plugin marketplace add .\release\marketplace
 codex plugin add agent-vs-agent@ava
 ```
 
-In Codex's **Plugins** settings, review and trust AvA's prompt hook to enable typed `/ava` commands.
-
-**Claude Code host**
+Then trust AvA's prompt hook in Codex's **Plugins** settings, to enable typed `/ava` commands. In **Claude Code**:
 
 ```powershell
 claude plugin marketplace add .\release\marketplace
 claude plugin install agent-vs-agent@ava
 ```
 
-Type **`/ava start`** in your host, click **Activate** above each agent pane, choose the agents and models, and send a prompt. Each activation makes one short model request. Use **`/ava doctor`** to check setup without model requests.
+Type **`/ava start`** in your host and choose **Quick activate both** (each CLI's strongest model at high effort), or **Activate** above each agent to pick its CLI, model and settings. Each activation sends one short request to check access. **`/ava doctor`** checks your setup without any model requests.
 
 ## Supported agents
 
@@ -69,15 +119,14 @@ Type **`/ava start`** in your host, click **Activate** above each agent pane, ch
 | Antigravity | CLI installed and signed in |
 | Vercel AI Gateway | Codex CLI **0.159.1+** and an AI Gateway API key |
 
-The four CLIs use their own subscription logins. For the Gateway, use **Gateway key** in the agent menu, `npm run gateway-key -- set`, or `AI_GATEWAY_API_KEY`. Available models and settings come from each provider.
+The CLIs use their own subscription sign-ins; any pairing works, including the same CLI twice with different models or settings. The Gateway adds 250+ models: set its key with **Gateway key** in the agent menu, `npm run gateway-key -- set`, or `AI_GATEWAY_API_KEY`.
 
 ## Permissions and data
 
-- **Ask** is the default. Build permits recognized file operations inside each agent's workspace; shell commands and process control are refused. **Bypass** trusts tool execution with your account's permissions. Provider-side permissions remain a separate boundary; AvA is not an operating-system sandbox.
-- **Internet** is off by default. Supported web tools follow the switch; it is not a network firewall for unrestricted commands.
-- **Benchmark verifiers run under a guard.** A Build task's hidden tests, and the code they test, may read only that attempt's files. They can't start processes or use the network. It's a guard against accidents, not a sandbox, so validate only task bundles you trust. Imported or untrusted tasks run their tests in a Docker container instead. See [the verifier guard](docs/benchmarks.md#the-verifier-guard).
-- **Local data:** `%USERPROFILE%\AgentVsAgent`, shared by both hosts. Override with `AVA_DATA_DIR`. Saved prompts and files live together under `prompts/`; clearing conversation history preserves the prompt library and benchmark results.
-- **Local access:** the room uses authenticated loopback. Its link is a credential; do not share it. Interrupted work is never automatically resent.
+- **Ask** is the default: agents may edit files inside their own Build copies, but shell commands and process control are refused. **Bypass** trusts tool execution with your account's permissions. AvA is not an operating-system sandbox.
+- **Internet** is off by default and switched per agent. It controls the agents' web tools; it is not a network firewall.
+- **Local only:** everything runs on your machine, behind a random token. The room's link is a credential; don't share it. Work that was interrupted is never resent automatically.
+- **Your data** lives in `%USERPROFILE%\AgentVsAgent`, shared by both hosts (override with `AVA_DATA_DIR`).
 
 Read the [security policy](SECURITY.md) and [known limits](docs/architecture.md#known-limits) before using Bypass.
 
@@ -88,7 +137,7 @@ Read the [security policy](SECURITY.md) and [known limits](docs/architecture.md#
 ```powershell
 npm run typecheck
 npm test             # builds first; no provider requests
-npm run dev:sim       # room with simulated agents
+npm run dev:sim      # a room with simulated agents
 ```
 
 ## License

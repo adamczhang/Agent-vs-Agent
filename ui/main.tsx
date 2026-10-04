@@ -1,8 +1,9 @@
 import { useEffect,useRef,useState,type CSSProperties,type KeyboardEvent,type PointerEvent as ReactPointerEvent,type ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
-import { DEFAULT_ROUNDS,DEFAULT_SPEECH_MINUTES,type AnswerCheck,type HuntSetup,type JudgeProvider,type RunConfig,type Seat,type Stance } from '../src/types';
+import { DEFAULT_ROUNDS,DEFAULT_SPEECH_MINUTES,type AnswerCheck,type GameSetup,type HuntSetup,type JudgeProvider,type RunConfig,type Seat,type Stance } from '../src/types';
 import type { ThreadStats } from '../src/stats';
 import { describeQuick } from '../src/quick';
+import { GameView, gameTitle } from './game-view';
 import { activityProjection,type ActivityLine,type Event } from './projection';
 import { RpcError,initialMode,roomId,roomLink,rpc } from './api';
 import { CommandClient } from './commands';
@@ -55,9 +56,9 @@ const EVENT_PAGE=300,EVENT_PAGES_PER_TICK=5;
 const VIEW_EVENTS=new Set(['room_committed','room_queued','run_started','run_ended','paused','duration_changed','reconciled','build_copied','build_server','build_cleanup']);
 const message=(e:unknown)=>e instanceof Error?e.message:String(e);
 
-// Prompt, Debate or Build: which kind of thread the room shows and starts. Remembered in this browser only.
+// Prompt, Debate, Build or Gamer: which kind of thread the room shows and starts. Remembered in this browser only.
 const MODE_KEY='ava-mode';
-function loadMode():Mode{let m=initialMode;try{m??=localStorage.getItem(MODE_KEY);}catch{/* storage unavailable */}return m==='benchmark'||m==='build'?m:'conversation';}
+function loadMode():Mode{let m=initialMode;try{m??=localStorage.getItem(MODE_KEY);}catch{/* storage unavailable */}return m==='benchmark'||m==='build'||m==='game'?m:'conversation';}
 const OPENING_KEY='ava-opening';
 function loadOpening():'both'|Seat{try{const v=localStorage.getItem(OPENING_KEY);if(v==='both'||v==='cli2')return v;}catch{/* storage unavailable */}return 'cli1';}
 // Build mode: the last project folder and whether to build or review (this browser only).
@@ -65,7 +66,7 @@ const PROJECT_KEY='ava-project',BUILD_KIND_KEY='ava-build-kind';
 function loadProject(){try{return localStorage.getItem(PROJECT_KEY)??'';}catch{return '';}}
 function loadBuildKind():'build'|'review'{try{return localStorage.getItem(BUILD_KIND_KEY)==='review'?'review':'build';}catch{return 'build';}}
 // "benchmark" is the Prompt mode's internal name.
-const MODE_NAMES:Record<Mode,string>={conversation:'Debate',benchmark:'Prompt',build:'Build'};
+const MODE_NAMES:Record<Mode,string>={conversation:'Debate',benchmark:'Prompt',build:'Build',game:'Gamer'};
 // The app line an agent ends a build report with; the room shows it as a link instead.
 const APP_LINE=/^[\s>*_-]*APP[*_\s]*:.*$/gim;
 // A file chosen for the next message: uploaded at once, sent by ID.
@@ -358,7 +359,7 @@ function App(){
   const ready=!!pair&&seats.every(s=>pair.slots[s].state==='ready'&&pair.connected[s]);
   const direct=shown?.direct??{messages:[] as DirectMessage[],pending:{} as ThreadView['direct']['pending']},directPending=Object.keys(direct.pending).length>0;
   // This chat's session already holds a thread of the other mode: the user starts a fresh session to switch.
-  const mismatch=!!thread&&!!thread.mode&&thread.mode!==mode,benchmark=mode==='benchmark',building=mode==='build';
+  const mismatch=!!thread&&!!thread.mode&&thread.mode!==mode,benchmark=mode==='benchmark',building=mode==='build',gaming=mode==='game';
   const uploading=files.some(f=>f.status==='uploading');
   // A running prompt or build takes no further messages: each agent answers the one prompt, then it ends.
   const benchmarkLive=live&&['benchmark','build'].includes(activeRun?.config.mode??thread?.mode??'');
@@ -437,6 +438,12 @@ function App(){
       }
       setDraft('');setFiles([]);setOptionsOpen(false);setAnswerKey(null);setHunt(null);liveRef.current=true;
     });
+  }
+  // Gamer mode (J3): a game starts as its own run (and thread), titled with its game and players.
+  async function startGame(setup:GameSetup){
+    if(!pair||!ready||busy)return;
+    const text=gameTitle(setup,{cli1:agentName('cli1'),cli2:agentName('cli2')}),options:Partial<RunConfig>={mode:'game',game:setup,paceMs:1000};
+    await action('Starting',async()=>{await commands.execute(JSON.stringify(['send',pair.id,text,[],'game',options]),'run.start',{pairId:pair.id,text,options,attachments:[]},rpc);liveRef.current=true;});
   }
   function promptRunBlocked(savedMode:PromptMode,kind:'build'|'review',folder?:string){
     if(commands.hasPending)return 'Resolve the pending send from the composer before running another prompt.';
@@ -533,8 +540,8 @@ function App(){
   }
   function control(which:'pause'|'resume'|'step'|'stop'){const runId=pair?.activeRunId;if(runId)void action(which,async()=>{await controlCommands.execute(JSON.stringify(['control',runId,which]),'run.control',{runId,action:which},rpc);});}
   // A judged debate's result in the thread list (C).
-  const verdictText=(v?:ThreadSummary['verdict'])=>!v?'':v.kind==='hunt'?(v.winner?` · Agent ${v.winner==='cli1'?1:2} found ${v.found![v.winner]} of ${v.planted}`:` · no planted bug found`):v.kind==='challenge'||v.kind==='race'?(v.winner?` · Agent ${v.winner==='cli1'?1:2} won the ${v.kind}`:` · no right answer`)
-    :v.status==='judging'?' · judging':v.status==='failed'?' · not judged':` · Agent ${v.winner==='cli1'?1:2} won ${v.totals![v.winner!]}–${v.totals![v.winner==='cli1'?'cli2':'cli1']}`;
+  const verdictText=(v?:ThreadSummary['verdict'])=>!v?'':v.kind==='game'?(v.winner?` · Agent ${v.winner==='cli1'?1:2} won`:' · draw'):v.kind==='hunt'?(v.winner?` · Agent ${v.winner==='cli1'?1:2} found ${v.found![v.winner]} of ${v.planted}`:` · no planted bug found`):v.kind==='challenge'||v.kind==='race'?(v.winner?` · Agent ${v.winner==='cli1'?1:2} won the ${v.kind}`:` · no right answer`)
+    :v.status==='judging'?' · judging':v.status==='failed'?' · not judged':v.ballots?` · Agent ${v.winner==='cli1'?1:2} won, ${v.ballots.won} of ${v.ballots.of} ballots`:` · Agent ${v.winner==='cli1'?1:2} won ${v.totals![v.winner!]}–${v.totals![v.winner==='cli1'?'cli2':'cli1']}`;
   // Delete one thread from history (D): its prompts, replies, 1:1 messages and ballot. A thread whose agents are still
   // active must be closed first.
   function deleteThread(t:ThreadSummary){
@@ -702,6 +709,7 @@ function App(){
   // Identities: the live slots for this room's current thread, the recorded ones for anything else.
   // The room's own agents are on screen: its current thread, or no thread yet (agents not both active).
   const roomView=!!pair&&(isRoomThread||!threadId);
+  const gameRun=shown?.runs.filter(r=>r.config.mode==='game').at(-1)??null,gameMoves=gameRun?(shown?.messages??[]).filter(m=>m.runId===gameRun.id&&m.sender!=='user'&&m.state==='committed').map(m=>m.text):[];
   // Close thread: while the thread has an agent active (or starting) or a conversation running. Activate both: once both
   // agents have settings (a model chosen) and neither is active.
   const canClose=roomView&&!!pair&&(seats.some(s=>['ready','verifying'].includes(pair.slots[s].state))||!!pair.activeRunId)&&pair.activeRun?.status!=='needs_attention';
@@ -783,9 +791,10 @@ function App(){
   const subtitle=!thread?'':thread.empty?(ready?`Fresh session · both agents are ready${benchmark?' for a prompt':building?(buildKind==='review'?' for a bug hunt':' to build'):''}`:'Waiting for both agents')
     :live&&activeRun?(activeRun.config.mode==='build'?[status==='running'?(activeRun.config.build?.kind==='review'?'Hunting':'Building'):statusNames[status??'']??status,`${duration(activeRun.elapsedMs)} of ${duration(activeRun.config.durationMs)}`,`${answered} of 2 reports`]
       :activeRun.config.mode==='benchmark'?[status==='running'?'Answering':statusNames[status??'']??status,duration(activeRun.elapsedMs),`${answered} of 2 answers`]
+      :activeRun.config.mode==='game'?[status==='running'?'Playing':statusNames[status??'']??status,duration(activeRun.elapsedMs),`Move ${Math.floor(gameMoves.length/2)+1}`]
       :[statusNames[status??'']??status,`${duration(activeRun.elapsedMs)}${activeRun.config.completion==='duration'?` of ${duration(activeRun.config.durationMs)}`:''}`,activeRun.config.completion==='rounds'&&activeRun.config.rounds?`Round ${round(activeRun.id,activeRun.config.rounds)} of ${activeRun.config.rounds}`:`${activeRun.requests} of ${activeRun.config.maxRequests} requests`]).join(' · ')
-    :isRoomThread?`${plural(thread.prompts,'prompt')} · ready for the next one`
-    :`${plural(thread.prompts,'prompt')} · ${shortTime(thread.updatedAt)} · read-only`;
+    :isRoomThread?`${plural(thread.prompts,thread.mode==='game'?'game':'prompt')} · ready for the next one`
+    :`${plural(thread.prompts,thread.mode==='game'?'game':'prompt')} · ${shortTime(thread.updatedAt)} · read-only`;
   const placeholder=!ready?'Activate both agents to start':directPending?'Waiting for a private reply…':benchmarkLive?'Both agents are answering…':live?(paused?'Message both agents. Each replies once, then they pause again':'Message both agents')
     :building?(buildKind==='review'?(project.trim()?'What should both agents hunt for? For example: bugs in the command parser':'Enter the repository to hunt in first'):'What should both agents build? For example: a Snake game playable with the arrow keys')
     :benchmark?'Prompt for both agents. They get it at the same moment':thread?.empty?'Give both agents a topic':'Send the next prompt. Both agents remember this thread';
@@ -803,13 +812,15 @@ function App(){
       </div>
       <div className="mode-switch" role="radiogroup" aria-label="Mode">
         {([['benchmark','Prompt',<Icon.prompt key="i"/>,'Both agents get the same prompt at the same moment; compare answers and speed'],['conversation','Debate',<Icon.chat key="i"/>,'The agents debate each other: prime each with its 1:1 line, then give them a topic'],
-          ['build','Build',<Icon.build key="i"/>,'Both agents build the same app, each in its own folder, then compare them side by side. Or have both review a project']] as const).map(([value,label,icon,tip])=>
+          ['build','Build',<Icon.build key="i"/>,'Both agents build the same app, each in its own folder, then compare them side by side. Or have both review a project'],
+          ['game','Gamer',<Icon.game key="i"/>,'The agents play a board game against each other: chess, checkers or Go, with AvA as the referee']] as const).map(([value,label,icon,tip])=>
           <button key={value} role="radio" aria-checked={mode===value} title={tip} onClick={()=>switchMode(value)}>{icon}<span>{label}</span></button>)}
       </div>
-      <div className="sidebar-tools" role="group" aria-label="Room tools">
+      <div className={`sidebar-tools${mode==='game'?' two':''}`} role="group" aria-label="Room tools">
         <button className="library-open" onClick={()=>setLibrary('browse')}><Icon.folder/><span>Prompt library</span></button>
-        {/* The builder for this mode's prompts: Debate's and Prompt's guided setups, a simple form for Build. */}
-        <button className="library-open" onClick={()=>setBuilderOpen(true)}><Icon.pencil/><span>{mode==='conversation'?'Debate builder':mode==='build'?'Build builder':'Prompt builder'}</span></button>
+        {/* The builder for this mode's prompts: Debate's and Prompt's guided setups, a simple form for Build. A game is set
+            up beside its board, so Gamer has none. */}
+        {mode!=='game'&&<button className="library-open" onClick={()=>setBuilderOpen(true)}><Icon.pencil/><span>{mode==='conversation'?'Debate builder':mode==='build'?'Build builder':'Prompt builder'}</span></button>}
         {/* Settings (owner, 2026-10-04): the agent limit and Stop all, for every room. */}
         <button className="library-open" onClick={()=>setResourcesOpen(true)}><Icon.gear/><span>Settings</span></button>
       </div>
@@ -824,7 +835,7 @@ function App(){
         </button>):<p className="threads-empty">No messages match “{hits.query}”.</p>)
         :listed.length?[...grouped].map(([day,list])=><section key={day}><h2>{day}</h2>{list.map(t=><div key={t.id} className="thread-row"><button className="thread" aria-current={t.id===threadId?'true':undefined} onClick={()=>{select(t.id);}} onDoubleClick={()=>{select(t.id);setRenaming(t.named?t.title:'');}}>
           <span className="thread-top"><span className="thread-title">{t.named||!t.empty?t.title||'Untitled':t.current?'New session':'Private messages only'}</span><time>{shortTime(t.updatedAt)}</time></span>
-          <span className="thread-meta">{t.live&&<span className="live-dot" title="Live"/>}<span className={`thread-mode ${t.mode??mode}`}>{MODE_NAMES[t.mode??mode]}</span>{t.participants?`${names[t.participants.cli1.provider]} · ${names[t.participants.cli2.provider]}`:'Agents not recorded'}{t.empty?'':` · ${plural(t.prompts,'prompt')}`}{t.directMessages?' · 1:1':''}{verdictText(t.verdict)}</span>
+          <span className="thread-meta">{t.live&&<span className="live-dot" title="Live"/>}<span className={`thread-mode ${t.mode??mode}`}>{MODE_NAMES[t.mode??mode]}</span>{t.participants?`${names[t.participants.cli1.provider]} · ${names[t.participants.cli2.provider]}`:'Agents not recorded'}{t.empty?'':` · ${plural(t.prompts,t.mode==='game'?'game':'prompt')}`}{t.directMessages?' · 1:1':''}{verdictText(t.verdict)}</span>
         </button>
         {/* Shown on hover (D): deletes this thread from history, after a confirmation. */}
         {!t.empty&&<button className="thread-delete" aria-label={`Delete thread: ${t.title||'Untitled'}`} title="Delete this thread" onClick={()=>deleteThread(t)}><Icon.trash/></button>}</div>)}</section>)
@@ -890,6 +901,8 @@ function App(){
         {!connected&&<div className="notice"><Icon.refresh/><span>Reconnecting to AvA…</span></div>}
 
         {panel==='stats'?<div className="feed"><StatsView stats={stats} names={names} loading={!!promptCount}/></div>
+        :gaming&&!mismatch&&(gameRun||roomView&&ready)?<GameView run={gameRun} moves={gameMoves} live={!!gameRun&&live&&gameRun.id===pair?.activeRunId} speaking={pair?.activeRun?.speaking??[]} names={{cli1:agentName('cli1'),cli2:agentName('cli2')}}
+            canStart={roomView&&ready&&!live} blocked={!roomView?'Open the room’s current thread to start a game.':!ready?'Activate both agents first.':live?'A game is running.':''} busy={!!busy} onStart={startGame}/>
         :resultsRun?<ResultsView run={resultsRun} tab={resultsTab} live={live&&resultsRun.id===pair?.activeRunId} agentName={agentName} reported={{cli1:!!shown?.messages.some(m=>m.runId===resultsRun.id&&m.sender==='cli1'),cli2:!!shown?.messages.some(m=>m.runId===resultsRun.id&&m.sender==='cli2')}}/>
         :<Scroller className="feed" label="Messages" role="log" follow={!focusedId}>
           {mismatch&&thread?<div className="empty">
@@ -932,7 +945,7 @@ function App(){
           <div className="segmented" role="group" aria-label="Replay speed">{[1,4,16].map(speed=><button key={speed} aria-pressed={activeReplay.speed===speed} onClick={()=>setReplay(r=>r&&{...advance(r),speed})}>{speed}×</button>)}</div>
           <button className="button" onClick={()=>setReplay(null)}>Done</button>
         </div>
-        :isRoomThread||!thread?<form className={`composer${canSend?'':' disabled'}`} onSubmit={e=>{e.preventDefault();void send();}}>
+        :(isRoomThread||!thread)&&!gaming?<form className={`composer${canSend?'':' disabled'}`} onSubmit={e=>{e.preventDefault();void send();}}>
           {files.length>0&&<div className="composer-files" aria-label="Attached files">{files.map(f=><span key={f.key} className={`file-chip ${f.status}`} title={f.error??f.name}>
             {f.preview?<img src={f.preview} alt=""/>:<Icon.file/>}<span className="file-name">{f.name}</span><small>{f.status==='uploading'?'Uploading…':f.error??bytes(f.size)}</small>
             <button type="button" aria-label={`Remove ${f.name}`} onClick={()=>setFiles(list=>list.filter(p=>p.key!==f.key))}><Icon.close/></button></span>)}</div>}
@@ -964,7 +977,8 @@ function App(){
             <button className="send" type="submit" aria-label={live?'Send to both agents':benchmark?'Send to both agents at once':'Start'} title={uploading?'Waiting for uploads':'Send · Enter (Shift+Enter for a new line)'} disabled={!!busy||!draft.trim()||!canSend||uploading}><Icon.send/></button>
           </div>
         </form>
-        :<div className="readonly-bar"><span>{thread.pairId===pair?.id?'This session was cleared. Its agents no longer remember it.':'From another chat. Read-only here.'}</span>{roomThreadId&&<button className="link" onClick={()=>select('')}>Go to the current session</button>}</div>}
+        :gaming&&(isRoomThread||!thread)?null
+        :<div className="readonly-bar"><span>{thread?.pairId===pair?.id?'This session was cleared. Its agents no longer remember it.':'From another chat. Read-only here.'}</span>{roomThreadId&&<button className="link" onClick={()=>select('')}>Go to the current session</button>}</div>}
 
         {optionsOpen&&isRoomThread&&<div ref={sheetRef} className="sheet" role="dialog" aria-label="Options for the next prompt">
           <header><div><h2>{benchmark?'Prompt options':building?'Build options':'Options'}</h2><p>{benchmark?'The prompt goes to both agents exactly as you write it. To give one agent extra context, use its 1:1 line first.':building?'Ask mode allows scoped file tools in each agent’s own folder and refuses command execution. Bypass explicitly trusts unrestricted tools.':live?'Used when the next prompt starts. The running conversation keeps its settings.':'Used when the next prompt starts.'}</p></div><button className="icon-btn" aria-label="Close options" onClick={()=>setOptionsOpen(false)}><Icon.close/></button></header>
