@@ -369,7 +369,7 @@ The agents play chess, checkers or Go, with AvA as the referee (Phase J).
   - **Other losses:** a move past its time limit, and `MOVE: resign`.
   - **The end:** the result (`Run.game`) ends the run as `game_over`.
 - **The room** (`ui/game-view.tsx`, `ui/game-boards.tsx`) replays the committed moves with the same engines to draw the board. The players, the moves with replay, and the setup sit beside it.
-- **The simulator** plays a random legal move in each turn's position.
+- **The simulator** plays a random legal move in each turn's position. It sees no history, so a Go move can repeat an earlier position and be refused: it never repeats a refused move there, and passes on its last try.
 - **A limit:** an agent whose internet switch is on still has its web tools. The brief asks it not to use them.
 
 ## Known limits

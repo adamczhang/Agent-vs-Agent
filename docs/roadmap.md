@@ -264,7 +264,7 @@ The owner is going through the modes one at a time, Debate first. In their tests
 | G15 | Harder debates: technical motions where easy talking points lose, two of them closed book (internet off), judged as before | live | done |
 | G16 | Three ballots: each debater scores the debate in its own session (nothing new starts), beside the blind judge; the side most ballots name wins, and the judge breaks a tie | offline + live | done |
 | G17 | Blind judging: the judge reads the speeches in one typography, with no model names or self-identification; debaters are asked to stay anonymous; a live probe measures whether authorship still shows | offline + live | done |
-| G18 | Publish v0.4.6 (Gamer mode, blind judging and three ballots) and install it in both hosts | user | next |
+| G18 | Publish v0.4.6 (Gamer mode, blind judging and three ballots) and install it in both hosts | user | done |
 
 - **G1:** the agents still answer with stop_requested, but with rounds only a stop condition the operator wrote ends the debate early. An hour is the time limit's backstop, and the request limit is two per round plus the briefing.
 - **G2:** the template lives in `debate.json` beside `prompt.md`, so versions before it still read a debate prompt (as its topic alone). Internet is chosen per agent, so one agent can have the web and the other not. It's applied through each agent's own switch when the debate starts, because Codex and Grok Build restart to change it.
@@ -286,6 +286,11 @@ The owner is going through the modes one at a time, Debate first. In their tests
   - **The run:** briefs were answered READY in under half a minute, and speeches averaged about 530 words.
   - **Evidence:** pilot-evidence/stage-d/g7-formal-debate-judge-live.json.
 - **G14:** both hosts run 0.4.3. The idle 0.4.1 service stepped aside on the first 0.4.3 call (the handover's first real use), and the library holds the ten formal debates. Codex couldn't move its old 0.4.1 folder aside while its open sessions use it; it loads 0.4.3 and drops the old folder after a restart.
+- **G18 (2026-10-04; owner: "commit all and publish when done", then "Publish and install"):**
+  - **Published:** v0.4.6 on GitHub (public main 12a8e92, the tag and the release).
+  - **Installed:** both hosts run 0.4.6. Both packaged plugins passed their smoke tests (26 and 23 checks), both installed copies match `release/marketplace`, and Codex's hook (unchanged) is enabled and trusted.
+  - **Windows CI failed one new test:** the simulator's 9x9 Go game lost on three illegal answers. The simulator reads only the position, with no history, so a random move can repeat an earlier position (ko) and be refused, and it could pick a refused move again.
+  - **The fix:** the simulator never plays a move again in the position it was refused in, and a Go player passes on its last try. In 15 simulated games, all 4 refusals were ko repeats and no game was lost on them; the test passed 40 runs in a row. It goes to public main as a snapshot, with no new tag.
 - **G16 (owner, 2026-10-04: "each of the agents should review and then the judge should review and then that's the three scores"):** the owner preferred this to a neutral third judge or a panel of judges, so no new sessions start.
   - **How it works:** when a judged debate ends, each debater scores it in its own session through its 1:1 line, beside the blind judge. The side most ballots name wins, and the judge breaks a tie.
   - **Live (2026-10-04, 28 requests, the ceiling):** two hard debates of 3 rounds each, Claude Code (Opus 5.5) against Codex (6.1 Sol). Every ballot came back and parsed, and each debate took 8.6 minutes plus its ballots.
@@ -455,6 +460,7 @@ A fourth, adversarial mode: the two agents play abstract strategy games against 
 | J3 | The Gamer tab: the fourth mode on the slider, a game selector, the board in place of the conversation, the move list and replay, and the result | offline | done |
 | J4 | Live: a game of each with Claude Code and Codex | live | done |
 | J5 | The README: a Gamer section with a live screenshot | offline | done |
+| J6 | Faster games: Gamer's players activate at low effort unless the owner chooses otherwise. The referee costs milliseconds; a game's time is the agents' thinking (8 to 26 seconds a move at high effort in J4) | user | next |
 
 - **J4 (2026-10-04, 237 requests of a 612 ceiling):** one game of each at once, Claude Code (Opus 5.5) against Codex (6.1 Sol), both at high effort under Ask with internet off, as Quick activate sets them up.
   - **Chess** (Claude Code White): Codex won in 54 moves, when White resigned against a pawn about to queen. 26 minutes.

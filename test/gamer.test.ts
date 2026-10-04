@@ -1,10 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { AvAService } from '../src/service.js';
-import { conversationConfig, SEATS, type GameSetup, type Pair, type Run, type Seat } from '../src/types.js';
+import { conversationConfig, SEATS, type GameSetup, type Pair, type ProviderConfig, type Run, type Seat } from '../src/types.js';
 import { gameBrief, judgeReply, movePrompt, readMove, replay } from '../src/games/referee.js';
 import { GAMES } from '../src/games/index.js';
-import { SimulationFactory } from '../src/simulation.js';
+import { SimulatedParticipant, SimulationFactory } from '../src/simulation.js';
 import { TestFactory, flush } from './fakes.js';
 import { tempDir } from './temp.js';
 
@@ -138,11 +138,22 @@ test('J3: the simulator\'s players answer the brief READY and play legal moves t
     const run = await service.call('run.start', { pairId: pair.id, text: 'go', requestId: 'sim-go', options: { mode: 'game', paceMs: 0, game: setup('go') } }) as Run;
     await until(() => service.store.run(run.id).status !== 'running', 20_000);
     const done = service.store.run(run.id), moves = service.store.messages(run.id).filter(m => m.sender !== 'user').map(m => m.text);
-    assert.equal(done.status, 'completed'); assert.ok(done.game?.result, 'the game has a result'); assert.deepEqual(done.game?.illegal, { cli1: 0, cli2: 0 });
+    // A Go move can be refused for superko (the simulator sees no history), but never three times in a row.
+    assert.equal(done.status, 'completed'); assert.ok(done.game?.result, 'the game has a result'); assert.doesNotMatch(done.game!.result!.reason, /illegal/);
     assert.ok(moves.length > 20); assert.doesNotThrow(() => replay(setup('go'), moves));
     const briefs = service.store.db.prepare("SELECT text FROM direct_messages WHERE sender='agent'").all() as Array<{ text: string }>;
     assert.deepEqual(briefs.map(b => b.text.replace(/ \(simulated\)$/, '')).sort(), ['READY, Black.', 'READY, White.']);
   } finally { await service.shutdown(); service.store.close(); }
+});
+
+test('J3 simulator: a refused move isn\'t played again in that position, and a Go player passes on its last try', async () => {
+  const player = new SimulatedParticipant({ provider: 'codex', model: 'sim-model', auth: 'provider-login' } as ProviderConfig, 'cli1', 1);
+  const ask = async (text: string) => (await player.request({ id: 'move', text, signal: new AbortController().signal, onStarted() {}, onEvent() {} })).text;
+  // Black's man on 1 can go to 5 or 6: once 1-5 is refused, only 1-6 is left.
+  const position = 'FEN: B:W32:B1\nReply with: MOVE: <move>';
+  assert.match(await ask(`Move 1, Black to play. You make the first move.\n${position}`), /^MOVE: 1-[56]$/);
+  for (let i = 0; i < 10; i++) assert.equal(await ask(`Refused: MOVE: 1-5 (it isn't a legal move here). 2 tries left. The position is unchanged:\n${position}`), 'MOVE: 1-6');
+  assert.equal(await ask(movePrompt(setup('go'), ['E5'], 'cli2', { input: 'D4', reason: "it isn't legal: it repeats an earlier position", left: 1 })), 'MOVE: pass');
 });
 
 test('J2: three illegal answers in a row lose the game; so does resigning; Go ends after two passes, scored', async () => {

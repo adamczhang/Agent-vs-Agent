@@ -30,13 +30,16 @@ const LINES: Record<Seat, string[]> = {
     'Then we agree more than we disagree: it is a tool with conditions, not a default.',
   ],
 };
-// A simulated player's move: any legal move in the position (passing in Go only when nothing else is legal).
-function simulatedMove(text: string) {
+// A simulated player's move: any legal move in the position, other than those already refused there (passing in Go only
+// when nothing else is left). The position has no history, so a Go move can still repeat an earlier position (superko)
+// and be refused: on its last try, a Go player passes, which is always legal.
+function simulatedMove(text: string, refused: ReadonlySet<string> = new Set()) {
   for (const engine of Object.values(GAMES)) {
     let state: unknown;
     try { state = engine.fromPosition(text); } catch { continue; }
-    const legal = engine.legal(state).filter(m => m !== 'pass');
-    return legal[Math.floor(Math.random() * legal.length)] ?? 'pass';
+    if (engine.kind === 'go' && /^Refused: .*Last try/.test(text)) return 'pass';
+    const legal = engine.legal(state).filter(m => m !== 'pass' && !refused.has(m));
+    return legal[Math.floor(Math.random() * legal.length)] ?? (engine.kind === 'go' ? 'pass' : 'resign');
   }
   return 'resign';
 }
@@ -44,6 +47,8 @@ export class SimulatedParticipant implements ConfiguredParticipant {
   readonly sessionId = 'sim-' + randomUUID();
   readonly evidence = 'simulation';
   private replies = 0;
+  // A game's refused moves, by the position they were refused in.
+  private refused = new Map<string, Set<string>>();
   closed = false;
   // Simulated usage reports for the room's context ring: Agent 1 starts low, Agent 2 close to the warning threshold.
   private context: { used: number; size: number };
@@ -78,7 +83,9 @@ export class SimulatedParticipant implements ConfiguredParticipant {
       }
       // A game's turn (J2): a random legal move in the position the turn gives, as a player who knows the rules would.
       if (/Reply with: MOVE: <move>$/.test(request.text)) {
-        const move = simulatedMove(request.text);
+        const position = request.text.split('\n').slice(1).join('\n'), last = request.text.match(/^Refused: MOVE: (\S+)/)?.[1];
+        if (last) { const set = this.refused.get(position) ?? new Set<string>(); set.add(last); this.refused.set(position, set); }
+        const move = simulatedMove(request.text, this.refused.get(position));
         at(this.delayMs * 0.3, () => request.onEvent({ type: 'thought', text: 'Reading the position and choosing a move (simulated).' }));
         at(this.delayMs * 0.6, () => finish({ status: 'completed', text: `MOVE: ${move}` }));
         return;
