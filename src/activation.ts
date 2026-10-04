@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { cursorPlanRefusal } from './cursor.js';
 import { Store } from './store.js';
 import { AvAError, systemClock, type AgentUsage, type Clock, type Pair, type Participant, type ProviderConfig, type Seat } from './types.js';
 
@@ -22,6 +23,8 @@ export class ActivationManager {
   directBusy?:(pairId:string,seat:Seat)=>boolean;
   // A synchronous service-wide admission guard. Called before a slot reserves activation work.
   beforeActivate?:(pairId:string,seat:Seat)=>void;
+  // Set by the service: called once an agent is ready (Quick activate remembers its settings).
+  onActivated?:(pairId:string,seat:Seat)=>void;
   private assertNoDirect(pairId:string,seat:Seat){
     if(this.directBusy?.(pairId,seat))throw new AvAError('DIRECT_BUSY',`Agent ${seat==='cli1'?1:2} is still answering your 1:1 message. Wait for the reply, then change it.`);
   }
@@ -51,6 +54,8 @@ export class ActivationManager {
       const nonce=`AVA_READY_${randomUUID()}`;
       const result=await participant.request({id:randomUUID(),text:`Reply exactly ${nonce}. Do not use tools or perform other work.`,signal:abort.signal,onStarted(){},onEvent(){}});
       assertCurrent();
+      const refusal=config.provider==='cursor'?cursorPlanRefusal(result.text):undefined;
+      if(refusal)throw new AvAError('PROVIDER_PLAN',refusal);
       // Some Gateway models answer only in their reasoning through the Codex agent (seen: Kimi K2.6, K2.7 Code).
       if(result.status!=='completed'||result.text.trim()!==nonce)throw new AvAError('ACCESS_NOT_VERIFIED',config.provider==='vercel'
         ?`${config.model} didn’t give a usable reply through the Gateway agent (some models answer only in their reasoning there). Try another model.`
@@ -58,7 +63,7 @@ export class ActivationManager {
       this.store.mutateSlot(pairId,seat,s=>{
         assertCurrent();s.state='ready';s.config=participant!.accepted;s.sessionId=participant!.sessionId;s.verifiedAt=Date.now();s.error=null;
       });
-      this.live.set(key,participant);adopted=true;
+      this.live.set(key,participant);adopted=true;try{this.onActivated?.(pairId,seat);}catch{/* remembering is a convenience; the agent is ready */}
       return {slot:this.store.pair(pairId).slots[seat],evidence:participant.evidence};
     })();
     try { return await Promise.race([work,cancelled]); }

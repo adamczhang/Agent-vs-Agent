@@ -14,7 +14,7 @@ export interface RunStats { runId: string; topic: string; status: string; reason
 export interface ThreadStats extends Omit<RunStats, 'runId' | 'turns'> { threadId: string; prompts: number; runIds: string[]; turns: Array<TurnStat & { prompt: number }> }
 function tokensFor(provider: string | undefined, chars: number, seconds: number, usage?: AgentUsage['tokens']): TokenStat {
   const valid = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n) && n >= 0;
-  const estimated = !valid(usage?.output) && (provider === 'grok-build' || provider === 'antigravity');
+  const estimated = !valid(usage?.output) && (provider === 'grok-build' || provider === 'antigravity' || provider === 'cursor');
   const outputTokens = valid(usage?.output) ? usage.output : estimated ? Math.round(chars / CHARS_PER_TOKEN) : null;
   return { inputTokens: valid(usage?.input) ? usage.input : null, outputTokens,
     tokenSource: outputTokens === null ? 'unavailable' : estimated ? 'estimated' : 'reported', tokenSeconds: Math.max(0, seconds),

@@ -12,6 +12,13 @@ function findRoot() {
 }
 export const projectRoot = findRoot();
 export const packageVersion = (JSON.parse(readFileSync(join(projectRoot, 'package.json'), 'utf8')) as { version: string }).version;
+// Whether version a (x.y.z) is newer than b. A missing or unreadable version counts as oldest.
+export function newerVersion(a: string | undefined, b: string | undefined) {
+  const parts = (v?: string) => { const p = (v ?? '').split(/[.+-]/); return [0, 1, 2].map(i => Number(p[i]) || 0); };
+  const x = parts(a), y = parts(b);
+  for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i]! > y[i]!;
+  return false;
+}
 // scripts/package.ts writes packaged.json into the plugin; its absence means a development checkout.
 export const packaged = existsSync(join(projectRoot, 'packaged.json'));
 // Data lives outside the install folder so upgrades and removal never delete runs or transcripts. Order:

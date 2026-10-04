@@ -86,7 +86,8 @@ test('Debate length guidance defers to the operator request instead of imposing 
   const f=fixture({topic:'Give exactly two short sentences per turn.'});await flush();
   const prompt=f.participants.cli1.calls[0]!.request.text;
   assert.ok(prompt.includes('Give exactly two short sentences per turn.'));
-  assert.match(prompt,/Follow any reply-length or format limits in the discussion topic and operator messages\. Otherwise/);
+  assert.match(prompt,/Follow any reply-length or format limits in the discussion topic and operator messages\./);
+  assert.doesNotMatch(prompt,/\d+\s*[–-]\s*\d+\s*words/,'concise by wording, with no default word count (E6)');
   f.engine.stop(f.run.id);await flush();f.store.close();
 });
 test('Pause drains admitted work, freezes time only at the boundary, and Next reply is one request',async()=>{

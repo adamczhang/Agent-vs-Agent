@@ -94,7 +94,7 @@ test('the Vercel menus: makers, a maker’s models a page at a time, search, per
     menu = await pick(menu, /Sonnet/);
     assert.equal(service.store.pair(pair.id).slots.cli1.config?.model, 'anthropic/claude-sonnet-5');
     menu = await pick(menu, /^Effort:/);
-    assert.deepEqual(menu.choices.map(c => c.label), ['low', 'medium', 'high', 'Model default'], 'that model’s own efforts');
+    assert.deepEqual(menu.choices.map(c => c.label), ['low', 'medium', 'high', 'Default'], 'that model’s own efforts');
     menu = await pick(menu, /^medium$/);
     assert.deepEqual(service.store.pair(pair.id).slots.cli1.config?.effort, { key: 'model_reasoning_effort', value: 'medium' });
     menu = await pick(menu, /^Gateway key:/);

@@ -98,6 +98,27 @@ export class Store implements ProcessLedger {
     for (const id of attachments) rmSync(join(this.attachmentsDir, id), { force: true });
     return result;
   }
+  // One thread's records (D): its runs with their messages, turns, deliveries, events and phases, its 1:1 messages and its
+  // name. Attachments that only these runs used go too. The caller makes sure nothing in it is running.
+  deleteThread(threadId: string, runIds: string[]) {
+    const marks = runIds.map(() => '?').join(','), inRuns = (sql: string) => this.db.prepare(sql.replace('(?)', `(${marks})`));
+    const used = new Set(runIds.length ? inRuns('SELECT attachments FROM messages WHERE run_id IN (?) AND attachments IS NOT NULL').all(...runIds).flatMap(r => (JSON.parse(String(r.attachments)) as AttachmentRef[]).map(a => a.id)) : []);
+    const result = this.transaction(() => {
+      if (runIds.length) {
+        for (const table of ['messages', 'turns', 'deliveries', 'events', 'phases']) inRuns(`DELETE FROM ${table} WHERE run_id IN (?)`).run(...runIds);
+        inRuns('DELETE FROM runs WHERE id IN (?)').run(...runIds);
+      }
+      const directMessages = Number(this.db.prepare('DELETE FROM direct_messages WHERE thread_id=?').run(threadId).changes);
+      this.db.prepare('DELETE FROM thread_titles WHERE thread_id=?').run(threadId);
+      for (const row of this.db.prepare('SELECT data FROM pairs').all()) { const pair = JSON.parse(String(row.data)) as Pair; if (pair.lastRunId && runIds.includes(pair.lastRunId)) { delete pair.lastRunId; this.savePair(pair); } }
+      // An attachment another message still uses stays.
+      const orphans = [...used].filter(id => !this.db.prepare('SELECT 1 FROM messages WHERE attachments LIKE ? LIMIT 1').get(`%"${id}"%`));
+      for (const id of orphans) this.db.prepare('DELETE FROM attachments WHERE id=?').run(id);
+      return { runs: runIds.length, directMessages, orphans };
+    });
+    for (const id of result.orphans) rmSync(join(this.attachmentsDir, id), { force: true });
+    return { runs: result.runs, directMessages: result.directMessages, attachments: result.orphans.length };
+  }
   transaction<T>(action: () => T, label?: string): T {
     this.db.exec('BEGIN IMMEDIATE');
     let result: T;
@@ -237,7 +258,8 @@ export class Store implements ProcessLedger {
     }));
   }
   queued(runId: string) { return this.messages(runId).filter(m => m.state === 'queued'); }
-  admit(runId: string, seats: readonly Seat[], broadcastId?: string, repairOf?: string): Array<{ id: string; seat: Seat; messages: RoomMessage[] }> {
+  // briefing: a debate briefing (E7), a phase of its own kind that doesn't decide whose turn is next.
+  admit(runId: string, seats: readonly Seat[], broadcastId?: string, repairOf?: string, briefing = false): Array<{ id: string; seat: Seat; messages: RoomMessage[] }> {
     return this.transaction(() => {
       const run = this.run(runId), pair = this.pair(run.pairId), repair = !!repairOf;
       if (pair.activeRunId !== runId || run.status !== 'running' && !(repair && run.status === 'pausing')) throw new AvAError('REVOKED', 'Run no longer permits submission.');
@@ -255,7 +277,7 @@ export class Store implements ProcessLedger {
         phaseId = String(original.phase_id);
       } else {
         phaseId = randomUUID();
-        this.db.prepare("INSERT INTO phases VALUES(?,?,?,?,?,'open')").run(phaseId, runId, seats.length > 1 ? 'paired' : 'single', broadcastId ?? null, JSON.stringify(seats));
+        this.db.prepare("INSERT INTO phases VALUES(?,?,?,?,?,'open')").run(phaseId, runId, briefing ? 'briefing' : seats.length > 1 ? 'paired' : 'single', broadcastId ?? null, JSON.stringify(seats));
       }
       const all = this.messages(runId);
       const turns = seats.map(seat => {
@@ -306,6 +328,17 @@ export class Store implements ProcessLedger {
       if (turn.phase_id != null) this.completePhase(run, String(turn.phase_id), seat);
       this.saveRun(run); return true;
     }, 'commit');
+  }
+  // A debate briefing (E7) ends without a room message: its turn and phase complete, and whose turn is next is unchanged.
+  completeBriefing(runId: string, turnId: string) {
+    return this.transaction(() => {
+      const turn = this.db.prepare('SELECT status,phase_id FROM turns WHERE id=? AND run_id=?').get(turnId, runId);
+      if (!turn || turn.status === 'completed') return false;
+      this.turnEnd(turnId, 'completed');
+      if (turn.phase_id != null) this.db.prepare("UPDATE phases SET status='complete' WHERE id=? AND status='open'").run(String(turn.phase_id));
+      this.event(runId, 'briefing_completed', { turnId });
+      return true;
+    }, 'briefing');
   }
   // Runs inside commitReply's transaction, so a crash cannot separate the last reply of a phase from the next-seat decision.
   private completePhase(run: Run, phaseId: string, seat: Seat) {

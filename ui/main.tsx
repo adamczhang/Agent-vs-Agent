@@ -1,7 +1,8 @@
 import { useEffect,useRef,useState,type CSSProperties,type KeyboardEvent,type PointerEvent as ReactPointerEvent,type ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
-import type { RunConfig,Seat } from '../src/types';
+import { DEFAULT_ROUNDS,DEFAULT_SPEECH_MINUTES,type JudgeProvider,type RunConfig,type Seat,type Stance } from '../src/types';
 import type { ThreadStats } from '../src/stats';
+import { describeQuick } from '../src/quick';
 import { activityProjection,readableOutput,type ActivityLine,type Event } from './projection';
 import { RpcError,initialMode,roomId,roomLink,rpc } from './api';
 import { CommandClient } from './commands';
@@ -13,7 +14,9 @@ import { ResultsTabs,ResultsView,openApp,type AppLink,type ResultsTab } from './
 import { AgentSetup } from './agent-setup';
 import { UsageRing } from './usage-ring';
 import { PromptManager,type PreparedPrompt } from './prompt-manager';
-import type { PromptMode } from '../src/prompt-types';
+import type { DebateSetup,PromptMode } from '../src/prompt-types';
+import { Ballot } from './ballot';
+import { PromptBuilder } from './prompt-builder';
 import { Icon } from './icons';
 import { IMAGE_TYPES,TERMINAL,TEXT_NAME,bytes,clock,dayLabel,delivery,directStates,duration,fullDate,initials,internetEnforcement,names,plural,reasonText,seats,shortTime,statusNames,
   type AttachmentRef,type DirectMessage,type Mode,type PairView,type Preset,type PresetData,type SearchHit,type ThreadMessage,type ThreadSummary,type ThreadView } from './model';
@@ -22,7 +25,19 @@ import './style.css';
 const commands=new CommandClient(sessionStorage,'ava-command:'+roomId);
 // One retry slot per agent for direct messages: an unacknowledged send is retried with its original request ID.
 const directCommands:Record<Seat,CommandClient>={cli1:new CommandClient(sessionStorage,'ava-direct-cli1:'+roomId),cli2:new CommandClient(sessionStorage,'ava-direct-cli2:'+roomId)};
-const DEFAULT_SETTINGS:PresetData={instructions:{cli1:'',cli2:''},stopWhen:{cli1:'',cli2:''},completion:'auto',minutes:'',requests:'',pace:'5'};
+const DEFAULT_SETTINGS:PresetData={instructions:{cli1:'',cli2:''},stopWhen:{cli1:'',cli2:''},completion:'auto',rounds:'',minutes:'',requests:'',pace:'5'};
+// A debate prompt's template (G2) sets up the next debate: each agent's private context and internet, and the rounds.
+// Stop conditions, a time and a request limit left from an earlier debate would cut it short, so they're cleared.
+// Every debate is formal (G6): Agent 1 argues for the motion and Agent 2 against unless swapped, and Claude Code judges
+// unless changed (G7).
+const DEFAULT_STANCES:Record<Seat,Stance>={cli1:'for',cli2:'against'};
+const SIDE_LABEL:Record<Stance,string>={for:'For the motion',against:'Against the motion'};
+const SPEECH_TIMES:Array<[string,string]>=[['1','1 minute'],['2','2 minutes'],['3','3 minutes'],['5','5 minutes'],['10','10 minutes'],['0','No limit']];
+const JUDGES:Array<[JudgeProvider|'off',string]>=[['claude','Claude Code (strongest model, max effort)'],['codex','Codex (strongest model, max effort)'],['off','No judge']];
+function debateSettings(setup:DebateSetup,base:PresetData):PresetData{
+  const {cli1,cli2}=setup.agents;
+  return {...base,instructions:{cli1:cli1.context,cli2:cli2.context},internet:{cli1:cli1.internet,cli2:cli2.internet},stances:{cli1:cli1.stance,cli2:cli2.stance},speech:String(setup.speechMinutes??DEFAULT_SPEECH_MINUTES),stopWhen:{cli1:'',cli2:''},completion:'rounds',rounds:String(setup.rounds),minutes:'',requests:''};
+}
 const LINE_LABEL:Record<string,string>={thought:'Thinking',tool:'Tool',output:'Writing',status:'Status'};
 // Providers whose web access is set at launch, so the internet switch restarts them (see src/providers.ts LAUNCH_TIME_WEB).
 const RESTARTS_FOR_WEB=new Set(['codex','grok-build','vercel']);
@@ -159,7 +174,14 @@ function App(){
   // Build results: which run and view the Results panel shows, and each agent's app link per run (runId:seat).
   const [results,setResults]=useState<{runId:string;tab:ResultsTab}|null>(null),[apps,setApps]=useState<Record<string,AppLink>>({}),appRequested=useRef(new Set<string>());
   const [optionsOpen,setOptionsOpen]=useState(false),[dialog,setDialog]=useState<DialogSpec|null>(null);
-  const [library,setLibrary]=useState<'browse'|'draft'|null>(null);
+  // The rounds chip beside the message box (Debate): its small menu, closed by a click elsewhere.
+  const [roundsOpen,setRoundsOpen]=useState(false),roundsRef=useRef<HTMLDivElement>(null);
+  useEffect(()=>{
+    if(!roundsOpen)return;
+    const close=(e:MouseEvent)=>{if(!roundsRef.current?.contains(e.target as Node))setRoundsOpen(false);};
+    document.addEventListener('mousedown',close);return()=>document.removeEventListener('mousedown',close);
+  },[roundsOpen]);
+  const [library,setLibrary]=useState<'browse'|'draft'|null>(null),[builderOpen,setBuilderOpen]=useState(false);
   const [resourcesOpen,setResourcesOpen]=useState(false);
   const [benchmarksOpen,setBenchmarksOpen]=useState(false);
   const [settings,setSettings]=useState<PresetData>(DEFAULT_SETTINGS),[presets,setPresets]=useState<Preset[]>([]),[presetId,setPresetId]=useState(''),[presetName,setPresetName]=useState<string|null>(null);
@@ -170,6 +192,8 @@ function App(){
   const [mode,setMode]=useState<Mode>(loadMode),[opening,setOpening]=useState<'both'|Seat>(loadOpening),[files,setFiles]=useState<Pending[]>([]),[renaming,setRenaming]=useState<string|null>(null),[lightbox,setLightbox]=useState('');
   const fileInput=useRef<HTMLInputElement>(null),knownRuns=useRef(new Set<string>()),[dropping,setDropping]=useState(false);
   useEffect(()=>{try{localStorage.setItem(MODE_KEY,mode);}catch{/* storage unavailable */}},[mode]);
+  // The polling loop reads the mode on screen from here (it picks the room's pair for that mode).
+  const modeRef=useRef<Mode>(mode);modeRef.current=mode;
   useEffect(()=>{try{localStorage.setItem(OPENING_KEY,opening);}catch{/* storage unavailable */}},[opening]);
   const [project,setProject]=useState(loadProject),[buildKind,setBuildKind]=useState(loadBuildKind);
   useEffect(()=>{try{localStorage.setItem(PROJECT_KEY,project);localStorage.setItem(BUILD_KIND_KEY,buildKind);}catch{/* storage unavailable */}},[project,buildKind]);
@@ -208,11 +232,12 @@ function App(){
     const target=selectedRef.current;
     try{
       if(!roomId)throw new Error('Open this room with /ava start in Codex or /agent-vs-agent:ava start in Claude Code.');
-      const room=await rpc<{pair:PairView}>('room.get',{roomId});
+      // The room's pair for the mode on screen (E9): each mode keeps its own thread and agents.
+      const room=await rpc<{pair:PairView;pairIds?:string[]}>('room.get',{roomId,mode:modeRef.current});
       // Only a change re-renders the page (this runs a few times a second).
       const pairJson=JSON.stringify(room.pair);if(pairJson!==pairShown.current){pairShown.current=pairJson;setPair(room.pair);}
       if(Date.now()-threadsAt.current>2500){
-        const list=(await rpc<{threads:ThreadSummary[]}>('threads.list',{pairId:room.pair.id})).threads,listJson=JSON.stringify(list);threadsAt.current=Date.now();
+        const list=(await rpc<{threads:ThreadSummary[]}>('threads.list',{pairId:room.pair.id,pairIds:room.pairIds??[]})).threads,listJson=JSON.stringify(list);threadsAt.current=Date.now();
         if(listJson!==threadsShown.current){threadsShown.current=listJson;threadsRef.current=list;setThreads(list);}
       }
       if(selectedRef.current!==target)return;
@@ -293,10 +318,12 @@ function App(){
   // In a Build session (no prompt yet, or a build), 1:1 lines may use scoped workspace file tools.
   const directTools=building&&(!thread?.mode||thread.mode==='build');
   const canSend=isRoomThread&&ready&&!!shown&&!mismatch&&!benchmarkLive&&!buildDone&&status!=='stopping'&&status!=='needs_attention'&&!directPending&&(!building||buildKind==='build'||!!project.trim());
+  // Each mode has its own thread and agents in this room (E9): switching shows that mode's current thread, and the
+  // one left keeps running (or waiting) until it is closed.
   function switchMode(next:Mode){
-    if(next===mode)return;setMode(next);setOptionsOpen(false);
-    // A thread chosen from the other list goes back to this chat's current session.
+    if(next===mode)return;modeRef.current=next;setMode(next);setOptionsOpen(false);
     if(selectedRef.current&&threadsRef.current.find(t=>t.id===selectedRef.current)?.mode!==next)select('');
+    threadsAt.current=0;void refresh();
   }
   // Files for the next message: checked here, uploaded at once, and sent by ID with the message.
   async function addFiles(list:FileList|File[]){
@@ -322,7 +349,7 @@ function App(){
   const canClear=!!pair&&seats.every(s=>!!pair.slots[s].config)&&pair.activeRun?.status!=='needs_attention';
   const runById=new Map((shown?.runs??[]).map(r=>[r.id,r]));
 
-  async function send(saved?:{text:string;attachments:string[];buildKind:'build'|'review'}){
+  async function send(saved?:{text:string;attachments:string[];buildKind:'build'|'review';debate?:DebateSetup}){
     const text=(saved?.text??draft).trim();if(!pair||!text||!canSend||busy||uploading)return;
     const attachments=saved?.attachments??files.filter(f=>f.status==='ready'&&f.ref).map(f=>f.ref!.id);
     const kind=saved?.buildKind??buildKind;
@@ -338,10 +365,19 @@ function App(){
         const options:Partial<RunConfig>={mode:'benchmark',...(settings.minutes?{durationMs:Number(settings.minutes)*60000}:{})};
         await commands.execute(JSON.stringify(['send',pair.id,text,attachments,'benchmark']),'run.start',{pairId:pair.id,text,options,attachments},rpc);
       }else{
-        const options:Partial<RunConfig>={mode:'conversation',opening,instructions:settings.instructions,stopWhen:settings.stopWhen,paceMs:Number(settings.pace||0)*1000};
-        if(settings.completion!=='auto')options.completion=settings.completion;
-        if(settings.minutes){options.durationMs=Number(settings.minutes)*60000;if(settings.completion==='auto')options.completion='duration';}
-        if(settings.requests)options.maxRequests=Number(settings.requests);
+        // A debate prompt run from the library brings its own setup; otherwise the Options apply.
+        const s=saved?.debate?debateSettings(saved.debate,settings):settings;
+        // Each agent's internet, when a debate prompt or Options set it: its switch changes first (Codex and Grok Build
+        // restart in the same session, keeping their memory).
+        for(const seat of seats){const want=s.internet?.[seat];if(want!==undefined&&want!==internetOn(seat))await rpc('slot.internet',{pairId:pair.id,seat,enabled:want,requestId:crypto.randomUUID()});}
+        const judge=s.judge??'claude';
+        const options:Partial<RunConfig>={mode:'conversation',opening,instructions:s.instructions,stopWhen:s.stopWhen,paceMs:Number(s.pace||0)*1000,stances:s.stances??DEFAULT_STANCES,...(judge!=='off'?{judge:{provider:judge}}:{})};
+        const speech=Number(s.speech??DEFAULT_SPEECH_MINUTES);if(speech>0)options.speechMs=speech*60_000;
+        if(s.completion!=='auto')options.completion=s.completion;
+        if(s.minutes){options.durationMs=Number(s.minutes)*60000;if(s.completion==='auto')options.completion='duration';}
+        // The rounds apply when the debate ends by rounds: the default, unless a time is set here or in the prompt.
+        if(s.rounds&&(s.completion==='rounds'||s.completion==='auto'&&!s.minutes))options.rounds=Number(s.rounds);
+        if(s.requests)options.maxRequests=Number(s.requests);
         await commands.execute(JSON.stringify(['send',pair.id,text,attachments]),'run.start',{pairId:pair.id,text,options,attachments},rpc);
       }
       setDraft('');setFiles([]);setOptionsOpen(false);liveRef.current=true;
@@ -360,8 +396,11 @@ function App(){
   async function useSavedPrompt({prompt,attachments}:PreparedPrompt,run:boolean){
     if(commands.hasPending)throw new Error('A send has an unknown outcome. Resolve it from the composer before loading another prompt.');
     if(run){const blocked=promptRunBlocked(prompt.mode,prompt.buildKind);if(blocked)throw new Error(blocked);}
+    // A debate prompt sets up the next debate. With one running, its topic would only join that conversation.
+    if(prompt.debate&&mode==='conversation'&&live)throw new Error('A debate is running. Stop it or close the thread, then load this debate prompt.');
     setDraft(prompt.text);setFiles(attachments.map(ref=>({key:ref.id,name:ref.name,size:ref.size,status:'ready',ref})));setBuildKind(prompt.buildKind);
-    if(run)await send({text:prompt.text,attachments:attachments.map(f=>f.id),buildKind:prompt.buildKind});
+    if(prompt.debate){const setup=prompt.debate;setSettings(s=>debateSettings(setup,s));setPresetId('');}
+    if(run)await send({text:prompt.text,attachments:attachments.map(f=>f.id),buildKind:prompt.buildKind,...(prompt.debate?{debate:prompt.debate}:{})});
     else{if(prompt.mode!=='all')switchMode(prompt.mode);select('');setPanel('chat');setOptionsOpen(false);setTimeout(()=>composerRef.current?.focus(),0);}
   }
   // Direct (1:1) lines. A send waits while the agent is busy in the shared conversation (the service enforces it too).
@@ -400,8 +439,9 @@ function App(){
   }
   const [switchingNet,setSwitchingNet]=useState<Record<Seat,boolean>>({cli1:false,cli2:false});
   // Each agent's setup menu (the /ava CLI1 menu, in the room).
-  const [setup,setSetup]=useState<Partial<Record<Seat,boolean>>>({});
-  const toggleSetup=(seat:Seat)=>setSetup(s=>({...s,[seat]:!s[seat]}));
+  // Which setup menu is open for each agent, at which screen ('home', or 'provider' to change the CLI).
+  const [setup,setSetup]=useState<Partial<Record<Seat,string|false>>>({});
+  const toggleSetup=(seat:Seat,phase='home')=>setSetup(s=>({...s,[seat]:s[seat]===phase?false:phase}));
   // Each thread with live agents runs two CLI processes on this computer. From the third such thread on, opening one
   // or activating its agents asks first (the user may go ahead anyway).
   const MANY_THREADS=2;
@@ -425,10 +465,49 @@ function App(){
   }
   async function toggleInternet(seat:Seat){
     if(!pair||internetBlocked(seat)||switchingNet[seat])return;setSwitchingNet(n=>({...n,[seat]:true}));
-    try{await rpc('slot.internet',{pairId:pair.id,seat,enabled:!internetOn(seat),requestId:crypto.randomUUID()});threadsAt.current=0;void refresh();}
+    try{
+      await rpc('slot.internet',{pairId:pair.id,seat,enabled:!internetOn(seat),requestId:crypto.randomUUID()});threadsAt.current=0;void refresh();
+      // The switch is the latest word: a debate prompt's or the Options' choice for this agent no longer applies.
+      setSettings(s=>{if(s.internet?.[seat]===undefined)return s;const {[seat]:_,...rest}=s.internet;return {...s,internet:rest};});
+    }
     catch(e){setError(message(e));}finally{setSwitchingNet(n=>({...n,[seat]:false}));}
   }
   function control(which:'pause'|'resume'|'step'|'stop'){const runId=pair?.activeRunId;if(runId)void action(which,async()=>{await commands.execute(JSON.stringify(['control',runId,which]),'run.control',{runId,action:which},rpc);});}
+  // A judged debate's result in the thread list (C).
+  const verdictText=(v?:ThreadSummary['verdict'])=>!v?'':v.status==='judging'?' · judging':v.status==='failed'?' · not judged':` · Agent ${v.winner==='cli1'?1:2} won ${v.totals![v.winner!]}–${v.totals![v.winner==='cli1'?'cli2':'cli1']}`;
+  // Delete one thread from history (D): its prompts, replies, 1:1 messages and ballot. A thread whose agents are still
+  // active must be closed first.
+  function deleteThread(t:ThreadSummary){
+    setDialog({title:'Delete this thread?',confirm:'Delete thread',body:`“${t.title||'Untitled'}” and everything in it (prompts, replies, 1:1 messages and the judge’s ballot) are deleted from history. This can’t be undone.`,
+      run:()=>void action('Deleting thread',async()=>{await rpc('thread.delete',{threadId:t.id,requestId:crypto.randomUUID()});if(selectedRef.current===t.id){selectedRef.current='';setSelected('');}threadsAt.current=0;})});
+  }
+  // Close thread (E8): the conversation stops, both agents close (and any app server they left running), and the thread
+  // stays in history. The next thread keeps both agents' settings: Activate both starts them again.
+  function closeThread(){
+    if(!pair)return;
+    setOptionsOpen(false);
+    setDialog({title:'Close this thread?',confirm:'Close thread',
+      body:`Both agents close, and any app server they left running stops. The thread stays in your history. The next thread keeps both agents' settings, ready to activate.`,
+      run:()=>void action('Closing thread',async()=>{
+        await commands.execute(`close:${pair.id}:${pair.activeRunId??pair.lastRunId??'none'}`,'pair.close',{pairId:pair.id},rpc);
+        selectedRef.current='';setSelected('');setPanel('chat');
+      })});
+  }
+  // Quick activate: each agent's last settings, or the strongest model at high effort with Ask permissions and internet off
+  // (one short access check each; asked first when many threads are live).
+  const quickText=(seat:Seat)=>{const plan=pair?.quick?.[seat];return plan?describeQuick(plan,names[plan.provider]??plan.provider):'';};
+  async function quickActivate(which:Seat[]){
+    if(!pair||!which.length||!(await confirmActivate()))return;
+    void action(which.length>1?'Quick-activating both agents':'Quick-activating',async()=>{
+      const results=await Promise.allSettled(which.map(seat=>rpc('slot.quick',{pairId:pair.id,seat})));
+      const failed=results.find(r=>r.status==='rejected') as PromiseRejectedResult|undefined;if(failed)throw failed.reason;
+    });
+  }
+  // Activate both: both agents' saved settings, one short access check each (asked first when many threads are live).
+  async function activateBoth(){
+    if(!pair||!(await confirmActivate()))return;
+    void action('Activating both agents',async()=>{await Promise.all(seats.filter(s=>pair.slots[s].state!=='ready'&&pair.slots[s].state!=='verifying').map(seat=>rpc('slot.activate',{pairId:pair.id,seat})));});
+  }
   // Clear Session: both agents get fresh sessions and forget everything; the old thread stays in the list.
   function clearSession(){
     if(!pair)return;
@@ -538,6 +617,17 @@ function App(){
   }
   // Only what this mode's sheet shows counts (Prompt and Build have just a time limit).
   const customized=benchmark||building?settings.minutes!=='':JSON.stringify(settings)!==JSON.stringify(DEFAULT_SETTINGS);
+  // How the next debate ends, for the rounds chip: its rounds unless a time (in Options or the prompt, "…for 5 minutes")
+  // or the agents' own choice ends it instead (the same rule as send and conversationConfig).
+  const promptTime=draft.trim().match(/\bfor\s+(\d+(?:\.\d+)?)\s*(minutes?|mins?|m|seconds?|secs?|s)\s*[.!]?$/i);
+  const roundsValue=Number(settings.rounds)||DEFAULT_ROUNDS;
+  const byRounds=settings.completion==='rounds'||settings.completion==='auto'&&!settings.minutes&&!promptTime;
+  const endsLabel=byRounds?`${roundsValue} rounds`:settings.completion==='either'||settings.completion==='both'?'Until done'
+    :settings.minutes?`${settings.minutes} min`:promptTime?`${promptTime[1]} ${/^s/i.test(promptTime[2]!)?'s':'min'}`:'20 min';
+  // Picking rounds makes the debate end by them, even if a time was set (the time then only bounds it).
+  function chooseRounds(n:number){
+    setSettings(s=>({...s,rounds:String(n),...(s.completion==='auto'&&!s.minutes&&!promptTime?{}:{completion:'rounds' as const,minutes:''})}));setPresetId('');
+  }
   // The options sheet closes on Escape or a click anywhere outside it (its own toggle button handles itself).
   const sheetRef=useRef<HTMLDivElement>(null),optionsButton=useRef<HTMLButtonElement>(null);
   useEffect(()=>{
@@ -552,6 +642,11 @@ function App(){
   // Identities: the live slots for this room's current thread, the recorded ones for anything else.
   // The room's own agents are on screen: its current thread, or no thread yet (agents not both active).
   const roomView=!!pair&&(isRoomThread||!threadId);
+  // Close thread: while the thread has an agent active (or starting) or a conversation running. Activate both: once both
+  // agents have settings (a model chosen) and neither is active.
+  const canClose=roomView&&!!pair&&(seats.some(s=>['ready','verifying'].includes(pair.slots[s].state))||!!pair.activeRunId)&&pair.activeRun?.status!=='needs_attention';
+  const canActivateBoth=roomView&&!!pair&&seats.every(s=>!!pair.slots[s].config?.model&&!['ready','verifying'].includes(pair.slots[s].state));
+  const canQuickBoth=roomView&&!!pair?.quick&&seats.every(s=>!['ready','verifying'].includes(pair.slots[s].state));
   const identity=(seat:Seat)=>roomView?pair?.slots[seat].config??null:shown?.runs.at(-1)?.participants?.[seat]??thread?.participants?.[seat]??null;
   const agentName=(seat:Seat)=>names[identity(seat)?.provider??'']??`Agent ${SEAT_NUMBER[seat]}`;
   const senderOf=(m:ThreadMessage)=>m.sender==='user'?null:runById.get(m.runId)?.participants?.[m.sender]??identity(m.sender);
@@ -583,7 +678,8 @@ function App(){
   const feed:ReactNode[]=[];
   {
     let prev:ThreadMessage|undefined,lastDay='';
-    const endNote=(runId:string)=>{const run=runById.get(runId);if(run&&TERMINAL.has(run.status)&&replayDone)feed.push(<div className="run-end" key={'end'+run.id}><span>{reasonText(run.reason)||statusNames[run.status]}</span><span>{duration(run.elapsedMs)}</span></div>);};
+    const endNote=(runId:string)=>{const run=runById.get(runId);if(run&&TERMINAL.has(run.status)&&replayDone){feed.push(<div className="run-end" key={'end'+run.id}><span>{reasonText(run.reason)||statusNames[run.status]}</span><span>{duration(run.elapsedMs)}</span></div>);
+      if(run.config.stances)feed.push(<Ballot key={'ballot'+run.id} run={run} canJudge={isRoomThread} busy={!!busy} onJudge={()=>void action('Asking the judge',async()=>{await rpc('debate.judge',{runId:run.id});})}/>);}};
     for(const m of messages){
       const day=m.time?new Date(m.time).toDateString():lastDay;
       if(prev&&prev.runId!==m.runId){endNote(prev.runId);prev=undefined;}
@@ -620,10 +716,12 @@ function App(){
     if(prev)endNote(prev.runId);
   }
   const answered=activeRun?shown?.messages.filter(m=>m.runId===activeRun.id&&m.sender!=='user').length??0:0;
+  // A debate's current round (G1): the round the agent who has spoken least is on.
+  const round=(runId:string,rounds:number)=>Math.min(rounds,Math.min(...seats.map(s=>shown?.messages.filter(m=>m.runId===runId&&m.sender===s).length??0))+1);
   const subtitle=!thread?'':thread.empty?(ready?`Fresh session · both agents are ready${benchmark?' for a prompt':building?(buildKind==='review'?' to review a project':' to build'):''}`:'Waiting for both agents')
     :live&&activeRun?(activeRun.config.mode==='build'?[status==='running'?(activeRun.config.build?.kind==='review'?'Reviewing':'Building'):statusNames[status??'']??status,`${duration(activeRun.elapsedMs)} of ${duration(activeRun.config.durationMs)}`,`${answered} of 2 reports`]
       :activeRun.config.mode==='benchmark'?[status==='running'?'Answering':statusNames[status??'']??status,duration(activeRun.elapsedMs),`${answered} of 2 answers`]
-      :[statusNames[status??'']??status,`${duration(activeRun.elapsedMs)}${activeRun.config.completion==='duration'?` of ${duration(activeRun.config.durationMs)}`:''}`,`${activeRun.requests} of ${activeRun.config.maxRequests} requests`]).join(' · ')
+      :[statusNames[status??'']??status,`${duration(activeRun.elapsedMs)}${activeRun.config.completion==='duration'?` of ${duration(activeRun.config.durationMs)}`:''}`,activeRun.config.completion==='rounds'&&activeRun.config.rounds?`Round ${round(activeRun.id,activeRun.config.rounds)} of ${activeRun.config.rounds}`:`${activeRun.requests} of ${activeRun.config.maxRequests} requests`]).join(' · ')
     :buildDone?'Build finished · one prompt per Build session'
     :isRoomThread?`${plural(thread.prompts,'prompt')} · ready for the next one`
     :`${plural(thread.prompts,'prompt')} · ${shortTime(thread.updatedAt)} · read-only`;
@@ -631,14 +729,15 @@ function App(){
     :building?(buildKind==='review'?(project.trim()?'What should both agents look for? For example: find bugs and risky code':'Enter the project folder first'):'What should both agents build? For example: a Snake game playable with the arrow keys')
     :benchmark?'Prompt for both agents. They get it at the same moment':thread?.empty?'Give both agents a topic':'Send the next prompt. Both agents remember this thread';
   // Each mode lists its own threads; a fresh, unused session shows in both.
-  const listed=threads.filter(t=>!t.mode||t.mode===mode);
+  // One history for every mode (E9), each thread labeled with its mode. Another mode's fresh session isn't a thread yet.
+  const listed=threads.filter(t=>!t.empty||t.pairId===pair?.id);
   const grouped=new Map<string,ThreadSummary[]>();for(const t of listed){const key=t.empty?'Today':dayLabel(t.updatedAt);grouped.set(key,[...(grouped.get(key)??[]),t]);}
   const lines=(seat:Seat)=>activity.filter(l=>l.seat===seat&&!(l.type==='status'&&QUIET_STATUS.test(l.text)));
 
   return <div className="app">
     <aside className="sidebar">
       <div className="sidebar-head">
-        <div className="brand"><span>Agent vs Agent</span>{pair?.mode==='simulation'&&<span className="pill">Simulation</span>}</div>
+        <div className="brand"><span>Agent vs Agent</span>{pair?.version&&<span className="version" title={`Agent vs Agent ${pair.version}: the version of the service running this room`}>v{pair.version}</span>}{pair?.mode==='simulation'&&<span className="pill">Simulation</span>}</div>
         <button className="icon-btn" aria-label={`New ${MODE_NAMES[mode]} thread`} title={`New ${MODE_NAMES[mode]} thread: a clean page with its own two agents`} onClick={()=>void newThread()}><Icon.compose/></button>
       </div>
       <div className="mode-switch" role="radiogroup" aria-label="Mode">
@@ -649,7 +748,8 @@ function App(){
       <div className="sidebar-tools" role="group" aria-label="Room tools">
         <button className="library-open" onClick={()=>setLibrary('browse')}><Icon.folder/><span>Prompt library</span></button>
         <button className="library-open" onClick={()=>setResourcesOpen(true)}><Icon.chart/><span>Resources</span></button>
-        <span aria-hidden="true"/>
+        {/* The builder for this mode's prompts: Debate's guided setup, simple forms for Prompt and Build. */}
+        <button className="library-open" onClick={()=>setBuilderOpen(true)}><Icon.pencil/><span>{mode==='conversation'?'Debate builder':mode==='build'?'Build builder':'Prompt builder'}</span></button>
       </div>
       <div className="sidebar-search">
         <label className="search"><Icon.search/><input type="search" placeholder="Search" aria-label="Search every thread" maxLength={200} value={query} onChange={e=>setQuery(e.target.value)} onKeyDown={e=>{if(e.key==='Escape')setQuery('');}}/></label>
@@ -660,11 +760,13 @@ function App(){
           <span className="hit-text"><Highlight text={hit.snippet} query={hits.query}/></span>
           <span className="hit-thread">{hit.runTopic} · {shortTime(hit.runCreatedAt)}</span>
         </button>):<p className="threads-empty">No messages match “{hits.query}”.</p>)
-        :listed.length?[...grouped].map(([day,list])=><section key={day}><h2>{day}</h2>{list.map(t=><button key={t.id} className="thread" aria-current={t.id===threadId?'true':undefined} onClick={()=>{select(t.id);}} onDoubleClick={()=>{select(t.id);setRenaming(t.named?t.title:'');}}>
+        :listed.length?[...grouped].map(([day,list])=><section key={day}><h2>{day}</h2>{list.map(t=><div key={t.id} className="thread-row"><button className="thread" aria-current={t.id===threadId?'true':undefined} onClick={()=>{select(t.id);}} onDoubleClick={()=>{select(t.id);setRenaming(t.named?t.title:'');}}>
           <span className="thread-top"><span className="thread-title">{t.named||!t.empty?t.title||'Untitled':t.current?'New session':'Private messages only'}</span><time>{shortTime(t.updatedAt)}</time></span>
-          <span className="thread-meta">{t.live&&<span className="live-dot" title="Live"/>}{t.participants?`${names[t.participants.cli1.provider]} · ${names[t.participants.cli2.provider]}`:'Agents not recorded'}{t.empty?'':` · ${plural(t.prompts,'prompt')}`}{t.directMessages?' · 1:1':''}</span>
-        </button>)}</section>)
-        :<p className="threads-empty">{MODE_NAMES[mode]} threads appear here.</p>}
+          <span className="thread-meta">{t.live&&<span className="live-dot" title="Live"/>}<span className={`thread-mode ${t.mode??mode}`}>{MODE_NAMES[t.mode??mode]}</span>{t.participants?`${names[t.participants.cli1.provider]} · ${names[t.participants.cli2.provider]}`:'Agents not recorded'}{t.empty?'':` · ${plural(t.prompts,'prompt')}`}{t.directMessages?' · 1:1':''}{verdictText(t.verdict)}</span>
+        </button>
+        {/* Shown on hover (D): deletes this thread from history, after a confirmation. */}
+        {!t.empty&&<button className="thread-delete" aria-label={`Delete thread: ${t.title||'Untitled'}`} title="Delete this thread" onClick={()=>deleteThread(t)}><Icon.trash/></button>}</div>)}</section>)
+        :<p className="threads-empty">Threads appear here.</p>}
       </nav>
     </aside>
 
@@ -675,16 +777,19 @@ function App(){
       <section ref={agentsRef} className="agents" aria-label="Agent activity">
         {seats.flatMap((seat,i)=>{const who=identity(seat),state=paneStatus(seat),own=lines(seat),slot=pair?.slots[seat];const pane=<article key={seat} className={`agent ${seat}`} aria-label={`Agent ${i+1} activity`}>
           <header><span className="seat-dot"/>
-            {/* Before activation the name's place holds Activate; afterwards the name opens the same setup menu. */}
-            {roomView&&slot?(slot.state==='ready'?<button className="agent-name" aria-expanded={!!setup[seat]} title="Change the model, effort or permissions" onClick={()=>toggleSetup(seat)}><strong>{agentName(seat)}</strong><Icon.chevron/></button>
+            {/* Once active, the name opens the setup menu. Before that, a chosen CLI's name opens the list of CLIs (it can
+                change at any time), beside Activate. */}
+            {roomView&&slot?(slot.state==='ready'?<button className="agent-name" aria-expanded={!!setup[seat]} title="Change the CLI, model, effort or permissions" onClick={()=>toggleSetup(seat)}><strong>{agentName(seat)}</strong><Icon.chevron/></button>
               :slot.state==='verifying'?<strong>{agentName(seat)}</strong>
-              :<button className="activate-btn" aria-expanded={!!setup[seat]} onClick={()=>toggleSetup(seat)}>{slot.state==='failed'?'Activate again':'Activate'}</button>)
+              :<>{slot.config&&<button className="agent-name" aria-expanded={setup[seat]==='provider'} title="Change the CLI" onClick={()=>toggleSetup(seat,'provider')}><strong>{names[slot.config.provider]??slot.config.provider}</strong><Icon.chevron/></button>}
+                <button className="activate-btn" aria-expanded={setup[seat]==='home'} onClick={()=>toggleSetup(seat)}>{slot.state==='failed'?'Activate again':'Activate'}</button>
+                {pair?.quick?.[seat]&&<button className="quick-btn" aria-label={`Quick activate Agent ${i+1}: ${quickText(seat)}`} title={`Quick activate: ${quickText(seat)}. One short model request.`} disabled={!!busy} onClick={()=>void quickActivate([seat])}><Icon.bolt/>Quick</button>}</>)
             :<strong>{agentName(seat)}</strong>}
-            <span className="agent-model">{[who?.model,who?.effort?.value].filter(Boolean).join(' · ')||(roomView?`Agent ${i+1}`:'Not set up')}</span>
+            <span className="agent-model">{[who?.modelName??who?.model,who?.effort?.value].filter(Boolean).join(' · ')||(roomView?`Agent ${i+1}`:'Not set up')}</span>
             {roomView&&slot?.permissions==='bypass'&&<span className="bypass-tag" title="Permissions: bypass. AvA approves every tool request this agent makes.">Bypass</span>}
             {roomView&&internetOn(seat)&&<span className="net-tag" title="Internet on"><Icon.globe/></span>}<span className={`agent-status ${state.tone}`}>{state.text}</span>
             {roomView&&slot?.state==='ready'&&<UsageRing name={agentName(seat)} provider={slot.config?.provider} usage={pair?.usage?.[seat]}/>}</header>
-          {roomView&&pair&&setup[seat]&&<AgentSetup pairId={pair.id} seat={seat} onClose={()=>setSetup(s=>({...s,[seat]:false}))} onError={setError} confirmActivate={confirmActivate}/>}
+          {roomView&&pair&&setup[seat]&&<AgentSetup key={setup[seat]||'home'} pairId={pair.id} seat={seat} startPhase={setup[seat]||undefined} onClose={()=>setSetup(s=>({...s,[seat]:false}))} onError={setError} confirmActivate={confirmActivate}/>}
           <Scroller className="activity" label={`Agent ${i+1} activity`}>{own.length?own.map(line=><div key={line.key} className={`line ${line.type}`}><span className="line-type">{LINE_LABEL[line.type]??line.type}{line.late?' · late':''}</span><pre>{line.type==='output'?readableOutput(line.text):line.text}</pre></div>)
             :<p className="pane-empty">{isRoomThread?'Thinking and tool use appear here as they happen.':'No recorded activity.'}</p>}</Scroller>
         </article>;return i?[pane]:[pane,<div key="split" className="split-handle" role="separator" aria-orientation="vertical" aria-label="Resize the agent panes" aria-valuemin={20} aria-valuemax={80} aria-valuenow={Math.round(layout.split*100)} tabIndex={0} title="Drag to resize · double-click to reset" onPointerDown={dragSplit} onKeyDown={e=>nudge(e,'split')} onDoubleClick={()=>setLayout(l=>({...l,split:DEFAULT_LAYOUT.split}))}/>];})}
@@ -705,6 +810,7 @@ function App(){
               <span className="toolbar-divider"/></>}
             {buildRuns.length>0&&<button className={`icon-btn${panel==='results'?' pressed':''}`} aria-pressed={panel==='results'} aria-label="Results" title={panel==='results'?'Back to the conversation':'Results: both apps side by side, and what each changed'}
               onClick={()=>{if(panel==='results'){setPanel('chat');return;}const last=buildRuns.at(-1)!;openResults(results&&buildRuns.some(r=>r.id===results.runId)?results.runId:last.id,results?.tab??(last.config.build?.kind==='review'?'changes':'preview'));}}>{panel==='results'?<Icon.chat/>:<Icon.window/>}</button>}
+            {canClose&&<button className="button small close-thread" aria-label="Close thread" title="Stop the conversation and close both agents; the thread stays in history" disabled={!!busy} onClick={closeThread}>Close thread</button>}
             <button className={`icon-btn${panel==='stats'?' pressed':''}`} aria-pressed={panel==='stats'} aria-label="Stats" title={panel==='stats'?'Back to the conversation':'Stats'} disabled={!promptCount} onClick={()=>setPanel(p=>p==='stats'?'chat':'stats')}>{panel==='stats'?<Icon.chat/>:<Icon.chart/>}</button>
             <Menu label="More" icon={<Icon.more/>} items={[
               {label:'Benchmarks',icon:<Icon.prompt/>,onSelect:()=>setBenchmarksOpen(true)},
@@ -713,6 +819,7 @@ function App(){
               {label:'Export JSON',icon:<Icon.download/>,disabled:!promptCount,onSelect:()=>void exportThread('json')},
               {label:'Export Markdown',icon:<Icon.download/>,disabled:!promptCount,onSelect:()=>void exportThread('md')},
               'divider',
+              {label:'Close thread',icon:<Icon.close/>,disabled:!!busy||!canClose,onSelect:closeThread},
               {label:'Clear Session',icon:<Icon.compose/>,disabled:!!busy||!canClear,onSelect:clearSession},
               {label:'Clear history…',icon:<Icon.trash/>,destructive:true,disabled:!!busy||!!pair?.activeRunId||!threads.some(t=>!t.empty),onSelect:clearHistory},
             ]}/>
@@ -730,7 +837,9 @@ function App(){
           </div>
           :feed.length?feed:(shown||!threadId)&&<div className="empty">
             {!pair?<><h2>Agent vs Agent</h2><p>Open this room with <kbd>/ava start</kbd> in Codex or <kbd>/agent-vs-agent:ava start</kbd> in Claude Code.</p></>
-            :!ready&&roomView||!thread?<><h2>Activate both agents</h2><p>Use <strong>Activate</strong> above each agent’s screen to choose its CLI, model, effort and permissions. Each activation sends one short request to check access.</p></>
+            :!ready&&roomView||!thread?<><h2>Activate both agents</h2><p>{canActivateBoth?'Both agents keep the settings they had. Activate them together, or change either one with Activate above its screen. Each activation sends one short request to check access.':<><strong>Quick activate</strong> uses each agent’s last settings, or the strongest model at high effort with Ask permissions and internet off. Or use <strong>Activate</strong> above each agent’s screen to choose its CLI, model, effort and permissions. Each activation sends one short request to check access.</>}</p>
+              {(canActivateBoth||canQuickBoth)&&<div className="empty-actions">{canQuickBoth&&<button className="button primary" disabled={!!busy} title={seats.map((s,i)=>`Agent ${i+1}: ${quickText(s)}`).join('\n')} onClick={()=>void quickActivate(seats.filter(s=>!['ready','verifying'].includes(pair!.slots[s].state)))}><Icon.bolt/> Quick activate both</button>}{canActivateBoth&&<button className="button" disabled={!!busy} onClick={()=>void activateBoth()}>Activate both</button>}</div>}
+              {canQuickBoth&&<p className="quick-note">{seats.map((s,i)=><span key={s}>Agent {i+1}: {quickText(s)}</span>)}</p>}</>
             :building&&buildKind==='review'?<><h2>Review a project with {agentName('cli1')} and {agentName('cli2')}</h2><p>{isRoomThread?'Each agent gets its own copy of the folder below and may read, edit and run commands there; your original is never touched. Both start at the same moment and report what they find. Watch them work above.':'No reports in this thread.'}</p>
               {isRoomThread&&<button className="suggestion" onClick={()=>{setDraft('Find bugs and risky code. Run the tests if there are any, and rank what you find by severity.');composerRef.current?.focus();}}>Find bugs, run the tests, rank by severity</button>}</>
             :building?<><h2>Build with {agentName('cli1')} and {agentName('cli2')}</h2><p>{isRoomThread?'Both build the same thing at the same moment, each in its own folder, then post a link to their app here. Open the two side by side with Results. Use a 1:1 line to prepare files first. Ask mode permits scoped file tools and refuses command execution. One prompt per session.':'No builds in this thread.'}</p>
@@ -774,6 +883,17 @@ function App(){
             <button ref={optionsButton} type="button" className={`icon-btn${optionsOpen?' pressed':''}`} aria-label="Options for the next prompt" title="Options for the next prompt" aria-expanded={optionsOpen} disabled={mismatch} onClick={()=>{setOptionsOpen(o=>!o);void loadPresets();}}><Icon.sliders/>{customized||opening!=='cli1'&&!benchmark?<span className="badge"/>:null}</button>
             <button type="button" className="icon-btn" aria-label="Attach files or images" title={seats.some(s=>pair?.images?.[s]===false)?`Attach text files (${seats.filter(s=>pair?.images?.[s]===false).map(agentName).join(' and ')} can’t read images)`:'Attach images or text files (or paste or drop them here)'} disabled={!canSend||files.length>=8} onClick={()=>fileInput.current?.click()}><Icon.attach/></button>
             <button type="button" className="icon-btn" aria-label="Save draft to prompt library" title="Save this prompt and its files" disabled={!draft.trim()||!!busy||uploading||files.some(f=>f.status==='error')} onClick={()=>setLibrary('draft')}><Icon.folder/></button>
+            {/* The debate's length at a glance (rounds, or the time or agents' choice that ends it instead), changed here or in Options. */}
+            {!benchmark&&!building&&isRoomThread&&!live&&<div className="rounds-chip" ref={roundsRef}>
+              <button type="button" className={`chip${roundsOpen?' pressed':''}`} aria-haspopup="dialog" aria-expanded={roundsOpen} disabled={mismatch} title="How long the debate runs. Each agent speaks once a round." onClick={()=>setRoundsOpen(o=>!o)}>{endsLabel}</button>
+              {roundsOpen&&<div className="rounds-pop" role="dialog" aria-label="Debate rounds" onKeyDown={e=>{if(e.key==='Escape'){e.stopPropagation();setRoundsOpen(false);}}}>
+                <p>Rounds: each agent speaks once a round. The agents can’t end the debate early.</p>
+                <div className="rounds-presets" role="group" aria-label="Number of rounds">{[3,5,7,9,11,15].map(n=><button key={n} type="button" aria-pressed={byRounds&&roundsValue===n} onClick={()=>{chooseRounds(n);setRoundsOpen(false);}}>{n}</button>)}</div>
+                <label className="rounds-custom"><span>Other</span><input type="number" min={1} max={100} step={1} aria-label="Custom number of rounds" placeholder={String(roundsValue)} onKeyDown={e=>{if(e.key==='Enter'){e.preventDefault();const n=Number((e.target as HTMLInputElement).value);if(Number.isInteger(n)&&n>=1&&n<=100){chooseRounds(n);setRoundsOpen(false);}}}}/></label>
+                {!byRounds&&<p className="rounds-now">Now: {endsLabel}. Picking rounds switches the debate to rounds.</p>}
+                <button type="button" className="link" onClick={()=>{setRoundsOpen(false);setOptionsOpen(true);void loadPresets();}}>Other endings in Options</button>
+              </div>}
+            </div>}
             <input ref={fileInput} type="file" multiple hidden accept="image/png,image/jpeg,image/gif,image/webp,text/*,.md,.json,.jsonl,.csv,.yaml,.yml,.toml,.xml,.html,.css,.js,.mjs,.jsx,.ts,.tsx,.py,.rb,.go,.rs,.java,.kt,.swift,.c,.cpp,.h,.cs,.php,.sh,.ps1,.sql,.log,.diff,.patch" onChange={e=>{if(e.target.files)void addFiles(e.target.files);e.target.value='';}}/>
             <textarea ref={composerRef} rows={1} aria-label={benchmark?'Prompt for both agents':'Message both agents'} placeholder={busy?`${busy}…`:mismatch?`Clear Session to start ${MODE_NAMES[mode].toLowerCase()}`:placeholder} value={draft} maxLength={16000} disabled={!isRoomThread||!ready||mismatch}
               onChange={e=>setDraft(e.target.value)} onPaste={e=>{const pasted=[...e.clipboardData.files];if(pasted.length&&canSend){e.preventDefault();void addFiles(pasted);}}}
@@ -806,15 +926,22 @@ function App(){
             </div>
             <div className="seat-grid">{seats.map(seat=><div className="group" key={seat}>
               <h3><span className={`seat-dot ${seat}`}/>{agentName(seat)} <span>Agent {SEAT_NUMBER[seat]}</span></h3>
-              <textarea aria-label={`Private instruction for Agent ${SEAT_NUMBER[seat]}`} placeholder="Private instruction (only this agent sees it)" maxLength={8000} value={settings.instructions[seat]} onChange={e=>setSettings(s=>({...s,instructions:{...s.instructions,[seat]:e.target.value}}))}/>
+              <div className="seat-side"><strong>{SIDE_LABEL[(settings.stances??DEFAULT_STANCES)[seat]]}</strong>{seat==='cli1'&&<button type="button" className="link" onClick={()=>setSettings(s=>{const now=s.stances??DEFAULT_STANCES;return {...s,stances:{cli1:now.cli2,cli2:now.cli1}};})}>Swap sides</button>}</div>
+              <textarea aria-label={`Private context for Agent ${SEAT_NUMBER[seat]}`} placeholder="Private brief: lines of argument, evidence to find, what the other side will say. Given through this agent’s 1:1 line before the debate" maxLength={8000} value={settings.instructions[seat]} onChange={e=>setSettings(s=>({...s,instructions:{...s.instructions,[seat]:e.target.value}}))}/>
+              {/* G2: internet for the next debate. It switches when the debate starts; the agent's own switch below the chat is its state now. */}
+              <label className="seat-net"><input type="checkbox" aria-label={`Internet for Agent ${SEAT_NUMBER[seat]} in the next debate`} checked={settings.internet?.[seat]??internetOn(seat)} onChange={e=>setSettings(s=>({...s,internet:{...s.internet,[seat]:e.target.checked}}))}/>Internet {(settings.internet?.[seat]??internetOn(seat))?'on':'off'}{settings.internet?.[seat]!==undefined&&settings.internet[seat]!==internetOn(seat)&&<small>switches when the debate starts</small>}</label>
               <input aria-label={`Stop condition for Agent ${SEAT_NUMBER[seat]}`} placeholder="Stop when… (optional)" maxLength={4000} value={settings.stopWhen[seat]} onChange={e=>setSettings(s=>({...s,stopWhen:{...s.stopWhen,[seat]:e.target.value}}))}/>
             </div>)}</div>
             <div className="group limits">
-              <label><span>Ends</span><select value={settings.completion} onChange={e=>setSettings(s=>({...s,completion:e.target.value as PresetData['completion']}))}><option value="auto">From the prompt</option><option value="duration">At the time limit</option><option value="either">When either agent is done</option><option value="both">When both agents are done</option></select></label>
+              <label className="judge-pick"><span>Speech time <small>per speech, thinking included; running over forfeits it</small></span><select aria-label="Speech time" value={settings.speech??String(DEFAULT_SPEECH_MINUTES)} onChange={e=>setSettings(s=>({...s,speech:e.target.value}))}>{SPEECH_TIMES.map(([value,label])=><option key={value} value={value}>{label}</option>)}</select></label>
+              <label className="judge-pick"><span>Judge</span><select aria-label="Judge" value={settings.judge??'claude'} onChange={e=>setSettings(s=>({...s,judge:e.target.value as PresetData['judge']}))}>{JUDGES.map(([value,label])=><option key={value} value={value}>{label}</option>)}</select></label>
+              <label><span>Ends</span><select value={settings.completion} onChange={e=>setSettings(s=>({...s,completion:e.target.value as PresetData['completion']}))}><option value="auto">Default</option><option value="rounds">After the rounds</option><option value="duration">At the time limit</option><option value="either">When either agent is done</option><option value="both">When both agents are done</option></select></label>
+              <label><span>Rounds</span><input type="number" min="1" max="100" step="1" placeholder={String(DEFAULT_ROUNDS)} disabled={settings.completion!=='rounds'&&settings.completion!=='auto'} value={settings.rounds??''} onChange={e=>setSettings(s=>({...s,rounds:e.target.value}))}/></label>
               <label><span>Minutes</span><input type="number" min="0.01" max="1440" step="any" placeholder="From prompt" value={settings.minutes} onChange={e=>setSettings(s=>({...s,minutes:e.target.value}))}/></label>
               <label><span>Requests</span><input type="number" min="2" max="10000" placeholder="Automatic" value={settings.requests} onChange={e=>setSettings(s=>({...s,requests:e.target.value}))}/></label>
               <label><span>Pace (s)</span><input type="number" min="0" max="60" value={settings.pace} onChange={e=>setSettings(s=>({...s,pace:e.target.value}))}/></label>
             </div>
+            <p className="sheet-note">By default a debate runs for its rounds (each agent speaks once a round; {DEFAULT_ROUNDS} unless you set them), or for the time the prompt gives, as in “…for 5 minutes”. The agents can’t end it early by agreeing.</p>
             {(customized||opening!=='cli1')&&<button className="link" onClick={()=>{setSettings(DEFAULT_SETTINGS);setPresetId('');setOpening('cli1');}}>Reset to defaults</button>}
           </div>}
         </div>}
@@ -824,7 +951,8 @@ function App(){
         </div>
       </section>
     </main>
-    {library&&<PromptManager mode={mode} buildKind={buildKind} draft={draft} draftFiles={files.flatMap(f=>f.status==='ready'&&f.ref?[f.ref]:[])} draftBlocked={files.some(f=>f.status!=='ready')} startWithDraft={library==='draft'} runBlocked={promptRunBlocked} onUse={useSavedPrompt} onClose={()=>setLibrary(null)}/>}
+    {builderOpen&&<PromptBuilder key={mode} mode={mode} onUse={useSavedPrompt} onClose={()=>setBuilderOpen(false)}/>}
+    {library&&<PromptManager mode={mode} buildKind={buildKind} draft={draft} draftDebate={{rounds:Number(settings.rounds)||DEFAULT_ROUNDS,speechMinutes:Number(settings.speech??DEFAULT_SPEECH_MINUTES),agents:{cli1:{stance:(settings.stances??DEFAULT_STANCES).cli1,context:settings.instructions.cli1,internet:settings.internet?.cli1??internetOn('cli1')},cli2:{stance:(settings.stances??DEFAULT_STANCES).cli2,context:settings.instructions.cli2,internet:settings.internet?.cli2??internetOn('cli2')}}}} draftFiles={files.flatMap(f=>f.status==='ready'&&f.ref?[f.ref]:[])} draftBlocked={files.some(f=>f.status!=='ready')} startWithDraft={library==='draft'} runBlocked={promptRunBlocked} onUse={useSavedPrompt} onClose={()=>setLibrary(null)}/>}
     {lightbox&&<div className="backdrop lightbox" role="dialog" aria-label="Image" onMouseDown={()=>setLightbox('')} onKeyDown={e=>{if(e.key==='Escape')setLightbox('');}}><img src={lightbox} alt=""/><button className="icon-btn" autoFocus aria-label="Close image" onClick={()=>setLightbox('')}><Icon.close/></button></div>}
     {dialog&&<Dialog spec={dialog} onClose={()=>setDialog(null)}/>}
     {error&&<div className="toast" role="alert"><span>{error}</span><button className="icon-btn" aria-label="Dismiss" onClick={()=>setError('')}><Icon.close/></button></div>}

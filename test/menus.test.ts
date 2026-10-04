@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { AvAService } from '../src/service.js';
 import { runCommand } from '../src/text-client.js';
 import type { Pair } from '../src/types.js';
-import type { Menu } from '../src/menus.js';
+import { speedName, type Menu } from '../src/menus.js';
 import { TestFactory } from './fakes.js';
 import { tempDir } from './temp.js';
 
@@ -48,5 +48,16 @@ test('a text choice without a displayed menu, or after cancel, asks to open the 
     await text('/ava CLI2');assert.match(await text('/ava CLI2 x'),/menu closed/);
     await assert.rejects(text('/ava CLI2 1'),/Open \/ava CLI2 before choosing/);
     assert.equal(service.store.pair(pair.id).slots.cli2.config,null);
+  }finally{await close();}
+});
+
+test('speed reads Default or Fast, and every default choice reads Default',async()=>{
+  assert.deepEqual([speedName('on','On'),speedName('off','Off'),speedName('fast'),speedName('default'),speedName('turbo','Turbo')],['Fast','Default','Fast','Default','Turbo']);
+  const {service,text,close}=fixture('defaults');await service.call('pair.create',{thread:'defaults'});
+  try{
+    await text('/ava CLI1');const home=await text('/ava CLI1 1');
+    assert.match(home,/Effort: Default/);assert.match(home,/Speed: Default/);assert.doesNotMatch(home,/Provider default|model default/i);
+    const speed=await text('/ava CLI1 4');
+    assert.match(speed,/1\. Default/);assert.doesNotMatch(speed,/control unavailable/);
   }finally{await close();}
 });

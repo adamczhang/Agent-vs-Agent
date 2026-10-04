@@ -1,6 +1,6 @@
 {
   "name": "agent-vs-agent",
-  "version": "0.3.5",
+  "version": "0.4.3",
   "description": "AvA plugin for the Claude Code host. Run two agents from Codex CLI, Claude Code, Grok Build, Antigravity or Vercel AI Gateway in a shared room.",
   "author": {
     "name": "Adam Zhang",

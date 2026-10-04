@@ -42,7 +42,7 @@ test('a saved prompt and renamed attachment survive reload and load into the com
 
 test('Build previews remain interactive after dragging the divider across both frames',async({page,room},info)=>{
   await page.goto(room.url);await page.getByRole('radio',{name:'Build',exact:true}).click();
-  await page.getByRole('button',{name:/Browser fixture build/}).click();
+  await page.locator('button.thread',{hasText:'Browser fixture build'}).click();
   await page.getByRole('button',{name:'Results',exact:true}).click();
   const first=page.frameLocator('iframe').first();await expect(first.getByRole('heading',{name:'Working preview'})).toBeVisible();
   const divider=page.getByRole('separator',{name:'Resize the CLI and lower panes',exact:true});
@@ -61,6 +61,9 @@ test('Debate remembers its opener and exposes speaking, waiting and queued messa
   await opening.getByRole('radio',{name:'Agent 2 (Claude Code)',exact:true}).click();await page.reload();
   await page.getByRole('button',{name:'Options for the next prompt'}).click();
   await expect(opening.getByRole('radio',{name:'Agent 2 (Claude Code)',exact:true})).toBeChecked();
+  // Slower simulated replies (3 s) for the debate's fresh sessions, so a message sent during the opening waits for the
+  // next turn, as it would with a real agent.
+  (room.service as unknown as {factory:{delayMs:number}}).factory.delayMs=3000;
   await page.getByRole('button',{name:'Close options',exact:true}).click();
   await page.getByRole('textbox',{name:'Message both agents',exact:true}).fill('Debate the next release for 30 seconds');
   await page.getByRole('button',{name:'Start',exact:true}).click();
@@ -71,6 +74,38 @@ test('Debate remembers its opener and exposes speaking, waiting and queued messa
   await page.getByRole('textbox',{name:'Message both agents',exact:true}).press('Enter');
   await expect(page.getByRole('status',{name:'Debate turn order'})).toContainText('queued for the next turn');
   await page.getByRole('button',{name:'Stop',exact:true}).click();
+});
+
+test('the rounds chip beside the message box sets the next debate\'s rounds',async({page,room})=>{
+  await page.goto(room.url);
+  const chip=page.locator('.rounds-chip .chip');
+  await expect(chip).toHaveText('7 rounds');
+  const box=page.getByRole('textbox',{name:'Message both agents',exact:true});
+  await box.fill('Debate tabs or spaces for 5 minutes');await expect(chip).toHaveText('5 min');
+  await chip.click();await page.getByRole('group',{name:'Number of rounds'}).getByRole('button',{name:'5',exact:true}).click();
+  await expect(chip).toHaveText('5 rounds');
+  await page.getByRole('button',{name:'Start',exact:true}).click();
+  await expect.poll(()=>room.service.store.pair(room.pairId).activeRunId).toBeTruthy();
+  const run=room.service.store.run(room.service.store.pair(room.pairId).activeRunId!);
+  expect([run.config.completion,run.config.rounds,run.config.stances,run.config.judge]).toEqual(['rounds',5,{cli1:'for',cli2:'against'},{provider:'claude'}]);
+  await expect(chip).toHaveCount(0);
+  await page.getByRole('button',{name:'Stop',exact:true}).click();
+});
+
+test('a formal debate: each agent is briefed in its 1:1 line, then the judge\'s ballot follows the debate',async({page,room})=>{
+  test.setTimeout(60_000);
+  await page.goto(room.url);
+  await page.locator('.rounds-chip .chip').click();
+  const custom=page.getByLabel('Custom number of rounds');await custom.fill('1');await custom.press('Enter');
+  await page.getByRole('textbox',{name:'Message both agents',exact:true}).fill('This house would ban homework');
+  await page.getByRole('button',{name:'Start',exact:true}).click();
+  const ballot=page.getByRole('region',{name:'Judge’s ballot'});
+  await expect(ballot).toBeVisible({timeout:30_000});
+  await expect(ballot).toContainText('Winner:');await expect(ballot).toContainText('/15');
+  await expect(ballot.getByRole('row',{name:/Factual accuracy & evidence/})).toBeVisible();
+  const run=room.service.store.run(room.service.store.pair(room.pairId).lastRunId??'');
+  expect(run.judgment?.status).toBe('done');
+  expect(room.service.store.db.prepare("SELECT count(*) n FROM direct_messages WHERE sender='user' AND text LIKE '%formal debate%'").get()).toEqual({n:2});
 });
 
 test('Resources saves a lower limit without stopping work, then stops all with confirmation',async({page,room},info)=>{

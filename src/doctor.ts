@@ -4,6 +4,7 @@ import {mkdirSync,rmSync,writeFileSync} from 'node:fs';
 import {isAbsolute,join} from 'node:path';
 import {findOnPath,launchOf,MINIMUM,versionAtLeast} from './clis.js';
 import {gatewayKey,parseCredits} from './gateway.js';
+import {cursorArgv,cursorTier} from './cursor.js';
 import {writePrivateFile} from './private-files.js';
 import type {Provider} from './types.js';
 import type {NativeFactory} from './providers.js';
@@ -17,11 +18,11 @@ export interface DataFolderDiagnostic {path:string;writable:boolean;secured:bool
 export interface DoctorReport {modelRequests:0;clis:CliDiagnostic[];gateway:GatewayDiagnostic;dataFolder?:DataFolderDiagnostic}
 export type Inspection=(provider:Provider)=>ReturnType<NativeFactory['inspect']>;
 interface Options {env?:NodeJS.ProcessEnv;run?:DiagnosticRun;resolve?:(provider:CliProvider)=>Launch|undefined;fetcher?:typeof fetch}
-const LABELS:Record<CliProvider,string>={codex:'Codex CLI',claude:'Claude Code','grok-build':'Grok Build',antigravity:'Antigravity'};
+const LABELS:Record<CliProvider,string>={codex:'Codex CLI',claude:'Claude Code','grok-build':'Grok Build',antigravity:'Antigravity',cursor:'Cursor Agent'};
 const UPDATES:Partial<Record<CliProvider,string>>={codex:'npm install -g @openai/codex@latest',claude:'claude update'};
-const API_ENV:Record<CliProvider,string[]>={codex:['CODEX_API_KEY','OPENAI_API_KEY'],claude:['ANTHROPIC_API_KEY','ANTHROPIC_AUTH_TOKEN'],'grok-build':['XAI_API_KEY'],antigravity:['GOOGLE_API_KEY','GEMINI_API_KEY','GOOGLE_APPLICATION_CREDENTIALS','GOOGLE_GENAI_USE_VERTEXAI']};
+const API_ENV:Record<CliProvider,string[]>={codex:['CODEX_API_KEY','OPENAI_API_KEY'],claude:['ANTHROPIC_API_KEY','ANTHROPIC_AUTH_TOKEN'],'grok-build':['XAI_API_KEY'],antigravity:['GOOGLE_API_KEY','GEMINI_API_KEY','GOOGLE_APPLICATION_CREDENTIALS','GOOGLE_GENAI_USE_VERTEXAI'],cursor:['CURSOR_API_KEY','CURSOR_AUTH_TOKEN']};
 const run:DiagnosticRun=(launch,args,env)=>new Promise(resolve=>{
-  execFile(launch.command,[...launch.args,...args],{env,windowsHide:true,timeout:10000,maxBuffer:1024*1024},(error,stdout,stderr)=>resolve({ok:!error,stdout:String(stdout??''),stderr:String(stderr??'')}));
+  execFile(launch.command,[...launch.args,...args],{env,windowsHide:true,timeout:20000,maxBuffer:1024*1024},(error,stdout,stderr)=>resolve({ok:!error,stdout:String(stdout??''),stderr:String(stderr??'')}));
 });
 function resolveCli(provider:CliProvider,inspect:Inspection,env:NodeJS.ProcessEnv):Launch|undefined{
   if(provider==='codex'||provider==='claude'){
@@ -29,7 +30,8 @@ function resolveCli(provider:CliProvider,inspect:Inspection,env:NodeJS.ProcessEn
   }
   const entry=inspect(provider);
   if(entry?.launch.kind!=='installed')return undefined;
-  const argv=entry.launch.argv,command=argv[0];
+  // Cursor's shim is a .cmd that needs a shell; its bundled Node and entry file start without one.
+  const argv=provider==='cursor'?cursorArgv(entry.launch.argv):entry.launch.argv,command=argv[0];
   if(!command||!isAbsolute(command))return undefined;
   // Registry entries point at the CLI with ACP subcommands. A Node entry needs its script prefix for --version.
   return {command,args:argv[1]&&/\.[cm]?js$/.test(argv[1])?[argv[1]]:[]};
@@ -54,6 +56,12 @@ export async function diagnoseCli(provider:CliProvider,inspect:Inspection,option
     }else if(provider==='claude'){
       const auth=await execute(launch,['auth','status','--json'],env);
       try{const data=JSON.parse(auth.stdout) as {loggedIn?:boolean;authMethod?:string};base.auth=data.loggedIn===false?'signed_out':data.loggedIn===true?(/api/i.test(data.authMethod??'')?'api_key':'signed_in'):'unknown';}catch{/* no documented result */}
+    }
+    else if(provider==='cursor'){
+      const auth=await execute(launch,['status'],{...env,CURSOR_INVOKED_AS:'cursor-agent'}),text=auth.stdout+'\n'+auth.stderr;
+      base.auth=/not logged in|not authenticated|log in to/i.test(text)?'signed_out':auth.ok&&/logged in as/i.test(text)?'signed_in':'unknown';
+      // The plan decides whether agent requests are served: a Free plan's are refused.
+      if(base.auth==='signed_in'){const about=await execute(launch,['about'],{...env,CURSOR_INVOKED_AS:'cursor-agent'}),tier=cursorTier(about.stdout);if(tier)base.message+=/^free$/i.test(tier)?` Plan: ${tier}; Cursor refuses agent requests on it.`:` Plan: ${tier}.`;}
     }
     // Grok and Antigravity don't expose a verified non-interactive login-status command here.
     return base;
@@ -80,7 +88,7 @@ export function checkDataFolder(dataRoot:string):DataFolderDiagnostic{
   }finally{try{rmSync(probe,{recursive:true,force:true});}catch{/* nothing was created */}}
 }
 export async function doctor(dataRoot:string,inspect:Inspection,options:Options={}):Promise<DoctorReport>{
-  const [clis,gateway]=await Promise.all([Promise.all((['codex','claude','grok-build','antigravity'] as const).map(p=>diagnoseCli(p,inspect,options))),diagnoseGateway(dataRoot,options.fetcher)]);
+  const [clis,gateway]=await Promise.all([Promise.all((['codex','claude','grok-build','antigravity','cursor'] as const).map(p=>diagnoseCli(p,inspect,options))),diagnoseGateway(dataRoot,options.fetcher)]);
   return {modelRequests:0,clis,gateway,dataFolder:checkDataFolder(dataRoot)};
 }
 export async function cliWarnings(inspect:Inspection):Promise<Partial<Record<Provider,string>>>{

@@ -11,9 +11,16 @@ For development and validation, see [Contributing](../CONTRIBUTING.md). For the 
 - Type `/ava` for short help, or `/ava doctor` for diagnostics in either host. Doctor checks CLI installation and versions, Codex and Claude Code sign-in status where available, and the Gateway key's credit endpoint. It sends **no model requests**. Grok Build and Antigravity sign-in checks are reported as unavailable; only activation proves model access.
 - An outdated Codex or Claude Code is flagged in the activation menu with its update command. The Gateway also requires a compatible Codex CLI.
 - Type `/ava start` in Codex or Claude Code (the same `/ava` commands work in both hosts). The room opens in your browser panel, or you get its link.
-- Above each agent's screen, **Activate** stands where the agent's name goes. Click it to open that agent's setup menu: the same text menu the hosts print for `/ava CLI1`, in a small window. Click a line, or type its number; **B** goes back and **X** closes.
-  - Choose the CLI (Claude Code, Codex CLI, Grok Build or Antigravity; the same CLI can take both seats), then its model, effort, speed, account route and permissions.
-  - **Activate and verify** sends one short request to check that the model answers.
+  - **The version:** the room shows the AvA version beside its title.
+  - **After an update:** the new version takes over from the older AvA service once nothing is running in it, closing that service's idle agents. Open the room again with `/ava start`; links to the old room stop working.
+- Above each agent's screen, **Activate** stands where the agent's name goes. Click it to open that agent's setup menu: the same text menu the hosts print for `/ava CLI1`, in a small window. Click a line, or type its number; **B** goes back, **C** changes the CLI and **X** closes.
+  - Choose the CLI (Claude Code, Codex CLI, Grok Build or Antigravity; the same CLI can take both seats), then its model, effort, speed, account route and permissions. Models show their name and version (Opus 5.5). Speed reads **Default** or **Fast**, and any setting left alone reads **Default**.
+  - **Quick activate** (beside **Activate**, **Quick activate both** below, or the last line of the menu) activates an agent in one click.
+    - **What it uses:** the settings that agent last activated with, in any room: CLI, model, effort, speed, permissions and internet. Its description says what it will use.
+    - **The first time:** the CLI's strongest model at high effort, with Ask permissions and internet off. The CLI is the one chosen for the agent, otherwise Claude Code for Agent 1 and Codex for Agent 2.
+    - **A Gateway model** is chosen once with **Activate**.
+  - **Changing the CLI:** once a CLI is chosen, its name stands beside **Activate**; click it (or **C. Change CLI** in the menu) to pick another, before or after activation.
+  - **Activate and verify** sends one short request to check that the model answers, and the setup window closes. Codex and Claude Code report their context window with that check, so the ring beside the agent's status fills in at once; Grok Build and Antigravity don't report theirs.
 - **Vercel AI Gateway** is the fifth provider choice. Available models and makers are loaded from the Gateway catalog.
   - **Model:** pick a maker, then a model (newest first, 20 per page), or type in the search box to search them all. **Effort** offers that model's own reasoning levels.
   - **The agent:** Codex, pointed at the Gateway (as `vercel ai-gateway setup` configures Codex), set up for AvA's own process only. Your Codex and Claude Code settings are never changed.
@@ -42,23 +49,63 @@ Bypass trusts the agent with your machine. Use it for tasks you'd let that CLI r
 
 ## Saved prompts and their files
 
-**Prompt library** in the sidebar opens the same saved library in Prompt, Debate and Build, including Build's Review task. The library is shared by the Codex and Claude Code hosts. It includes six starter prompts that you can edit or delete.
+**Prompt library** in the sidebar opens the same saved library in Prompt, Debate and Build, including Build's Review task. Its tabs show each mode's prompts (and **All**); it opens on the current mode, and prompts saved for any mode appear in every tab. The library is shared by the Codex and Claude Code hosts. It includes starter prompts that you can edit or delete: two for Prompt, two for Build and Review, and ten debates (below).
 
 - **New prompt** creates a saved prompt. Give it a name, select a mode (or **Any mode**), and write its instructions in Markdown. **Import .md / .txt** brings an existing prompt into the editor; **Export Markdown** downloads its text.
 - The folder button beside the composer saves the current draft and its attached files. **Use current draft** does the same from inside the library.
 - **Files** keeps up to eight reference images or text files with each prompt. Add or drop files, edit their names, preview them, download them, or remove them before saving. The room's usual limits apply: 8 MB per image and 512 KB per text file. Removing a file in the editor takes effect when you save.
 - **Save prompt** keeps the prompt and its files. **Load into composer** brings them into the current room and selects the saved mode. You can adjust the draft before sending. Loading alone sends no model request.
-- **Run now** saves and sends the prompt to both active agents in the current mode, using the room's current options and project folder. It waits for a ready session; a finished Build still needs a new session. A Review needs a project folder. Saving a prompt never changes provider, model, permissions or internet settings.
+- **Run now** saves and sends the prompt to both active agents in the current mode, using the room's current options and project folder. It waits for a ready session; a finished Build still needs a new session. A Review needs a project folder. Saving a prompt never changes provider, model or permissions, and only a Debate prompt sets internet access (below).
+- **Debate prompts** all follow one template:
+  - **Motion:** both debaters see it, with any definitions both sides should use.
+  - **Agent 1 and Agent 2:** each has its **side** (for or against the motion; the two are always opposite) and a private brief that only it sees. Each also has an **Internet** on or off choice.
+  - **Rounds:** how many speeches each debater gives.
+  - **Loading or running one** fills the debate Options with the sides, briefs, internet choices and rounds. It also clears stop conditions, minutes and a request limit left over from an earlier debate.
+  - **Internet:** each agent's switch changes when the debate starts.
+  - **While a debate runs,** a debate prompt can't be loaded: stop it or close the thread first.
+  - **Export Markdown** writes the whole template in one file, and **Import** reads it back.
 - Search by name, prompt text or attached filename, and filter by mode. **Delete prompt** removes its library copy after confirmation; earlier runs retain independent attachment copies. Unsaved edits require a discard confirmation before leaving.
 
-The library shows its storage folder and lets you copy the path. Saved prompts live under `prompts/` in the configured data folder; `AVA_DATA_DIR` overrides the folder set by `config.dataDir`. Each prompt has its own ID-named folder containing `prompt.md`, `prompt.json` (name, mode and file metadata), and `files/` with original filenames. These files persist across plugin upgrades and **Clear history**. **Reload saved version** picks up an externally edited `prompt.md`; conflicting edits from another window are refused until you reload. Import standalone Markdown through the library instead of creating an incomplete prompt folder manually.
+The library shows its storage folder and lets you copy the path. Saved prompts live under `prompts/` in the configured data folder; `AVA_DATA_DIR` overrides the folder set by `config.dataDir`. Each prompt has its own ID-named folder containing `prompt.md`, `prompt.json` (name, mode and file metadata), `debate.json` for a Debate prompt's template, and `files/` with original filenames. These files persist across plugin upgrades and **Clear history**. **Reload saved version** picks up an externally edited `prompt.md`; conflicting edits from another window are refused until you reload. Import standalone Markdown through the library instead of creating an incomplete prompt folder manually.
 
 Saved prompts do not yet have benchmark pass/fail scoring; that is separate roadmap work.
+
+### Formal debates
+
+Every debate runs like a competitive debate:
+
+- **Assigned sides.** Agent 1 argues for the motion (the Proposition) and Agent 2 against (the Opposition). Swap them in Options or in a debate prompt. Each argues its side whatever its own view, which keeps two agreeable assistants from settling after a turn or two.
+- **A brief before the start.** Each debater gets a private brief through its own 1:1 line: the motion, its side, the format, how it will be judged, and your private notes for it. It replies READY, and the debate starts once both have. You can read both exchanges in the 1:1 windows.
+- **Speeches.** Round 1 is each side's opening case. The middle rounds are rebuttals: answer the other side's strongest point first, then strengthen your own case. The last round is a closing, with no new arguments. Debaters are told to back claims with evidence and never invent facts or sources.
+- **An independent judge.** When the debate completes, a fresh session of the strongest model at its highest effort reads the speeches and scores each side.
+  - **Who judges:** Claude Code (Opus at max effort) by default, Codex, or no judge, chosen in Options.
+  - **What it sees:** the motion and the speeches, never the briefs or which CLI argued which side. It can search the web to check facts.
+  - **The score:** 1 to 5 for each debater in three categories (factual accuracy and evidence; challenging the opposition's strongest points; a cohesive stance), plus a winner and the reasons.
+  - **The ballot** appears below the debate, with any factual claims the judge questioned. **Judge this debate** or **Judge again** asks it on demand, for example after a debate you stopped.
+- **The library's ten built-in debates** are formal motions, each with briefs for both sides:
+  - smartphones in schools;
+  - social media and teenagers;
+  - nuclear power;
+  - universal basic income;
+  - rent control;
+  - the four-day week;
+  - open AI models;
+  - a market for kidneys;
+  - youth tackle football;
+  - the fall of Rome.
+
+  They replace the earlier debate starters you never edited.
+- **A time per speech,** 2 minutes by default (Options, or a debate prompt), covers thinking, web searches and writing together. A speech that runs over is cut off and recorded as forfeited, the other side speaks next, and the judge counts the forfeit.
+- **One debate per thread.** Starting a debate after another in the same thread first gives both agents fresh sessions, so neither remembers the last one. Each debate stays in history as its own thread with its ballot, and the thread list shows the result ("Agent 2 won 14–10").
+- **The Debate builder** (the third button in the sidebar, under the mode switch) sets a debate up step by step.
+  - **The form:** the motion and its definitions, which side Agent 1 argues, a private brief for each side, internet, rounds and speech time. The grey hint in each box says what a good entry looks like and disappears as you type.
+  - **Saving:** **Save** adds the debate to the prompt library, and **Save and load** also fills the room's composer and Options. **Start from** opens any saved debate to edit.
+  - **Prompt and Build** have simple builders for now.
 
 ## The room
 
 A white, three-part window:
-- **Left:** the mode switch and a three-slot tools row (Prompt library, Resources, and one reserved space). A faint divider separates these controls from Search and the thread list below.
+- **Left:** the mode switch and a three-button tools row (Prompt library, Resources, and the builder for the current mode). A faint divider separates these controls from Search and the thread list below.
 - **Upper panes:** each agent's own screen (thinking, tool use and output as its CLI exposes them). Drag the divider between the two agents to change their widths.
 - **Lower pane:** the shared channel, with the text box along the bottom edge. Drag the horizontal line above it up or down to give more space to the CLI screens or the lower pane. This also works in Stats and Results. Double-click a divider (or focus it and press Enter) to reset that split; arrow keys adjust it, with Shift for larger steps. Both proportions are remembered in this browser.
 
@@ -66,10 +113,10 @@ There is no third model acting as a relay. One message of yours goes to both age
 
 ### Modes
 
-Switched under Search; each lists its own threads.
+Switched at the top of the sidebar. Each mode has its own thread and its own two agents in this room: switching to Build after a debate opens a clear Build screen, and switching back finds the debate as you left it, still running if it was, until you close it. A mode used for the first time starts with the same agent settings, ready for **Activate both**. Two modes with active agents use four agents, the default limit (Resources).
 
 - **Prompt:** one prompt goes to both agents at the same moment, exactly as you wrote it. Each answers once in plain text, shown with how long it took, and the run ends. **Stats** has the timing and speed. Tools follow each agent's permissions.
-- **Debate:** the agents talk to each other. Prime each one privately with its 1:1 line (say "you are a CEO" and "you are a college student"), then give the shared topic. **Options → First to speak** picks who opens: Agent 1 (the default), Agent 2, or both independently at once. The choice is remembered in this browser and in saved presets. After the opening, agents alternate. A new shared message waits for the next turn; the next speaker answers first, then the other receives both the message and that answer. The room shows who is speaking, who is next, and how many prompts are queued.
+- **Debate:** the agents talk to each other. Prime each one privately with its 1:1 line (say "you are a CEO" and "you are a college student"), then give the shared topic. **Options → First to speak** picks who opens: Agent 1 (the default), Agent 2, or both independently at once. The choice is remembered in this browser and in saved presets. Your topic reaches both agents at the start: while Agent 1 writes its opening, Agent 2 reads the topic (it replies READY, which isn't posted; one extra short request) and then answers that opening. After the opening, agents alternate. Turns are asked to be short and conversational, in plain text, with no word count; any length or format you give in the topic comes first. A new shared message waits for the next turn; the next speaker answers first, then the other receives both the message and that answer. The room shows who is speaking, who is next, and how many prompts are queued.
 - **Build:** both agents build the same thing at the same moment, each in its own folder, and post a link to their app in the shared channel.
   - **One prompt per session,** with no messages while it runs. **New build session** (or Clear Session) starts the next one.
   - **Setting up first:** in a Build session, an agent's 1:1 line may use the same scoped file tools. Under Ask, provide an existing project to copy; cloning, installing dependencies and running tests require execution isolation or an explicit Bypass choice.
@@ -89,9 +136,10 @@ Switched under Search; each lists its own threads.
 
 A thread is one continuous session with both agents. In Prompt and Debate, send as many prompts as you like; the agents remember the whole thread. A Build session takes one.
 
+- **Close thread** (in the thread's header, or **⋯ → Close thread**) stops the conversation, closes both agents and any app server they left running, and keeps the thread in the list. Both agents keep their settings (CLI, model, effort, speed, permissions, internet): **Activate both** starts the next thread with one short check each.
 - **New thread** (the compose button at the top of the sidebar) opens a clean page in the current mode, with its own two agents to activate. Each thread with live agents runs two CLI processes on this computer. From the third, AvA asks before opening another and again before activating its agents; you can go ahead anyway.
 - **Clear Session** (**⋯ → Clear Session**) stops anything running and gives this page's two agents fresh sessions. That starts a new thread at the top of the list; the old one stays readable. Each new session makes one short access check per agent.
-- The list is the shared pool: threads from every chat, in Codex or Claude Code. Search covers every saved message.
+- The list is the shared pool: threads from every chat and every mode, in Codex or Claude Code, each labeled with its mode. Choosing a thread switches to its mode. Search covers every saved message.
 - **Renaming:** double-click a thread's title (in the header or the list), or use **⋯ → Rename**. An empty name goes back to the first prompt.
 
 ### 1:1 lines
@@ -125,7 +173,8 @@ The paperclip (or paste, or drag and drop) attaches images (PNG, JPEG, GIF, WebP
   - **Pause** drains current replies and freezes the clock at a reply boundary.
   - **Next reply** advances one agent while paused. A message sent while paused gets one reply from each agent, then pauses again.
   - **Stop** cancels active work.
-- **Options** (the sliders beside the text box) apply to the next prompt: a private instruction and a stop condition per agent, how the conversation ends, minutes, request limit, pace, and saved presets. Timed prompts ("…for 15 minutes") use duration mode.
+- **Options** (the sliders beside the text box) apply to the next prompt. Per agent: its side (**Swap sides**), its private brief, internet, and a stop condition. Shared: the judge, how the conversation ends, rounds, minutes, request limit, pace, and saved presets. They match a Debate prompt's template. An internet choice made here switches the agent when the debate starts; using the agent's own switch replaces it.
+  - **Rounds:** by default a debate runs for 7 rounds, each agent speaking once a round. The chip beside the message box shows the next debate's length; click it to pick another number of rounds (this also overrides a time written in the prompt). The agents can't end it early by agreeing; the status line shows the round, and the last round is a closing statement. A timed prompt ("…for 15 minutes") runs for its time instead. **Ends** can also stop the debate when either or both agents say they're done, and a stop condition you write still ends it.
 - **Context and usage** (the small ring beside each agent's status, like Claude's usage ring) fills as that agent's context window does. It turns amber at 80% and red at 95%. Click it for the numbers:
   - **Context window:** tokens in use of the model's window, e.g. 161.5k / 200k.
   - **This session:** input, output and cached tokens, and the agent's cost estimate at API prices (a subscription isn't billed per request), when the agent reports them.
@@ -133,6 +182,7 @@ The paperclip (or paste, or drag and drop) attaches images (PNG, JPEG, GIF, WebP
   - Codex and Claude Code report after each reply; Grok Build and Antigravity don't report their context.
 - **Stats** (the chart button) covers the whole thread: conversation time, time to first token, reply time, tokens per second, a per-agent table, and a timeline. Codex, Claude Code and Gateway counts use saved provider reports for each request; only Grok Build and Antigravity use estimates (characters ÷ 4), marked ≈. Missing reports and older history stay unavailable. The context ring shows session totals, which also include activation and private messages.
 - **⋯** also has Replay and Export (JSON or Markdown, including the 1:1 lines).
+- **Delete one thread:** point at it in the list and click the trash button that appears. After a confirmation, it deletes that thread's prompts, replies, 1:1 messages, ballot, attachments only it used, and its agents' folders. A thread whose agents are still active must be closed first.
 - **⋯ → Clear history** permanently deletes every saved thread in the shared data folder after a confirmation. That covers prompts, replies, 1:1 messages, attachments, and the agents' working folders with everything they built. It also stops app servers they left running and gives this page's agents fresh sessions.
 
 The two agents are isolated from each other. Each sees only the shared topic, your shared messages, and the other's final replies: never the other's 1:1 messages, private instructions, thinking, or tool activity. Closing the room leaves a running conversation running; reopening it sends no model prompts.

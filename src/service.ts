@@ -5,13 +5,15 @@ import { rm } from 'node:fs/promises';
 import { basename,dirname,join,relative } from 'node:path';
 import { z } from 'zod';
 import { SCHEMA_VERSION,Store,threadKey } from './store.js';
-import { packageVersion } from './paths.js';
+import { newerVersion,packageVersion } from './paths.js';
 import { attachmentKind } from './attachment-files.js';
 import { PromptLibrary,promptKeySchema,promptSaveSchema } from './prompt-library.js';
 import { ConversationController,internetNote } from './controller.js';
 import { ActivationManager,type ParticipantFactory } from './activation.js';
 import { NativeFactory,loadProviderSetups,type Catalog } from './providers.js';
 import { LABELS,Menus } from './menus.js';
+import { QuickMemory,highEffort,strongestModel } from './quick.js';
+import { debateBrief,judgePrompt,maxEffort,parseBallot,total } from './debate.js';
 import { listProcesses,survivors,systemCensus,type Census,type ProcessLedger,type SystemProcess } from './census.js';
 import { JobHost,type AgentJobs } from './jobs.js';
 import { combineStats,computeStats } from './stats.js';
@@ -25,16 +27,16 @@ import { protectPrivatePath } from './private-files.js';
 import type { DoctorReport } from './doctor.js';
 import { Previews,appTarget,pageIn } from './preview.js';
 import { createGatewayKey,forgetGatewayKey,gatewayCredit,gatewayKeyStatus,gatewayModels,type GatewayModel,type RunVercel } from './gateway.js';
-import { AvAError,PROVIDERS,SEATS,conversationConfig,type AgentUsage,type Pair,type Provider,type ProviderConfig,type Run,type Seat } from './types.js';
+import { AvAError,PROVIDERS,SEATS,conversationConfig,type AgentUsage,type JudgeProvider,type Judgment,type RoomMode,type Pair,type Provider,type ProviderConfig,type Run,type RunConfig,type Seat } from './types.js';
 
 const id=z.string().min(1).max(200),seat=z.enum(SEATS),provider=z.enum(PROVIDERS);
 const resultDate=z.string().datetime({offset:true}).transform(value=>new Date(value).toISOString());
 const resultFilters=z.object({jobId:id.optional(),suite:z.string().min(1).max(1000).optional(),taskId:id.optional(),provider:z.string().min(1).max(100).optional(),model:z.string().min(1).max(300).optional(),from:resultDate.optional(),to:resultDate.optional(),simulation:z.enum(['all','only','exclude']).optional()}).strict().refine(p=>!p.from||!p.to||p.from<=p.to,'The start date must precede the end date.');
 const choice=z.object({key:z.string().min(1).max(100),value:z.string().max(200)});
-const providerConfig=z.object({provider,model:z.string().min(1).max(300),effort:choice.optional(),speed:choice.optional(),auth:z.enum(['provider-login','api'])}).strict();
+const providerConfig=z.object({provider,model:z.string().min(1).max(300),modelName:z.string().max(200).optional(),effort:choice.optional(),speed:choice.optional(),auth:z.enum(['provider-login','api'])}).strict();
 // Preset data mirrors the room's settings form; .strict() keeps provider/model choices out (they belong to Codex activation).
-const presetData=z.object({instructions:z.object({cli1:z.string().max(8000),cli2:z.string().max(8000)}).strict(),stopWhen:z.object({cli1:z.string().max(4000),cli2:z.string().max(4000)}).strict(),completion:z.enum(['auto','duration','either','both']),minutes:z.string().max(20),requests:z.string().max(20),pace:z.string().max(20),opening:z.enum(['both','cli1','cli2']).optional()}).strict();
-const runOptions=z.object({instructions:z.object({cli1:z.string().max(8000),cli2:z.string().max(8000)}).optional(),stopWhen:z.object({cli1:z.string().max(4000),cli2:z.string().max(4000)}).optional(),completion:z.enum(['duration','either','both']).optional(),durationMs:z.number().positive().max(86400000).optional(),maxRequests:z.number().int().min(2).max(10000).optional(),perTurnMs:z.number().positive().max(3600000).optional(),paceMs:z.number().min(0).max(60000).optional(),lead:seat.optional(),mode:z.enum(['conversation','benchmark','build']).optional(),opening:z.enum(['both','cli1','cli2']).optional()}).strict();
+const presetData=z.object({instructions:z.object({cli1:z.string().max(8000),cli2:z.string().max(8000)}).strict(),stopWhen:z.object({cli1:z.string().max(4000),cli2:z.string().max(4000)}).strict(),completion:z.enum(['auto','duration','either','both','rounds']),rounds:z.string().max(20).optional(),internet:z.object({cli1:z.boolean(),cli2:z.boolean()}).partial().strict().optional(),stances:z.object({cli1:z.enum(['for','against']),cli2:z.enum(['for','against'])}).strict().optional(),judge:z.enum(['claude','codex','off']).optional(),speech:z.string().max(20).optional(),minutes:z.string().max(20),requests:z.string().max(20),pace:z.string().max(20),opening:z.enum(['both','cli1','cli2']).optional()}).strict();
+const runOptions=z.object({instructions:z.object({cli1:z.string().max(8000),cli2:z.string().max(8000)}).optional(),stopWhen:z.object({cli1:z.string().max(4000),cli2:z.string().max(4000)}).optional(),completion:z.enum(['duration','either','both','rounds']).optional(),rounds:z.number().int().min(1).max(100).optional(),stances:z.object({cli1:z.enum(['for','against']),cli2:z.enum(['for','against'])}).strict().optional(),judge:z.object({provider:z.enum(['claude','codex'])}).strict().optional(),speechMs:z.number().min(30_000).max(1_800_000).optional(),durationMs:z.number().positive().max(86400000).optional(),maxRequests:z.number().int().min(2).max(10000).optional(),perTurnMs:z.number().positive().max(3600000).optional(),paceMs:z.number().min(0).max(60000).optional(),lead:seat.optional(),mode:z.enum(['conversation','benchmark','build']).optional(),opening:z.enum(['both','cli1','cli2']).optional()}).strict();
 
 // A direct reply is plain text; if the agent answers in the room's JSON envelope out of habit, show just its message.
 function plainReply(text:string){
@@ -45,7 +47,9 @@ function plainReply(text:string){
 // codex-command-runner-<version>.exe), never treated as something an agent left running.
 const AGENT_HELPER=/^(codex|claude|grok|agy|antigravity)([-_.][\w.-]*)?\.exe$/i;
 // Calls that start or change runs, agents or history (refused while Clear history runs).
-const CHANGING=new Set(['run.start','run.broadcast','run.control','run.reconcile','direct.send','pair.clear','pair.reset','slot.configure','slot.activate','slot.cancel','slot.internet','slot.permissions','menu.choose','room.new','history.clear','prompt.save','prompt.delete','prompt.prepare','attachment.add','resources.configure','resources.stop','bench.validate','bench.start','bench.cancel']);
+// The judge's own sessions (G7): kept out of the agent limit and of Quick activate's memory.
+const JUDGE_PAIR='debate-judge-';
+const CHANGING=new Set(['thread.delete','debate.judge','run.start','run.broadcast','run.control','run.reconcile','direct.send','pair.clear','pair.close','pair.reset','slot.configure','slot.activate','slot.quick','slot.cancel','slot.internet','slot.permissions','menu.choose','room.new','history.clear','prompt.save','prompt.delete','prompt.prepare','attachment.add','resources.configure','resources.stop','bench.validate','bench.start','bench.cancel']);
 // Stops each process with its whole tree (Windows: taskkill /T; it fails for any that already exited, which is fine).
 function stopTrees(pids:number[]){
   if(!pids.length)return Promise.resolve();
@@ -80,6 +84,7 @@ export class AvAService {
   readonly benchmarks:BenchmarkRunner;
   readonly benchmarkResults:BenchmarkResults;
   readonly menus:Menus;
+  readonly quick:QuickMemory;
   private catalogs=new Map<string,{value:Catalog;at:number}>();
   private tickets=new Map<string,{pairId:string;generations:number[];expires:number}>();
   private operations=new Map<string,Promise<unknown>>();
@@ -87,6 +92,8 @@ export class AvAService {
   private preparing=new Set<string>();
   private preparationDone=new Set<Promise<void>>();
   private shuttingDown=false;
+  // Set by the background service (server.ts): stop it for a newer install (service.retire).
+  retire?:()=>void;
   private stoppingAgents=false;
   private census:Census;
   private processes:()=>Promise<SystemProcess[]>;
@@ -113,7 +120,7 @@ export class AvAService {
     }
     this.activation=new ActivationManager(this.store,factory);this.engine=new ConversationController(this.store);
     this.resources=new Resources(this.store,this.activation,this.processes);
-    this.activation.beforeActivate=(pairId,seat)=>{if(this.stoppingAgents)throw new AvAError('STOPPING_AGENTS','AvA is stopping its agents. Wait for cleanup to finish.');this.resources.admit(pairId,seat);};
+    this.activation.beforeActivate=(pairId,seat)=>{if(this.stoppingAgents)throw new AvAError('STOPPING_AGENTS','AvA is stopping its agents. Wait for cleanup to finish.');if(!this.pairOrUndefined(pairId)?.thread.startsWith(JUDGE_PAIR))this.resources.admit(pairId,seat);};
     // While a Build run is running for a pair, each agent may work in its own workspace (which holds its copy).
     // So may a Build session's 1:1 line while it is answering.
     this.activation.workspaceAccess=(pairId,seat)=>{
@@ -122,13 +129,20 @@ export class AvAService {
       if(!pair||!building&&!this.directTools.has(`${pairId}:${seat}`))return undefined;
       return participantWorkspace(this.dataRoot,{pairId,seat,generation:pair.slots[seat].generation});
     };
+    // A judge that was working when the service stopped won't finish: its ballot says so, and Judge again can retry.
+    for(const row of this.store.db.prepare(`SELECT id FROM runs WHERE data LIKE '%"judging"%'`).all())this.store.updateRun(String(row.id),r=>{if(r.judgment?.status==='judging')r.judgment={...r.judgment,status:'failed',finishedAt:new Date().toISOString(),error:'The service stopped while the judge was working.'};});
     this.engine.cleanup=run=>this.stopLeftovers(run);
+    // A formal debate with a judge is judged once it completes.
+    this.engine.ended=run=>{if(run.config.stances&&run.config.judge&&run.status==='completed')try{this.startJudging(run.id,run.config.judge.provider);}catch{/* nothing to judge */}};
     this.activation.keptProcesses=(pairId,seat)=>this.keptServerProcesses(pairId,seat);
     this.engine.reviewFiles=(run,seat)=>run.config.build?inlineProject(join(participantWorkspace(this.dataRoot,{pairId:run.pairId,seat,generation:run.generations[seat]}),run.config.build.folder)):'';
     this.activation.directBusy=(pairId,seat)=>this.direct.has(`${pairId}:${seat}`);
+    // Quick activate remembers each agent's settings when it activates (benchmark sessions aside).
+    this.quick=new QuickMemory(this.store);this.activation.onActivated=(pairId,seat)=>this.rememberQuick(pairId,seat);
     this.menus=new Menus(this.store,this.activation,(p,m,a)=>this.catalog(p,m,a),(pairId,seat,level)=>this.setPermissions(pairId,seat,level),{
       models:()=>this.factory.gatewayModels?.()??gatewayModels(this.dataRoot),keyStatus:()=>gatewayKeyStatus(this.dataRoot),
-      createKey:budget=>createGatewayKey(this.dataRoot,budget,this.factory.runVercel),forgetKey:()=>forgetGatewayKey(this.dataRoot)},()=>this.factory.cliWarnings?.()??Promise.resolve({}));
+      createKey:budget=>createGatewayKey(this.dataRoot,budget,this.factory.runVercel),forgetKey:()=>forgetGatewayKey(this.dataRoot)},()=>this.factory.cliWarnings?.()??Promise.resolve({}),
+      {plan:(seat,provider)=>this.quick.plan(seat,provider),activate:(pairId,seat)=>this.quickActivate(pairId,seat)});
     this.benchmarks=new BenchmarkRunner(this);
     this.benchmarkResults=new BenchmarkResults(this.store);
   }
@@ -142,11 +156,22 @@ export class AvAService {
     if(this.stoppingAgents&&CHANGING.has(method)&&method!=='resources.stop')throw new AvAError('STOPPING_AGENTS','AvA is stopping its agents. Wait for cleanup to finish.');
     if(method==='history.clear'&&this.benchmarks.busy)throw new AvAError('BENCH_BUSY','Stop the benchmark job before clearing conversation history.');
     const changingPair=input&&typeof input==='object'?(input as {pairId?:string}).pairId:undefined;
-    if(method!=='run.start'&&CHANGING.has(method)&&(method==='history.clear'?this.preparing.size>0:changingPair&&this.preparing.has(changingPair)))throw new AvAError('BUILD_PREPARING','A project is being prepared. Wait for it to finish, then try again.');
+    if(method!=='run.start'&&CHANGING.has(method)&&(method==='history.clear'?this.preparing.size>0:changingPair&&this.preparing.has(changingPair)))throw new AvAError('BUILD_PREPARING','The next prompt is being prepared (a Build project, or a debate’s briefs). Wait for it to finish, then try again.');
     // While history is being cleared nothing may start or change: the clear deletes runs and agents' folders.
     if(this.clearing&&CHANGING.has(method))throw new AvAError('CLEARING','History is being cleared. Try again in a moment.');
     switch(method){
       case 'health': return {mode:this.mode,pid:process.pid,version:packageVersion,schemaVersion:1,databaseVersion:SCHEMA_VERSION,capabilities:{benchmarks:true,benchmarkResults:true,benchmarkReports:true}};
+      // Handover to a newer install: a plugin newer than this service asks it to step aside. It does only when nothing is
+      // running (no conversation, 1:1 reply, activation, Build preparation or benchmark); its idle agents close with it.
+      case 'service.retire':{
+        const p=z.object({version:z.string().max(40)}).parse(input);
+        if(!this.retire||!newerVersion(p.version,packageVersion))return {retiring:false,reason:`This service (${packageVersion}) isn't older than ${p.version}.`};
+        const busy=this.store.db.prepare('SELECT data FROM pairs').all().some(row=>(JSON.parse(String(row.data)) as Pair).activeRunId)?'a conversation is running'
+          :this.direct.size?'an agent is answering a 1:1 message':this.preparing.size?'a project is being prepared':this.benchmarks.busy?'a benchmark is running'
+          :this.store.db.prepare('SELECT data FROM pairs').all().some(row=>SEATS.some(s=>(JSON.parse(String(row.data)) as Pair).slots[s].state==='verifying'))?'an agent is activating':'';
+        if(busy)return {retiring:false,reason:busy};
+        this.shuttingDown=true;setTimeout(()=>this.retire?.(),50);return {retiring:true,version:packageVersion};
+      }
       case 'bench.catalog':{const p=z.object({suite:z.string().max(1000).optional()}).parse(input);return {tasks:this.benchmarks.catalog(p.suite)};}
       case 'bench.validate':{const p=z.object({taskIds:z.array(id).min(1).max(20),suite:z.string().max(1000).optional()}).parse(input);return {validations:await this.benchmarks.validate(p.taskIds,p.suite)};}
       case 'bench.start':{
@@ -176,6 +201,12 @@ export class AvAService {
       case 'menu.choose':{const p=z.object({pairId:id,seat,menuId:id,choice:z.string().min(1).max(20)}).parse(input);return this.menus.choose(p.pairId,p.seat,p.menuId,p.choice);}
       case 'slot.configure':{const p=z.object({pairId:id,seat,config:providerConfig}).parse(input);return this.activation.configure(p.pairId,p.seat,p.config);}
       case 'slot.activate':{const p=z.object({pairId:id,seat}).parse(input);const config=this.store.pair(p.pairId).slots[p.seat].config;if(!config)throw new AvAError('NO_CONFIG','Configure the slot first.');return this.activation.activate(p.pairId,p.seat,config);}
+      case 'thread.delete':{const p=z.object({threadId:z.string().min(1).max(300),requestId:id}).parse(input);return this.once('thread-delete',p.requestId,{threadId:p.threadId},async()=>this.deleteThread(p.threadId));}
+      // A formal debate's judge (G7), on demand: judges again, or judges a debate that was stopped. It works in the background;
+      // the ballot appears with the run.
+      case 'debate.judge':{const p=z.object({runId:id,provider:z.enum(['claude','codex']).optional()}).parse(input);return this.startJudging(p.runId,p.provider);}
+      // Quick activate: the agent's last settings (or the strongest model at high effort, Ask, internet off), activated.
+      case 'slot.quick':{const p=z.object({pairId:id,seat}).parse(input);return this.quickActivate(p.pairId,p.seat);}
       case 'slot.cancel':{const p=z.object({pairId:id,seat}).parse(input);this.activation.cancel(p.pairId,p.seat);return this.store.pair(p.pairId);}
       case 'pair.get':{const p=z.object({pairId:id}).parse(input);return this.pairView(p.pairId);}
       case 'resources.get':return this.resources.snapshot(this.stoppingAgents);
@@ -193,23 +224,15 @@ export class AvAService {
         return this.once('clear',p.requestId,{pairId:p.pairId},async()=>{
           const pair=this.store.pair(p.pairId);
           if(SEATS.some(s=>!pair.slots[s].config))throw new AvAError('NOT_READY','Both agents need a saved configuration. Set them up with /ava CLI1 and /ava CLI2.');
-          if(pair.activeRunId){
-            const runId=pair.activeRunId;
-            if(this.store.run(runId).status!=='needs_attention')this.engine.stop(runId);
-            for(const deadline=Date.now()+30_000;;await new Promise(r=>setTimeout(r,100))){
-              const status=this.store.run(runId).status;
-              if(status==='stopped'||status==='completed')break;
-              if(status==='needs_attention')throw new AvAError('NEEDS_ATTENTION','This conversation needs attention. Release the pair first, then clear context.');
-              if(Date.now()>deadline)throw new AvAError('STOP_TIMEOUT','The conversation did not stop in time. Try again.');
-            }
-          }
-          await this.settleDirect(p.pairId);
-          await this.stopKeptServers(p.pairId);
-          const configs=this.store.pair(p.pairId).slots;
-          for(const s of SEATS)await this.activation.configure(p.pairId,s,configs[s].config!);
-          for(const s of SEATS)await this.activation.activate(p.pairId,s,configs[s].config!);
+          await this.endThread(p.pairId,true);
           return this.pairView(p.pairId);
         });
+      }
+      // Close thread (E8): what Clear Session does, without starting the agents again. The thread stays in history, and the
+      // next one keeps both agents' settings (CLI, model, effort, speed, permissions, internet), ready to activate.
+      case 'pair.close':{
+        const p=z.object({pairId:id,requestId:id}).parse(input);
+        return this.once('close',p.requestId,{pairId:p.pairId},async()=>{await this.endThread(p.pairId,false);return this.pairView(p.pairId);});
       }
       // The room opens whether or not its agents are ready: each one can be activated from the room itself (or with
       // /ava CLI1 and CLI2 in the host). A ticket still binds the opening to the slots as they were when it was prepared.
@@ -242,7 +265,8 @@ export class AvAService {
         const pairs=this.store.db.prepare('SELECT data FROM pairs').all().map(r=>JSON.parse(String(r.data)) as Pair);
         return {pairs:pairs.map(p=>({pairId:p.id,agents:SEATS.filter(s=>!!this.activation.get(p.id,s)||p.slots[s].state==='verifying').length,running:!!p.activeRunId})).filter(p=>p.agents>0)};
       }
-      case 'room.get':{const p=z.object({roomId:id}).parse(input);const row=this.store.db.prepare('SELECT pair_id FROM rooms WHERE room_id=?').get(p.roomId);if(!row)throw new AvAError('NOT_FOUND','Room not found.');return {mode:this.mode,pair:this.pairView(String(row.pair_id))};}
+      // mode (E9): the room's pair for that mode, made on first use. pairIds: every pair the room has, for its thread list.
+      case 'room.get':{const p=z.object({roomId:id,mode:z.enum(['conversation','benchmark','build']).optional()}).parse(input);const pairId=this.roomPair(p.roomId,p.mode);return {mode:this.mode,pair:this.pairView(pairId),pairIds:this.roomPairs(p.roomId).map(r=>r.id)};}
       case 'run.start':{
         const p=z.object({pairId:id,text:z.string().min(1).max(16000),requestId:id,options:runOptions.optional(),attachments:z.array(id).max(8).optional(),
           build:z.object({kind:z.enum(['review','build']),path:z.string().max(1000).optional()}).strict().optional()}).parse(input);
@@ -261,7 +285,7 @@ export class AvAService {
         }
         const previous=this.store.previousStart(p.pairId,config,p.requestId);
         if(previous)return previous;
-        if(this.preparing.has(p.pairId))throw new AvAError('BUILD_PREPARING','A project is being prepared. Wait for it to finish, then try again.');
+        if(this.preparing.has(p.pairId))throw new AvAError('BUILD_PREPARING','The next prompt is being prepared (a Build project, or a debate’s briefs). Wait for it to finish, then try again.');
         this.assertNotRestarting(p.pairId);
         // A Build session holds one prompt: its agents' folders and apps belong to that build.
         const openThread=this.openThreadId(this.store.pair(p.pairId)),earlier=openThread?this.store.threads().find(t=>t.id===openThread)?.runs??[]:[];
@@ -287,8 +311,18 @@ export class AvAService {
             }
             // (Codex's sandbox is set again before each request; this spares its first one the switch.)
             for(const seat of SEATS)await participants[seat].setBuildAccess?.(!!config.build);
+            let debaters=participants;
+            // (While a prompt is still running, none of this happens: the start is refused below, as before.)
+            if(config.stances&&(config.mode??'conversation')==='conversation'&&!this.store.pair(p.pairId).activeRunId){
+              // Each formal debate is its own thread (owner, 2026-10-03): after an earlier prompt in this thread, both
+              // agents start fresh sessions first, so neither remembers it and history keeps one debate, with its ballot,
+              // per thread.
+              if(earlier.length){await this.endThread(p.pairId,true);debaters=this.activation.participants(p.pairId);}
+              // G6: each debater is briefed through its 1:1 line, and the debate starts once both are ready.
+              await this.briefDebaters(p.pairId,config);
+            }
             if(this.shuttingDown||this.stoppingAgents)throw new AvAError('STOPPING_AGENTS','The service is stopping its agents.');
-            const run=this.engine.start(p.pairId,config,p.requestId,participants,attachments);
+            const run=this.engine.start(p.pairId,config,p.requestId,debaters,attachments);
             if(copied)this.store.event(run.id,'build_copied',{files:copied.files,bytes:copied.bytes,gitSource:copied.gitSource,baseline:copied.baseline});
             return run;
           // A start that fails takes its copies with it, so a retry with the same request starts clean.
@@ -345,7 +379,7 @@ export class AvAService {
       }
       case 'run.stats':{const p=z.object({runId:id}).parse(input);return this.runStats(p.runId);}
       // Threads: the room's left panel. The whole pool (every chat, from every host), newest activity first. Read-only.
-      case 'threads.list':{const p=z.object({pairId:id.optional(),limit:z.number().int().min(1).max(500).optional()}).parse(input);return {threads:this.threadList(p.pairId).slice(0,p.limit??200)};}
+      case 'threads.list':{const p=z.object({pairId:id.optional(),pairIds:z.array(id).max(10).optional(),limit:z.number().int().min(1).max(500).optional()}).parse(input);return {threads:this.threadList([...(p.pairId?[p.pairId]:[]),...(p.pairIds??[])]).slice(0,p.limit??200)};}
       case 'thread.get':{const p=z.object({threadId:id}).parse(input);return this.threadView(p.threadId);}
       case 'thread.stats':{const p=z.object({threadId:id}).parse(input),thread=this.findThread(p.threadId);return combineStats(thread.id,thread.runs.map(r=>this.runStats(r.id)));}
       case 'runs.list':{const p=z.object({pairId:id.optional(),limit:z.number().int().min(1).max(200).optional(),before:z.number().int().positive().optional()}).parse(input);return this.store.listRuns(p.pairId,p.limit??50,p.before);}
@@ -391,12 +425,12 @@ export class AvAService {
       }
       case 'run.export':{
         const p=z.object({runId:id}).parse(input);const run=this.store.run(p.runId);
-        const label=(sender:string)=>{const who=run.participants?.[sender as Seat];return who?`${sender} · ${LABELS[who.provider]} (${who.model})`:sender;};
+        const label=(sender:string)=>{const who=run.participants?.[sender as Seat];return who?`${sender} · ${LABELS[who.provider]} (${who.modelName??who.model})`:sender;};
         const messages=this.store.messages(p.runId).filter(m=>m.state!=='queued'),times=this.store.messageTimes(p.runId);
         // Portable record: identities, settings, timing, and text. Session IDs and generations stay internal.
         const json={format:'ava-transcript',version:1,exportedAt:new Date().toISOString(),
           run:{id:run.id,createdAt:run.createdAt??null,status:run.status,reason:run.reason,elapsedMs:run.elapsedMs,requests:run.requests,participants:run.participants??null,
-            settings:{topic:run.config.topic,completion:run.config.completion,durationMs:run.config.durationMs,maxRequests:run.config.maxRequests,paceMs:run.config.paceMs,lead:run.config.lead,instructions:run.config.instructions,stopWhen:run.config.stopWhen}},
+            settings:{topic:run.config.topic,completion:run.config.completion,...(run.config.rounds?{rounds:run.config.rounds}:{}),...(run.config.stances?{stances:run.config.stances}:{}),durationMs:run.config.durationMs,maxRequests:run.config.maxRequests,paceMs:run.config.paceMs,lead:run.config.lead,instructions:run.config.instructions,stopWhen:run.config.stopWhen},...(run.judgment?{judgment:run.judgment}:{})},
           messages:messages.map(m=>({id:m.id,seq:m.seq,sender:m.sender,label:m.sender==='user'?'user':label(m.sender),state:m.state,deliveredTo:m.deliveredTo??[],time:times.get(m.id)??null,text:m.text}))};
         return {run:{id:run.id,status:run.status,reason:run.reason,elapsedMs:run.elapsedMs,createdAt:run.createdAt??null,participants:run.participants??null},messages,markdown:messages.map(m=>`## ${label(m.sender)}\n\n${m.text}`).join('\n\n'),json};
       }
@@ -419,6 +453,32 @@ export class AvAService {
     return computeStats(run,rows.turns,rows.events,rows.replies,this.store.runProcesses(run.pairId,run.generations).length);
   }
   // The pair's current sessions as a thread ID, or null while either agent has no session.
+  // A room's pairs (E9): its first pair (the rooms table), then one for each further mode, named room-mode:<room>:<mode>.
+  private roomPairs(roomId:string):Pair[]{
+    const first=this.store.db.prepare('SELECT pair_id FROM rooms WHERE room_id=?').get(roomId);
+    if(!first)throw new AvAError('NOT_FOUND','Room not found.');
+    const named=this.store.db.prepare('SELECT data FROM pairs WHERE thread LIKE ?').all(`room-mode:${roomId}:%`).map(r=>JSON.parse(String(r.data)) as Pair);
+    return [this.store.pair(String(first.pair_id)),...named];
+  }
+  // The room's pair for a mode (E9). The first pair serves the mode of its current thread, or else the first mode asked
+  // for. Another mode gets a pair of its own, set up with the agent settings last verified in the room (not active: the
+  // room offers Activate both). A mode's pair, its thread and its agents stay as they are while another mode is in use.
+  private roomPair(roomId:string,mode?:RoomMode):string{
+    const pairs=this.roomPairs(roomId),first=pairs[0]!;
+    if(!mode)return first.id;
+    const own=pairs.find(p=>p.roomMode===mode);if(own)return own.id;
+    if(!first.roomMode){first.roomMode=this.threadMode(first)??mode;this.store.savePair(first);if(first.roomMode===mode)return first.id;}
+    const verified=(p:Pair)=>Math.max(...SEATS.map(s=>p.slots[s].verifiedAt??0));
+    const source=[...pairs].sort((a,b)=>verified(b)-verified(a))[0]!,pair=this.store.createPair(`room-mode:${roomId}:${mode}`);
+    pair.roomMode=mode;
+    for(const seat of SEATS){const slot=source.slots[seat];if(slot.config)Object.assign(pair.slots[seat],{config:slot.config,state:'configuring',permissions:slot.permissions,internet:slot.internet});}
+    this.store.savePair(pair);return pair.id;
+  }
+  // The mode of a pair's current thread, once it has a prompt.
+  private threadMode(pair:Pair):RoomMode|undefined{
+    const open=this.openThreadId(pair);if(!open)return undefined;
+    const runs=this.store.threads().find(t=>t.id===open)?.runs;return runs?.length?runs[0]!.config.mode??'conversation':undefined;
+  }
   private openThreadId(pair:Pair){
     const sessions={cli1:pair.slots.cli1.sessionId,cli2:pair.slots.cli2.sessionId};
     return sessions.cli1&&sessions.cli2?threadKey(pair.id,sessions):null;
@@ -437,21 +497,41 @@ export class AvAService {
     // A thread's mode is its first prompt's: conversation threads and benchmark threads are listed separately.
     return {id:thread.id,pairId:thread.pairId,title:named??first?.config.topic.slice(0,300)??'',named:!!named,mode:first?(first.config.mode??'conversation'):null,createdAt:first?.createdAt??direct?.first??times[0]??null,updatedAt:times.at(-1)??null,runIds:thread.runs.map(r=>r.id),
       prompts:counts.reduce((n,c)=>n+(c?.prompts??0),0),replies:counts.reduce((n,c)=>n+(c?.replies??0),0),requests:thread.runs.reduce((n,r)=>n+r.requests,0),directMessages:direct?.count??0,
-      status:(shown?.status??(current?'ready':'cleared')) as string,reason:shown?.reason??null,live:!!live,current,participants:last?.participants??slots,empty:!first};
+      status:(shown?.status??(current?'ready':'cleared')) as string,reason:shown?.reason??null,live:!!live,current,participants:last?.participants??slots,empty:!first,
+      // A judged debate's result, for the thread list (C): who won, and each side's total out of 15.
+      verdict:(()=>{const j=[...thread.runs].reverse().find(r=>r.judgment)?.judgment;return !j?null:j.status!=='done'?{status:j.status}:{status:j.status,winner:j.winner,totals:Object.fromEntries(SEATS.map(s=>[s,total(j.scores![s])]))};})()};
   }
   // Thread names, read once per list or view.
   private titles?:Map<string,string>;
-  private threadList(pairId?:string){
+  private threadList(pairIds:string[]=[]){
     this.titles=this.store.threadTitles();
     const activity=this.store.runActivity(),pairs=new Map<string,Pair|undefined>(),pairOf=(id:string)=>{if(!pairs.has(id))pairs.set(id,this.pairOrUndefined(id));return pairs.get(id);};
     const direct=new Map(this.store.directThreads().map(d=>[d.threadId,d]));
     const groups=this.store.threads();
     // Threads that so far only hold direct messages, plus this room's fresh sessions.
     for(const d of direct.values())if(!groups.some(g=>g.id===d.threadId))groups.push({id:d.threadId,pairId:d.pairId,runs:[]});
-    const open=pairId?pairOf(pairId):undefined,openId=open&&this.openThreadId(open);
-    if(open&&openId&&!groups.some(g=>g.id===openId))groups.push({id:openId,pairId:open.id,runs:[]});
+    // This room's fresh sessions (one per pair it has: one per mode) are listed too.
+    const openIds=new Set<string>();
+    for(const pairId of new Set(pairIds)){const open=pairOf(pairId),openId=open&&this.openThreadId(open);if(!open||!openId)continue;openIds.add(openId);if(!groups.some(g=>g.id===openId))groups.push({id:openId,pairId:open.id,runs:[]});}
     // Another chat's untouched fresh sessions are not a conversation; leave them out.
-    return groups.filter(g=>g.runs.length||direct.has(g.id)||g.id===openId).map(g=>this.summarize(g,activity,pairOf(g.pairId),direct.get(g.id))).sort((a,b)=>(b.updatedAt??'').localeCompare(a.updatedAt??''));
+    return groups.filter(g=>g.runs.length||direct.has(g.id)||openIds.has(g.id)).map(g=>this.summarize(g,activity,pairOf(g.pairId),direct.get(g.id))).sort((a,b)=>(b.updatedAt??'').localeCompare(a.updatedAt??''));
+  }
+  // Delete one thread from history (D): its prompts and replies, 1:1 messages, name and ballot, the attachments only it
+  // used, and its agents' folders. A thread whose agents are still active (or whose judge is still scoring) is refused.
+  private async deleteThread(threadId:string){
+    const thread=this.findThread(threadId),pair=this.pairOrUndefined(thread.pairId);
+    const current=!!pair&&this.openThreadId(pair)===threadId;
+    if(current&&pair&&(pair.activeRunId||SEATS.some(s=>this.activation.get(pair.id,s)||this.direct.has(`${pair.id}:${s}`))||this.preparing.has(pair.id)))
+      throw new AvAError('THREAD_ACTIVE','This thread’s agents are still active. Close the thread first, then delete it.');
+    if(thread.runs.some(r=>this.judging.has(r.id)||r.status==='running'||r.status==='paused'||r.status==='needs_attention'))throw new AvAError('THREAD_BUSY','Something in this thread is still running or needs attention. Let it finish, then delete it.');
+    const counts=this.store.deleteThread(threadId,thread.runs.map(r=>r.id));this.titles=undefined;
+    // Its sessions' folders (workspaces and saved session state), unless a pair is using them now.
+    const inUse=new Set(this.store.db.prepare('SELECT data FROM pairs').all().flatMap(r=>{const p=JSON.parse(String(r.data)) as Pair;return SEATS.map(s=>`${p.id}/${s}/${p.slots[s].generation}`);}));
+    for(const run of thread.runs)for(const seat of SEATS){
+      if(inUse.has(`${run.pairId}/${seat}/${run.generations[seat]}`))continue;
+      for(const base of ['workspaces','acpx'])rmSync(join(this.dataRoot,base,run.pairId,seat,String(run.generations[seat])),{recursive:true,force:true,maxRetries:3,retryDelay:200});
+    }
+    return {deleted:true,...counts};
   }
   private findThread(threadId:string):{id:string;pairId:string;runs:Run[]}{
     const found=this.store.threads().find(t=>t.id===threadId);if(found)return found;
@@ -466,7 +546,7 @@ export class AvAService {
     this.titles=this.store.threadTitles();
     const summary=this.summarize(thread,this.store.runActivity(),pair,this.store.directThreads().find(d=>d.threadId===thread.id));
     const runs=thread.runs.map(r=>{const run=this.engine.snapshot(r.id);return {id:run.id,status:run.status,reason:run.reason,createdAt:run.createdAt??null,elapsedMs:run.elapsedMs,requests:run.requests,
-      config:{topic:run.config.topic,completion:run.config.completion,durationMs:run.config.durationMs,maxRequests:run.config.maxRequests,mode:run.config.mode??'conversation',build:run.config.build??null},participants:run.participants??null};});
+      config:{topic:run.config.topic,completion:run.config.completion,...(run.config.rounds?{rounds:run.config.rounds}:{}),...(run.config.stances?{stances:run.config.stances}:{}),...(run.config.judge?{judge:run.config.judge}:{}),durationMs:run.config.durationMs,maxRequests:run.config.maxRequests,mode:run.config.mode??'conversation',build:run.config.build??null},participants:run.participants??null,judgment:run.judgment??null};});
     const messages=thread.runs.flatMap(r=>{const times=this.store.messageTimes(r.id);return this.store.messages(r.id).map((m,i)=>({...m,time:times.get(m.id)??(i===0?r.createdAt??null:null)}));});
     const pending:Partial<Record<Seat,{partial:string;steps:string[]}>>={};
     for(const seat of SEATS){const entry=this.direct.get(`${thread.pairId}:${seat}`);if(entry&&entry.threadId===thread.id)pending[seat]={partial:entry.partial.slice(-4000),steps:entry.steps.slice(-4)};}
@@ -507,7 +587,7 @@ export class AvAService {
       const run=pair.activeRunId?this.store.run(pair.activeRunId):undefined;
       if(run&&(run.status!=='paused'||(this.engine.ownership(run.id)?.active??0)>0))throw new AvAError('AGENT_BUSY',`Agent ${n} restarts to change its internet access (it keeps its memory). Pause or stop the shared conversation first.`);
     }
-    this.store.setSlotInternet(pairId,seat,enabled);
+    this.store.setSlotInternet(pairId,seat,enabled);this.rememberQuick(pairId,seat);
     if(restart){
       const key=`${pairId}:${seat}`;this.restarting.add(key);
       try{this.engine.replaceParticipant(pairId,seat,await this.activation.relaunch(pairId,seat));}finally{this.restarting.delete(key);}
@@ -517,7 +597,7 @@ export class AvAService {
   // Permissions take effect at the agent's next tool request (the gate reads them live). Codex's own mode follows at
   // once when the agent is idle, else before its next request.
   private async setPermissions(pairId:string,seat:Seat,level:'ask'|'bypass'){
-    this.store.setSlotPermissions(pairId,seat,level);
+    this.store.setSlotPermissions(pairId,seat,level);this.rememberQuick(pairId,seat);
     const participant=this.activation.get(pairId,seat),pair=this.store.pair(pairId);
     const busy=this.direct.has(`${pairId}:${seat}`)||(pair.activeRunId?(this.engine.ownership(pair.activeRunId)?.active??0)>0:false);
     if(participant&&!busy)await participant.setBuildAccess?.(!!this.activation.workspaceAccess?.(pairId,seat)).catch(()=>{});
@@ -584,6 +664,27 @@ export class AvAService {
   private appOf(runId:string,seat:Seat){
     const run=this.store.run(runId),text=this.store.messages(runId).filter(m=>m.sender===seat).at(-1)?.text;
     return text?appTarget(text,participantWorkspace(this.dataRoot,{pairId:run.pairId,seat,generation:run.generations[seat]})):undefined;
+  }
+  // Ends a room's current thread: its conversation stops (one that needs attention must be released first), its 1:1 lines
+  // settle, its kept app servers stop, and its agents close, keeping their settings. reactivate: start both again with
+  // fresh sessions (Clear Session); otherwise they wait for activation (Close thread).
+  private async endThread(pairId:string,reactivate:boolean){
+    const pair=this.store.pair(pairId);
+    if(pair.activeRunId){
+      const runId=pair.activeRunId;
+      if(this.store.run(runId).status!=='needs_attention')this.engine.stop(runId);
+      for(const deadline=Date.now()+30_000;;await new Promise(r=>setTimeout(r,100))){
+        const status=this.store.run(runId).status;
+        if(status==='stopped'||status==='completed')break;
+        if(status==='needs_attention')throw new AvAError('NEEDS_ATTENTION','This conversation needs attention. Release the pair first, then try again.');
+        if(Date.now()>deadline)throw new AvAError('STOP_TIMEOUT','The conversation did not stop in time. Try again.');
+      }
+    }
+    await this.settleDirect(pairId);
+    await this.stopKeptServers(pairId);
+    const slots=this.store.pair(pairId).slots;
+    for(const s of SEATS)if(slots[s].config)await this.activation.configure(pairId,s,slots[s].config!);
+    if(reactivate)for(const s of SEATS)await this.activation.activate(pairId,s,slots[s].config!);
   }
   // The processes of the app servers an agent's Build runs kept, which its close leaves running. A recorded PID only
   // counts while it runs with its recorded start time (as at Clear Session): servers stopped since, and PIDs reused by
@@ -684,9 +785,84 @@ export class AvAService {
   }
   pairView(pairId:string){
     const pair=this.store.pair(pairId),active=pair.activeRunId?this.store.run(pair.activeRunId):undefined;
-    const speaking=active?[...new Set(this.store.db.prepare("SELECT seat FROM turns WHERE run_id=? AND status IN ('queued','submitted')").all(active.id).map(r=>String(r.seat) as Seat))]:[];
+    // An agent reading a debate's topic while its partner opens (E7) isn't speaking.
+    const speaking=active?[...new Set(this.store.db.prepare("SELECT t.seat FROM turns t LEFT JOIN phases p ON p.id=t.phase_id WHERE t.run_id=? AND t.status IN ('queued','submitted') AND IFNULL(p.kind,'')!='briefing'").all(active.id).map(r=>String(r.seat) as Seat))]:[];
     return {...pair,activeRun:active?{id:active.id,status:active.status,reason:active.reason,mode:active.config.mode??'conversation',nextSeat:active.nextSeat,speaking,queued:this.store.queued(active.id).length}:null,connected:Object.fromEntries(SEATS.map(s=>[s,!!this.activation.get(pairId,s)&&this.activation.get(pairId,s)?.isConnected?.()!==false])),
-      images:Object.fromEntries(SEATS.map(s=>[s,this.activation.get(pairId,s)?.imageInput!==false])),usage:Object.fromEntries(SEATS.map(s=>[s,this.usageOf(pair,s)])),mode:this.mode};
+      images:Object.fromEntries(SEATS.map(s=>[s,this.activation.get(pairId,s)?.imageInput!==false])),usage:Object.fromEntries(SEATS.map(s=>[s,this.usageOf(pair,s)])),mode:this.mode,version:packageVersion,
+      quick:Object.fromEntries(SEATS.map(s=>[s,this.quick.plan(s,pair.slots[s].config?.provider)]))};
+  }
+  // A formal debate's briefs (G6), through each debater's 1:1 line: the motion, its side, its private brief, the format and
+  // how it will be judged. Both are briefed at once; the debate starts once both have answered.
+  private async briefDebaters(pairId:string,config:RunConfig){
+    const pair=this.store.pair(pairId);
+    await Promise.all(SEATS.map(async seat=>{
+      const {id:questionId}=this.sendDirect(pairId,seat,debateBrief(config,seat,config.instructions[seat],internetNote(pair.slots[seat].internet===true)));
+      await this.direct.get(`${pairId}:${seat}`)?.done;
+      const row=this.store.db.prepare('SELECT state,error FROM direct_messages WHERE id=?').get(questionId);
+      if(row?.state!=='answered')throw new AvAError('BRIEF_FAILED',`Agent ${seat==='cli1'?1:2} didn’t take its debate brief${row?.error?`: ${String(row.error)}`:'.'}`);
+    }));
+  }
+  // The judge (G7): a fresh session of the CLI's strongest model at its highest effort, with web search to check facts.
+  // It sees the motion and the speeches, never the debaters' briefs or who they are. It runs in the background and saves
+  // its ballot with the run; one judging per debate at a time.
+  private judging=new Set<string>();
+  private startJudging(runId:string,provider?:JudgeProvider){
+    const run=this.store.run(runId);
+    if(!run.config.stances)throw new AvAError('NOT_DEBATE','Only a formal debate has a judge.');
+    if(['running','pausing','paused','stopping'].includes(run.status))throw new AvAError('DEBATE_RUNNING','Judge the debate once it has ended.');
+    if(this.judging.has(runId))return run.judgment;
+    if(!SEATS.every(s=>this.store.messages(runId).some(m=>m.sender===s)))throw new AvAError('NOTHING_TO_JUDGE','Each debater needs at least one speech to judge.');
+    const chosen=provider??run.config.judge?.provider??'claude',startedAt=new Date().toISOString();
+    this.judging.add(runId);
+    this.store.updateRun(runId,r=>{r.judgment={status:'judging',judge:{provider:chosen,model:'',auth:'provider-login'},startedAt};});
+    void this.judgeDebate(runId,chosen,startedAt).finally(()=>this.judging.delete(runId));
+    return this.store.run(runId).judgment;
+  }
+  private async judgeDebate(runId:string,provider:JudgeProvider,startedAt:string){
+    const save=(judgment:Judgment)=>{try{this.store.updateRun(runId,r=>{r.judgment=judgment;});}catch{/* the run was deleted meanwhile */}};
+    let judge:ProviderConfig={provider,model:'',auth:'provider-login'},pairId:string|undefined;
+    try{
+      const listed=await this.catalog(provider),model=strongestModel(provider,listed.models);
+      if(!model)throw new AvAError('NO_MODEL',`${LABELS[provider]} listed no models.`);
+      const controls=model.id===listed.currentModel?listed.controls:(await this.catalog(provider,model.id)).controls,effort=maxEffort(controls);
+      judge={provider,model:model.id,...(model.name!==model.id?{modelName:model.name}:{}),...(effort?{effort}:{}),auth:'provider-login'};
+      save({status:'judging',judge,startedAt});
+      const pair=this.store.createPair(`${JUDGE_PAIR}${runId}-${randomUUID().slice(0,8)}`);pairId=pair.id;
+      await this.activation.configure(pair.id,'cli1',judge);this.store.setSlotInternet(pair.id,'cli1',true);
+      await this.activation.activate(pair.id,'cli1',judge);
+      const participant=this.activation.get(pair.id,'cli1');if(!participant)throw new AvAError('NOT_READY','The judge did not start.');
+      const run=this.store.run(runId);
+      const result=await participant.request({id:randomUUID(),text:judgePrompt(run.config,this.store.messages(runId),internetNote(true)),signal:AbortSignal.timeout(20*60_000),onStarted(){},onEvent(){}});
+      if(result.status!=='completed')throw new AvAError('JUDGE_CANCELLED','The judge did not finish.');
+      save({status:'done',judge,startedAt,finishedAt:new Date().toISOString(),...parseBallot(result.text,run.config.stances!)});
+    }catch(error){save({status:'failed',judge,startedAt,finishedAt:new Date().toISOString(),error:(error instanceof Error?error.message:String(error)).slice(0,500)});}
+    finally{if(pairId)await this.activation.closePair(pairId).catch(()=>{});}
+  }
+  // An active agent's settings, remembered for Quick activate: on activation, and when its internet or permissions change.
+  private rememberQuick(pairId:string,seat:Seat){
+    const pair=this.pairOrUndefined(pairId),slot=pair?.slots[seat];
+    if(!pair||pair.thread.startsWith('benchmark-')||pair.thread.startsWith(JUDGE_PAIR)||slot?.state!=='ready'||!slot.config)return;
+    this.quick.remember(seat,{config:slot.config,permissions:slot.permissions??'ask',internet:slot.internet===true});
+  }
+  // Quick activate. The CLI: the one chosen for this agent, else the one it last used, else its default (Claude Code for
+  // Agent 1, Codex for Agent 2). Its last settings with that CLI, or the defaults: the strongest model the CLI lists, high
+  // effort where it has one, Ask permissions and internet off.
+  private async quickActivate(pairId:string,seat:Seat){
+    const slot=this.store.pair(pairId).slots[seat];
+    if(slot.state==='verifying')throw new AvAError('ACTIVATING',`Agent ${seat==='cli1'?1:2} is already activating.`);
+    const provider=this.quick.provider(seat,slot.config?.provider);
+    let settings=this.quick.settings(provider);
+    if(!settings){
+      if(provider==='vercel')throw new AvAError('QUICK_NEEDS_MODEL','Choose a Gateway model once with Activate. Quick activate then reuses it.');
+      const listed=await this.catalog(provider),model=strongestModel(provider,listed.models);
+      if(!model)throw new AvAError('NO_MODEL',`${LABELS[provider]} listed no models. Choose one with Activate.`);
+      // Effort choices can differ by model: read them for the chosen model when it isn't the CLI's current one.
+      const controls=model.id===listed.currentModel?listed.controls:(await this.catalog(provider,model.id)).controls,effort=highEffort(controls);
+      settings={config:{provider,model:model.id,...(model.name!==model.id?{modelName:model.name}:{}),...(effort?{effort}:{}),auth:'provider-login'},permissions:'ask',internet:false};
+    }
+    await this.activation.configure(pairId,seat,settings.config);
+    this.store.setSlotPermissions(pairId,seat,settings.permissions);this.store.setSlotInternet(pairId,seat,settings.internet);
+    return this.activation.activate(pairId,seat,settings.config);
   }
   private async stopAllAgents(){
     this.stoppingAgents=true;
@@ -747,7 +923,10 @@ export class AvAService {
     return report||credit?{...report,...(credit?{credit}:{}),at:report?.at??Date.now()}:null;
   }
   async shutdown(){
-    this.shuttingDown=true;await this.benchmarks.shutdown();await Promise.allSettled(this.preparationDone);
+    this.shuttingDown=true;await this.benchmarks.shutdown();
+    // A debate's briefs are 1:1 replies its start waits for: cancel them first, so that start ends.
+    for(const entry of this.direct.values())entry.abort.abort(new AvAError('CANCELLED','The service is shutting down.'));
+    await Promise.allSettled(this.preparationDone);
     for(const row of this.store.db.prepare('SELECT data FROM runs').all()){
       const run=JSON.parse(String(row.data)) as {id:string;status:string};
       if(['running','pausing','paused'].includes(run.status))this.engine.stop(run.id);

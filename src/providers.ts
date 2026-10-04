@@ -14,13 +14,14 @@ import { AvAError, PROVIDERS, type AgentRequest, type AgentResult, type AgentUsa
 import type { ConfiguredParticipant, ParticipantFactory } from './activation.js';
 import type { ProcessLedger } from './census.js';
 import type { AgentJobs } from './jobs.js';
+import { cursorArgv, cursorEnvironment } from './cursor.js';
 
 export interface ConfigOption { id: string; name: string; currentValue: string; options: Array<{ value: string; name: string }> }
 export interface Catalog { provider: Provider; currentModel: string; models: Array<{ id: string; name: string }>; controls: ConfigOption[] }
 export interface ProviderSetup { argv?: string[]; env?: Record<string,string> }
 const API_VARIABLES:Record<Provider,string[]>={
   codex:['CODEX_API_KEY','OPENAI_API_KEY'],claude:['ANTHROPIC_API_KEY','ANTHROPIC_AUTH_TOKEN'],
-  'grok-build':['XAI_API_KEY'],antigravity:['GOOGLE_API_KEY','GEMINI_API_KEY','GOOGLE_APPLICATION_CREDENTIALS','GOOGLE_GENAI_USE_VERTEXAI'],vercel:['AI_GATEWAY_API_KEY'],
+  'grok-build':['XAI_API_KEY'],antigravity:['GOOGLE_API_KEY','GEMINI_API_KEY','GOOGLE_APPLICATION_CREDENTIALS','GOOGLE_GENAI_USE_VERTEXAI'],cursor:['CURSOR_API_KEY','CURSOR_AUTH_TOKEN'],vercel:['AI_GATEWAY_API_KEY'],
 };
 // Seen live with Gateway models: "Warning: Model metadata for `x` not found. Defaulting to fallback metadata; …".
 const CODEX_NOTICE=/^\s*Warning: Model metadata for `[^`]+` not found/;
@@ -51,7 +52,8 @@ export class NativeFactory implements ParticipantFactory {
   private argv(provider:Provider){
     const inspected=this.inspect(adapterOf(provider));
     if(!inspected||inspected.launch.kind!=='installed')throw new AvAError('MISSING_PROVIDER',`${provider}: install the required CLI/ACP adapter first.`);
-    const argv=inspected.launch.argv;
+    // Cursor's registry command is its .cmd shim, which needs a shell: AvA starts its bundled Node and entry file.
+    const argv=provider==='cursor'?cursorArgv(inspected.launch.argv):inspected.launch.argv;
     if(!argv[0]||!isAbsolute(argv[0])||!existsSync(argv[0])||/^(npx|npm|pnpm|yarn|uvx)(\.|$)/i.test(basename(argv[0])))throw new AvAError('UNSAFE_LAUNCH','Only inspected installed executables may be launched.');
     return argv;
   }
@@ -128,7 +130,9 @@ export class NativeFactory implements ParticipantFactory {
       signal.throwIfAborted();
       // Images: what the agent declared, or for a Gateway model whether the model itself takes images.
       const images=fixedAtLaunch?listed?.tags.includes('vision')===true:imageInput(stateDir,sessionKey);
-      const participant=new NativeParticipant(runtime,handle,{...config,model},(cli?`${evidence} Installed ${cli.name} ${cli.version}.`:evidence)+containment(),()=>processes.size>0,internet,LAUNCH_TIME_WEB.has(config.provider)?launchedWithInternet:undefined,
+      // The model's name as the CLI lists it ("Opus 5.5" for "opus"), so the room shows the version, not the alias.
+      const modelName=fixedAtLaunch?listed?.name:status.models?.availableModels?.find(m=>m.modelId===model)?.name;
+      const participant=new NativeParticipant(runtime,handle,{...config,model,...(modelName&&modelName!==model?{modelName}:{})},(cli?`${evidence} Installed ${cli.name} ${cli.version}.`:evidence)+containment(),()=>processes.size>0,internet,LAUNCH_TIME_WEB.has(config.provider)?launchedWithInternet:undefined,
         images,options.workspace??(()=>undefined),cwd,options.bypass??(()=>false),retire);
       participant.noteSessionUsage(status.usage);
       signal.removeEventListener('abort',cancel);return participant;
@@ -180,6 +184,8 @@ export function participantEnvironment(provider:Provider,configured:Record<strin
       env.CODEX_PATH=wrapper;
     }
   }
+  // Cursor's agent runs with AvA's own Cursor settings (src/cursor.ts), not the user's.
+  if(provider==='cursor'&&dataRoot)Object.assign(env,cursorEnvironment(dataRoot));
   // Claude Code's adapter starts the CLI it is given (a native binary, or a .js entry with Node).
   if(provider==='claude'&&cli){
     if(!dataRoot)env.CLAUDE_CODE_EXECUTABLE=cli.path;

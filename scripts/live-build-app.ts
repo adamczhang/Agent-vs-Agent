@@ -23,9 +23,10 @@ const CONFIGS:Record<Provider,ProviderConfig>={
   claude:{provider:'claude',model:'default',effort:{key:'effort',value:'low'},auth:'provider-login'},
   'grok-build':{provider:'grok-build',model:'grok-4.7',auth:'provider-login'},
   antigravity:{provider:'antigravity',model:'gemini-3.7-flash-high',auth:'provider-login'},
+  cursor:{provider:'cursor',model:'composer-2.5[fast=true]',auth:'provider-login'},
   vercel:{provider:'vercel',model:'openai/gpt-5.6-luna',effort:{key:'model_reasoning_effort',value:'low'},auth:'api'},
 };
-const PORTS:Record<Provider,[number,number]>={claude:[41711,41712],codex:[41721,41722],'grok-build':[41731,41732],antigravity:[41741,41742],vercel:[41751,41752]};
+const PORTS:Record<Provider,[number,number]>={claude:[41711,41712],codex:[41721,41722],'grok-build':[41731,41732],antigravity:[41741,41742],cursor:[41761,41762],vercel:[41751,41752]};
 const root=mkdtempSync(join(tmpdir(),`ava-app-${provider}-`)),shared=installedDataRoot(resolve('.'));
 if(existsSync(join(shared,'providers.json')))copyFileSync(join(shared,'providers.json'),join(root,'providers.json'));
 // A Vercel AI Gateway agent uses the key stored in the shared folder (read from there; it never enters this process's

@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { spawn } from 'node:child_process';
 import { AvAError } from './types.js';
 import { ownerAlive } from './ownership.js';
+import { newerVersion,packageVersion } from './paths.js';
 export interface Endpoint {pid:number;port:number;token:string}
 export function endpoint(dataRoot:string):Endpoint{
   const value=JSON.parse(readFileSync(join(dataRoot,'server.json'),'utf8')) as Endpoint;
@@ -41,10 +42,21 @@ export async function ensureService(projectRoot:string,dataRoot:string,waitMs=45
   const logFile=join(dataRoot,'service.log');
   try{mkdirSync(dataRoot,{recursive:true});}
   catch(error){throw new AvAError('SERVICE_START_FAILED',`AvA's data folder ${dataRoot} can't be created (${error instanceof Error?error.message:String(error)}).`);}
-  let spawned=false,ownerRunning:boolean|undefined,ownerCheckedAt=0,child:{pid?:number;exited:boolean}|undefined,logFrom=0;
+  let spawned=false,ownerRunning:boolean|undefined,ownerCheckedAt=0,child:{pid?:number;exited:boolean}|undefined,logFrom=0,retiring:number|undefined;
   const deadline=Date.now()+waitMs;
   while(Date.now()<deadline){
-    try{const address=endpoint(dataRoot);const health=await callEndpoint<{pid:number}>(address,'health',{},1000);if(health.pid===address.pid)return address;}catch{/* An existing owner may still be starting. */}
+    try{
+      const address=endpoint(dataRoot),health=await callEndpoint<{pid:number;version?:string}>(address,'health',{},1000);
+      // A service older than this plugin (installed before an update) is asked to step aside, so the update takes effect.
+      // It does only when idle; otherwise this plugin uses it as it is, and asks again on its next call. One that is
+      // stepping aside is waited out: its lock goes when it exits, and this plugin then starts its own.
+      if(health.pid===address.pid&&retiring!==address.pid){
+        if(!newerVersion(packageVersion,health.version))return address;
+        const answer=await callEndpoint<{retiring:boolean}>(address,'service.retire',{version:packageVersion},5000).catch(()=>({retiring:false}));
+        if(!answer.retiring)return address;
+        retiring=address.pid;
+      }
+    }catch{/* An existing owner may still be starting. */}
     // A service this call started has exited: say why at once, instead of waiting out the deadline. One that lost the
     // race to another starting service leaves that one to become ready.
     if(child?.exited){

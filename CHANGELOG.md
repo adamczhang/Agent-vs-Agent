@@ -1,5 +1,102 @@
 # Changelog
 
+## [0.4.3](https://github.com/adamczhang/Agent-vs-Agent/releases/tag/v0.4.3) - 2026-10-03
+
+### Added
+
+- **Formal debates.** Debates now run like competitive debates.
+  - **Sides:** each agent argues an assigned side, Agent 1 for the motion and Agent 2 against unless you swap them.
+  - **Briefs:** before the debate starts, each gets a private brief through its 1:1 line (the motion, its side, the format, how it will be judged, and your notes for it) and replies READY.
+  - **Speeches:** an opening case, rebuttals that answer the other side's strongest point, then a closing, with evidence asked for and invented facts forbidden.
+- **An independent judge.** When a debate completes, a fresh session of the strongest model at its highest effort scores each side.
+  - **Who judges:** Claude Code (Opus at max effort) by default, or Codex, or none.
+  - **The score:** 1 to 5 each for factual accuracy and evidence, for challenging the opposition's strongest points, and for a cohesive stance, then a winner with reasons and any claims it questioned.
+  - **Blind and on demand:** the judge never sees the briefs or which CLI argued which side. **Judge this debate** and **Judge again** ask it on demand.
+- **A time limit per speech** (2 minutes by default; set in Options or a debate prompt). It counts thinking, web searches and writing together. A speech that runs over is cut off and forfeited, the debate goes on, and the judge sees the forfeit.
+- **The prompt builder:** the third button in the sidebar.
+  - **In Debate,** a guided form sets up a formal debate: the motion and its definitions, which side each agent argues, a private brief for each side, internet, rounds and speech time. Grey hints in each box say what to write and disappear as you type.
+  - **Saving and editing:** it saves to the prompt library and can open any saved debate to edit.
+  - **Prompt and Build** have simple forms for now.
+- **Each debate is its own thread.** A debate started after another in the same thread first gives both agents fresh sessions, so neither remembers the last one. The thread keeps the judge's ballot for review, and the thread list shows the result ("Agent 2 won 14–10").
+- **Delete a thread** from history with the button that appears when you point at it. It removes the thread's prompts, replies, 1:1 messages and ballot, after a confirmation. A thread whose agents are still active must be closed first.
+- **Ten formal motions** replace the built-in debates, each with briefs for both sides. Earlier debate starters you never edited are removed.
+- **A rounds chip beside the message box** in Debate shows how long the next debate runs ("7 rounds", or the time or choice that ends it instead).
+  - **Changing it:** click it to pick 3, 5, 7, 9, 11 or 15 rounds, or type another number.
+  - **Rounds win:** picking rounds also overrides a time written in the prompt.
+
+### Changed
+
+- **Debates default to 7 rounds.**
+- **Shutting down during a debate's briefs** no longer waits for them.
+
+## 0.4.1 - 2026-10-03
+
+Not released on its own; included in v0.4.3.
+
+### Added
+
+- **Quick activate.**
+  - **Where:** each agent's header in the room, **Quick activate both**, and a choice in the `/ava CLI1` and `/ava CLI2` menus.
+  - **What it uses:** the settings that agent last activated with (CLI, model, effort, speed, permissions and internet), in any room.
+  - **The first time:** the CLI's strongest model at high effort, with Ask permissions and internet off.
+- **The version in the room,** beside its title.
+- **Updates take effect.** A newer plugin now replaces an older AvA service once nothing is running in it. Before, the hosts kept using the older service after an update for as long as any host was open.
+
+### Changed
+
+- **Speed reads Default or Fast.**
+- **Models show their name and version,** for example "Opus 5.5" instead of "opus", in the menus, above each agent and in exports.
+
+## 0.4.0 - 2026-10-03
+
+Not released on its own; included in v0.4.3.
+
+### Added
+
+- **The debate prompt template.** Every Debate prompt in the library has:
+  - the topic both agents see;
+  - for each agent, private context that only it sees and an internet on or off choice;
+  - the number of rounds.
+- **Using a debate prompt.** Loading or running one sets up the next debate, and each agent's internet switches when it starts.
+- **Options matches the template,** including an internet choice per agent. Use current draft saves the room's debate options as a prompt.
+- **Export and import.** Export Markdown writes the whole template in one file, and Import reads it back.
+- **Ten built-in debates that last,** each giving every agent a side or a role with private facts:
+  - Ban cars downtown?
+  - Monolith or microservices?
+  - Vikings: offensive line or secondary?
+  - Did the Industrial Revolution help workers?
+  - Bring back the woolly mammoth?
+  - Will AI write most code by 2030?
+  - Negotiate a used car
+  - The museum interrogation
+  - Pitch a skeptical investor
+  - Is a hot dog a sandwich?
+- **Existing libraries get the new debates once.** The two old debate starters are replaced only if they were never edited.
+- **Close thread.** In the thread's header, or ⋯ → Close thread.
+  - It stops the conversation, closes both agents and any app server they left running, and keeps the thread in history.
+  - Both agents keep their settings, and **Activate both** starts the next thread with one short check each.
+- **One thread history across modes,** each thread labeled with its mode.
+  - Each mode keeps its own thread and agents in the room. Switching to Build after a debate opens a clear Build screen, and the debate stays as it was until you close it.
+  - A mode used for the first time starts with the same agent settings.
+- **Change an agent's CLI at any time.** The chosen CLI's name stands beside Activate, and the setup menu has **Change CLI**.
+- **Prompt library tabs** for Prompt, Debate and Build prompts, opening on the current mode.
+- **Cursor's agent, as a preview.**
+  - AvA starts Cursor's bundled runtime itself, with its own Cursor settings: nothing runs without asking, web searches ask, and commits aren't attributed to Cursor.
+  - `/ava doctor` shows Cursor's version, sign-in and plan.
+  - On a Cursor Free plan, Cursor refuses agent requests, and activation says so. Live checks on a paid plan are still to come.
+
+### Changed
+
+- **A debate runs for a set number of rounds,** 8 by default, set in Options.
+  - The agents can no longer end it early by agreeing.
+  - Each turn tells the agent which round it is, and the last round is a closing statement.
+  - The status line shows the round.
+  - A timed prompt ("…for 5 minutes") still runs for its time, and Options can still end it when either or both agents are done.
+- **Debate gives your topic to both agents at the start.** Agent 2 reads it while Agent 1 opens (one extra short request; its READY isn't posted), then answers the opening.
+- **Debate turns are asked to be short and conversational,** in plain text, instead of a word count.
+- **Setup window:** it closes after a successful activation. Speed reads Fast or Normal, and every unchanged setting reads Default.
+- **Usage ring:** it fills in with the activation check where the CLI reports usage (Codex, Claude Code). Grok Build and Antigravity, which never report it, say so.
+
 ## [0.3.5](https://github.com/adamczhang/Agent-vs-Agent/releases/tag/v0.3.5) - 2026-10-03
 
 ### Fixed

@@ -19,7 +19,7 @@ AvA installs as a plugin for Codex or Claude Code. Type `/ava start` in either o
 **Highlights**
 
 - **Prompt:** both agents answer the same prompt and attachments at the same moment, independently. Compare their answers, timing and speed.
-- **Debate:** the agents take turns after an opener you choose. Pause, add a constraint, and resume.
+- **Debate:** a formal debate. Each agent argues an assigned side after a private brief, in timed speeches over a set number of rounds. An independent judge (the strongest Claude Code or Codex model at max effort) then scores both on evidence, clash and a cohesive case, and names a winner. A Debate builder and ten built-in motions help you set one up.
 - **Build and Review:** each agent works in its own copy of a project. Open the two apps side by side, compare their changes, or rank their code-review findings.
 - **Benchmarks:** validated tasks with deterministic checks, so every attempt is saved with an explicit pass or fail. Repeat runs, a scoreboard, exports, and shareable HTML or Markdown reports, with 20 starter tasks. Add optional rubric scores from a judge agent, or import Exercism and JSON Lines tasks.
 - **Prompt library:** saved Markdown prompts and reference files, with six editable starters, in every mode.
@@ -33,7 +33,7 @@ The [user guide](docs/user-guide.md) and [benchmark guide](docs/benchmarks.md) c
 Requires **Windows**, **Node.js 24+**, **Git**, and **Codex or Claude Code** as the plugin host. Install and sign in to the CLI agents you want to use; see [supported agents](#supported-agents).
 
 ```powershell
-git clone --branch v0.3.5 --depth 1 https://github.com/adamczhang/Agent-vs-Agent.git
+git clone --branch v0.4.3 --depth 1 https://github.com/adamczhang/Agent-vs-Agent.git
 cd Agent-vs-Agent
 npm ci
 npm run package

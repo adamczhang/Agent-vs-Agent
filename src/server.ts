@@ -86,6 +86,9 @@ if(process.argv.includes('--mcp')){
       catch(error){closing=false;console.error(error instanceof Error?error.message:error);}
     };
     process.once('SIGINT',()=>{void shutdown();});process.once('SIGTERM',()=>{void shutdown();});
+    // A newer install asked this service to step aside (service.retire): its idle agents close, then it exits and the
+    // newer plugin starts its own.
+    service.retire=()=>{void (async()=>{try{await service.shutdown();}catch{/* close what it can */}await shutdown();process.exit(0);})();};
     if(process.argv.includes('--daemon')){
       const idleMs=Math.max(100,Number(process.env.AVA_IDLE_TIMEOUT_MS)||120000);
       idle=setInterval(()=>{

@@ -124,9 +124,10 @@ test('a conversation can open with one chosen agent; the other replies with the 
     const [one, two] = factory.agents as [typeof factory.agents[number], typeof factory.agents[number]];
     const before = one.calls.length;
     const run = await service.call('run.start', { pairId: pair.id, text: 'Debate PTO policy', requestId: 'o1', options: { paceMs: 0, opening: 'cli2' } }) as { id: string }; await flush();
-    assert.equal(one.calls.length, before, 'agent 1 waits');
+    assert.equal(one.calls.length, before + 1, 'agent 1 is briefed while agent 2 opens');
+    assert.ok(one.calls.at(-1)!.request.text.includes('Debate PTO policy') && one.calls.at(-1)!.request.text.includes('cli2 gives the opening statement'));
     assert.ok(two.calls.at(-1)!.request.text.includes('Debate PTO policy'));
-    two.answer('As CEO, I say 15 days.'); await flush();
+    one.raw('READY'); two.answer('As CEO, I say 15 days.'); await flush();
     const next = one.calls.at(-1)!.request.text;
     assert.ok(next.includes('Debate PTO policy') && next.includes('As CEO, I say 15 days.'), 'agent 1 gets the topic and the opening');
     one.answer('As a student, more is better.'); await flush();

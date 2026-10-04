@@ -237,6 +237,28 @@ So the agent and everything it starts are in the job from their first instructio
 
 Codex app-server initializes plugins before session configuration arrives. The adapter's `CODEX_CONFIG` alone did not prevent inherited plugin startup in the live test. AvA therefore uses `CODEX_PATH` to select a generated local launcher for the installed compatible Codex binary, supplying process-level feature-disable flags. A participant marker also blocks the AvA hook and server entrypoint when inherited. This changes child startup only, leaving host settings and existing credentials in place. The final live census showed no recursive AvA child.
 
+## Formal debates and the judge
+
+A debate (Debate mode) is a formal debate (G6–G8):
+
+- **Run settings.** `RunConfig.stances` gives each seat its side. `speechMs` limits each speech, and `judge` names the CLI that judges.
+- **Briefs.** Before the run starts, `run.start` briefs both debaters through their own 1:1 lines (`sendDirect`; see `debate.ts debateBrief`). The brief holds the motion, the side, the format, the judging criteria, the speech time and the private brief from the template. The run starts once both have answered, and a failed brief refuses the start.
+- **A fresh thread per debate.** When the pair's thread already holds a prompt and nothing is running, both agents first get fresh sessions (`endThread`), so each debate is its own thread. While a prompt runs, the start is refused as before.
+- **Speeches.** Each turn's prompt (`controller.ts`) states the side and the speech the round calls for: an opening, a rebuttal, or the closing in the last round. It includes the rules: evidence, no invented facts, answer the strongest point.
+- **Speech time.** It is wall-clock time for the whole request. When it runs out, the request is cancelled, like Stop. A settled cancel commits a forfeit message in that seat's place and the debate continues. A cancel that doesn't settle within the grace leaves the run needing attention, as anywhere.
+- **The judge.** When a completed run ends, `engine.ended` starts it. It is a fresh session in its own pair (`debate-judge-…`): outside the agent limit, not remembered by Quick activate, internet on, Ask permissions.
+  - **Its settings:** the CLI's strongest model (`quick.ts strongestModel`) at its highest effort (`maxEffort`: "max" where offered).
+  - **Its input:** the motion and the speeches labeled Proposition and Opposition (`judgePrompt`), never the briefs, 1:1 lines or identities.
+  - **Its ballot:** `parseBallot` maps the JSON back to seats. The ballot is saved on the run (`Run.judgment`); one that was judging when the service stopped is marked failed at the next start.
+  - **On demand:** `debate.judge` judges again, or judges a stopped debate.
+- **Starters.** Starter set 3 adds the ten formal motions and retires earlier debate starters still exactly as shipped, matched by fingerprint (`RETIRED_STARTERS`).
+
+## Updates, Quick activate and thread deletion
+
+- **Service handover (E14).** `health` reports the service's version. A plugin newer than the running service asks it to step aside (`service.retire`). The service agrees only when no conversation, 1:1 reply, activation, preparation or benchmark is running, then closes its agents and exits, and the plugin starts its own. An older plugin uses a newer service as it is. Services from before 0.4.1 can't be asked.
+- **Quick activate (E13).** An agent's settings (config, permissions, internet) are remembered in `app_settings` per seat and per CLI when it activates or its internet or permissions change. `slot.quick` reuses them, or picks the strongest model at high effort, with Ask and internet off.
+- **Thread deletion.** `thread.delete` removes one thread's runs (messages, turns, deliveries, events, phases), 1:1 messages and title, plus the attachments and session folders only it used. It refuses a current thread whose agents are active.
+
 ## Conversation contract
 
 `controller.ts` uses an injected monotonic clock. A queued human message is admitted into one frozen pair of inputs, so the faster opening cannot leak into the slower opening. Future broadcasts are excluded until their own admission. After paired replies, a single-seat phase alternates between the agents. Only a completed, valid response envelope becomes a public message. A malformed answer gets at most one repair and consumes the same request budget.
@@ -272,6 +294,13 @@ An MCP Apps view (the room inside the host's own UI) is not implemented; the bro
 Typed `/ava` commands go through the prompt hook to the `ava_command` MCP tool. The hook validates them with a strict grammar and passes on only the normalized command and the chat ID. The MCP server runs outside the chat's sandbox, and Codex lets the user approve its tools once ("always"). (A shell route would need a sandbox escalation on every command.)
 
 The packaged plugin's `.mcp.json` uses a relative path with `cwd: "."` and an explicit `env_vars` list. Codex does not expand `${PLUGIN_ROOT}` there (it does for hooks). Observed in the throwaway-profile test: when the Codex app-server session that launched the MCP server ends, the "detached" AvA service ends with it, abruptly and with no graceful shutdown. It stays up for the whole session. In the desktop app that session is long-lived, but quitting Codex presumably stops AvA and any running conversation the same way (not yet observed in the desktop app). On the next start the stale lock and rendezvous files are recognized as dead, and an interrupted run is quarantined for release, as with any crash. Data lives in the shared data folder (see Host wrappers) and survives upgrades and removal.
+
+### Cursor's agent
+
+Cursor's agent comes from ACPX's registry (`cursor-agent acp`), with three adjustments in `src/cursor.ts`:
+- **Launch:** on Windows the registry finds a `.cmd` shim that starts PowerShell. AvA starts the newest installed version's bundled `node.exe` and `index.js` itself, so the agent needs no shell and its launcher can wait inside a job object.
+- **Settings:** the agent reads `CURSOR_CONFIG_DIR`. AvA points it at `<data>/providers/cursor`, whose `cli-config.json` AvA keeps at an empty allow list (nothing runs without asking AvA), web searches set to ask, and no commit attribution. The agent's own saved choices there are kept, its ACP sessions are stored there too, and its sign-in, kept elsewhere, still applies.
+- **Plan refusal:** Cursor answers a request its plan doesn't cover with "Upgrade your plan to continue". An activation that gets that answer fails with that reason.
 
 ## Known limits
 

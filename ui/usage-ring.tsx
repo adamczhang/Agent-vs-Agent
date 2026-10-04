@@ -5,12 +5,16 @@ import type { AgentUsage, Provider } from '../src/types';
 // context window does, and a popover (click) with the numbers. Claude's ring fills with plan usage, but the CLIs don't pass
 // their plan limits to AvA, and context is what changes during a run, so here the ring is the context window.
 const WARN_AT = 0.8, FULL_AT = 0.95;
+// Agents that don't report their context window at all (checked live: Codex and Claude Code report it with the
+// activation check itself, so their ring fills in at once; Grok Build and Antigravity report nothing).
+const UNREPORTED = new Set<Provider>(['grok-build', 'antigravity', 'cursor']);
 // Where each CLI shows its own plan limits (5-hour and weekly windows), since it doesn't report them to AvA.
 const PLAN_HINT: Partial<Record<Provider, string>> = {
   codex: 'Codex doesn’t pass its plan limits to AvA. See them with /status in Codex.',
   claude: 'Claude Code doesn’t pass its plan limits to AvA. See them with /usage in Claude Code.',
   'grok-build': 'Grok Build doesn’t report plan usage to AvA.',
   antigravity: 'Antigravity doesn’t report plan usage to AvA.',
+  cursor: 'Cursor hasn’t reported plan usage to AvA.',
 };
 // 709.2k, 1M, 258.4k: Claude's style.
 export function tokens(n: number) {
@@ -31,7 +35,7 @@ export function UsageRing({ name, provider, usage }: { name: string; provider: P
   }, [open]);
   const context = usage?.context, share = context ? Math.min(1, context.used / context.size) : 0, percent = Math.round(share * 100);
   const tone = !context ? 'unknown' : share >= FULL_AT ? 'full' : share >= WARN_AT ? 'warn' : '';
-  const label = context ? `${name}: ${percent}% of its context window used (${tokens(context.used)} of ${tokens(context.size)} tokens)` : `${name}: context not reported yet`;
+  const label = context ? `${name}: ${percent}% of its context window used (${tokens(context.used)} of ${tokens(context.size)} tokens)` : provider && UNREPORTED.has(provider) ? `${name} doesn’t report its context window` : `${name}: context not reported yet`;
   // A 16 px ring: r 6.5 on a 2 px stroke; the arc starts at 12 o'clock.
   const r = 6.5, around = 2 * Math.PI * r;
   const hasCost = usage?.cost?.amount !== undefined, t = usage?.tokens, shown = t && [['Input', t.input], ['Output', t.output], ['Cached', t.cachedRead]].filter((row): row is [string, number] => typeof row[1] === 'number');
@@ -48,7 +52,7 @@ export function UsageRing({ name, provider, usage }: { name: string; provider: P
         {context ? <>
           <div className="usage-bar" aria-hidden="true"><i className={tone} style={{ width: `${Math.max(percent, 1)}%` }} /></div>
           <p>{tokens(context.used)} / {tokens(context.size)} tokens{share >= WARN_AT ? `. ${share >= FULL_AT ? 'Nearly full: the agent may compact or forget earlier turns.' : 'Getting full.'}` : ''}</p>
-        </> : <p className="muted">{provider === 'grok-build' || provider === 'antigravity' ? `${name} doesn’t report its context window to AvA.` : 'Reported after the agent’s next reply.'}</p>}
+        </> : <p className="muted">{provider && UNREPORTED.has(provider) ? `${name} doesn’t report its context window to AvA.` : 'Reported after the agent’s next reply.'}</p>}
       </section>
       {(!!shown?.length || hasCost) && <section>
         <div className="usage-row"><strong>This session</strong></div>

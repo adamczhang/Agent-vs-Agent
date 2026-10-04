@@ -11,7 +11,7 @@ import {installedDataRoot} from '../src/paths.js';
 import {SEATS,type Pair,type Provider,type ProviderConfig} from '../src/types.js';
 
 const args=process.argv.slice(2),option=(n:string)=>{const i=args.indexOf(n);return i>=0?args[i+1]:undefined;};
-const MODELS:Record<Provider,Omit<ProviderConfig,'provider'|'auth'>>={codex:{model:'gpt-6-astra',effort:{key:'reasoning_effort',value:'low'}},claude:{model:'default',effort:{key:'effort',value:'low'}},'grok-build':{model:'grok-4.7'},antigravity:{model:'gemini-3.7-flash-high'},
+const MODELS:Record<Provider,Omit<ProviderConfig,'provider'|'auth'>>={codex:{model:'gpt-6-astra',effort:{key:'reasoning_effort',value:'low'}},claude:{model:'default',effort:{key:'effort',value:'low'}},'grok-build':{model:'grok-4.7'},antigravity:{model:'gemini-3.7-flash-high'},cursor:{model:'composer-2.5[fast=true]'},
   vercel:{model:option('--vercel-model')??'openai/gpt-5.6-luna',effort:{key:'model_reasoning_effort',value:'low'}}};
 const dataRoot=resolve(option('--data')??mkdtempSync(join(tmpdir(),'ava-live-'))),shared=installedDataRoot(resolve('.'));mkdirSync(dataRoot,{recursive:true});
 if(existsSync(join(shared,'providers.json'))&&!existsSync(join(dataRoot,'providers.json')))copyFileSync(join(shared,'providers.json'),join(dataRoot,'providers.json'));

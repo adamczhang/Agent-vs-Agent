@@ -18,7 +18,8 @@ test('the simulation factory runs a full conversation with activity and no provi
       if (!['running', 'pausing', 'stopping'].includes(state.run.status) || Date.now() > deadline) break;
     }
     assert.deepEqual([state.run.status, state.run.reason, state.run.requests], ['stopped', 'request_limit', 4]);
-    assert.deepEqual(state.messages.filter(m => m.sender !== 'user').map(m => m.sender).slice(2), ['cli1', 'cli2']);
+    // Four requests: agent 1's opening and agent 2's briefing (not posted), then a reply each.
+    assert.deepEqual(state.messages.filter(m => m.sender !== 'user').map(m => m.sender), ['cli1', 'cli2', 'cli1']);
     assert.ok(state.events.some(e => e.type === 'activity' && e.data.type === 'tool'), 'simulated activity reaches the activity panes');
     assert.equal(service.store.openProcesses(pair.id).length, 0, 'no provider process is recorded');
   } finally { await service.shutdown(); service.store.close(); }

@@ -49,6 +49,6 @@ export function StatsView({ stats, names, loading }: { stats: ThreadStats | null
         <tbody>{stats.turns.map((t, i) => <tr key={t.turnId}><td>{i + 1}</td>{multi && <td>{t.prompt}</td>}<td>{seatName(t.seat)}</td><td>{t.phase === 'paired' ? 'opening' : t.phase}</td><td>{ms(t.startMs)}</td><td>{ms(t.firstActivityMs)}</td><td>{ms(t.durationMs)}</td><td>{num(t.outputChars)}</td><td>{t.tokenSource === 'estimated' ? '≈' : ''}{num(t.tokensPerSec)}</td><td>{t.status}</td></tr>)}</tbody>
       </table>
     </details>
-    <p className="stats-note">Codex, Claude Code and Gateway token counts use saved provider reports. Only Grok Build and Antigravity use estimates (characters ÷ 4), marked ≈. Missing reports stay unavailable. First token is the first activity a CLI exposed: thinking, a tool call, or text. Prompts are placed back to back, so time between your prompts isn’t counted. Everything comes from the saved event log, so past threads keep their stats.</p>
+    <p className="stats-note">Codex, Claude Code and Gateway token counts use saved provider reports. Grok Build and Antigravity, and Cursor when it reports nothing, use estimates (characters ÷ 4), marked ≈. Missing reports stay unavailable. First token is the first activity a CLI exposed: thinking, a tool call, or text. Prompts are placed back to back, so time between your prompts isn’t counted. Everything comes from the saved event log, so past threads keep their stats.</p>
   </div>;
 }

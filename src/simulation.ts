@@ -64,8 +64,16 @@ export class SimulatedParticipant implements ConfiguredParticipant {
         at(this.delayMs * 0.7, () => finish({ status: 'completed', text: reply }));
         return;
       }
+      // A formal debate's judge (G7): a ballot with scores that vary, so the room shows both outcomes.
+      if (/^You are the judge of a formal debate/.test(request.text)) {
+        const score = () => 2 + Math.floor(Math.random() * 4), side = (): Record<string, number> => ({ evidence: score(), clash: score(), stance: score() }), proposition = side(), opposition = side();
+        const sum = (s: Record<string, number>) => s.evidence! + s.clash! + s.stance!, winner = sum(proposition) >= sum(opposition) ? 'proposition' : 'opposition';
+        const ballot = { scores: { proposition, opposition }, winner, reason: `The ${winner} answered the other side’s strongest point more directly and backed its case with more specific evidence. (simulated)`, notes: { proposition: 'Clear opening case. (simulated)', opposition: 'Sharp rebuttals. (simulated)' }, issues: [{ debater: winner === 'proposition' ? 'opposition' : 'proposition', claim: 'A figure quoted without a source', problem: 'Not supported by the evidence given. (simulated)' }] };
+        at(this.delayMs * 2, () => finish({ status: 'completed', text: JSON.stringify(ballot) }));
+        return;
+      }
       // A benchmark prompt arrives as the user wrote it (no conversation framing): work longer, answer in plain text.
-      if (!/^You are cli[12] in a real two-agent conversation/.test(request.text)) {
+      if (!/^You are cli[12] in a (real two-agent conversation|formal debate)/.test(request.text)) {
         const pace = this.delayMs * (this.seat === 'cli1' ? 3 : 4.2), images = request.attachments?.length ?? 0;
         const answer = [`${this.seat === 'cli1' ? 'Here is my approach.' : 'Short answer first, then the reasoning.'} (simulated benchmark answer)`,
           `1. Restate the task: "${request.text.split('\n')[0]!.slice(0, 100)}"`, '2. Break it into steps and check each against the constraints.', '3. Summarize the result and the main risk.',

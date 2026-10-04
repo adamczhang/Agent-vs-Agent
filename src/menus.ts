@@ -4,15 +4,17 @@ import type { Catalog } from './providers.js';
 import { makerName, type GatewayModel } from './gateway.js';
 import { Store } from './store.js';
 import { ActivationManager } from './activation.js';
+import { describeQuick, type QuickPlan } from './quick.js';
 
-export const LABELS:Record<Provider,string>={claude:'Claude Code',codex:'Codex CLI','grok-build':'Grok Build',antigravity:'Antigravity',vercel:'Vercel AI Gateway'};
-export interface MenuChoice { label:string; value:string; config?:ProviderConfig }
+export const LABELS:Record<Provider,string>={claude:'Claude Code',codex:'Codex CLI','grok-build':'Grok Build',antigravity:'Antigravity',cursor:'Cursor Agent',vercel:'Vercel AI Gateway'};
+// name: a model's display name ("Opus 5.5"), kept with the settings when it's chosen.
+export interface MenuChoice { label:string; value:string; config?:ProviderConfig; name?:string }
 // context: where a long model list stands (the Vercel AI Gateway's: a maker, a page, or a search). search: the room may
 // offer a search box for this menu.
 export interface MenuContext { maker?:string; page?:number; query?:string }
 export interface Menu { id:string; pairId:string; seat:Seat; generation:number; phase:'home'|'provider'|'model'|'effort'|'speed'|'auth'|'permissions'|'gateway-key'; title:string; choices:MenuChoice[]; text:string; context?:MenuContext; search?:boolean }
 // How each CLI's own name for "approve everything" reads, so the choice is recognisable.
-const BYPASS_NAMES:Record<Provider,string>={claude:'bypass permissions',codex:'full access','grok-build':'always allow',antigravity:'YOLO',vercel:'full access'};
+const BYPASS_NAMES:Record<Provider,string>={claude:'bypass permissions',codex:'full access','grok-build':'always allow',antigravity:'YOLO',cursor:'run everything',vercel:'full access'};
 export const PERMISSION_LABELS={ask:'Ask: scoped file tools in Build; command execution refused',bypass:'Bypass: approve every tool request, in every mode'};
 // The Vercel AI Gateway's side of the menus: its model list, and AvA's Gateway key (status only; never the key).
 export interface GatewayMenus {
@@ -22,13 +24,22 @@ export interface GatewayMenus {
   forgetKey():void;
 }
 const PAGE=20,SEARCH_LIMIT=40,BUDGETS=[25,100];
+// Speed reads Fast or Default, whatever a CLI calls it (Codex's and Claude Code's "Fast mode" offer On and Off).
+const FAST=/^(on|true|fast|enabled|priority)$/i,NORMAL=/^(off|false|normal|default|standard|disabled|auto)$/i;
+export const speedName=(value:string,name=value)=>FAST.test(name)||FAST.test(value)?'Fast':NORMAL.test(name)||NORMAL.test(value)?'Default':name;
 const date=(seconds:number)=>seconds?new Date(seconds*1000).toISOString().slice(0,7):'';
 const modelLabel=(m:GatewayModel,withMaker=false)=>`${withMaker?`${makerName(m.maker)} · `:''}${m.name} (${m.id})${m.released?` · ${date(m.released)}`:''}`;
 export class Menus {
   // The menus table comes from schema migration 5. setPermissions applies the permissions choice (the service's).
   constructor(private store:Store,private activation:ActivationManager,private catalog:(provider:Provider,model:string,auth:ProviderConfig['auth'])=>Promise<Catalog>,
     private setPermissions:(pairId:string,seat:Seat,level:'ask'|'bypass')=>Promise<unknown>=async(pairId,seat,level)=>store.setSlotPermissions(pairId,seat,level),
-    private gateway?:GatewayMenus,private warnings?:()=>Promise<Partial<Record<Provider,string>>>){}
+    private gateway?:GatewayMenus,private warnings?:()=>Promise<Partial<Record<Provider,string>>>,
+    private quick?:{plan(seat:Seat,provider?:Provider):QuickPlan;activate(pairId:string,seat:Seat):Promise<unknown>}){}
+  // Quick activate (one choice): the agent's last settings, or the strongest model at high effort, Ask, internet off.
+  private quickChoice(seat:Seat,provider?:Provider):MenuChoice[]{
+    if(!this.quick)return [];const plan=this.quick.plan(seat,provider);
+    return [{label:`Quick activate: ${describeQuick(plan,LABELS[plan.provider])} (one short model request)`,value:'quick'}];
+  }
   private save(menu:Menu){this.store.db.prepare('INSERT INTO menus VALUES(?,?,?) ON CONFLICT(pair_id,seat) DO UPDATE SET data=excluded.data').run(menu.pairId,menu.seat,JSON.stringify(menu));return menu;}
   current(pairId:string,seat:Seat):Menu|undefined{const row=this.store.db.prepare('SELECT data FROM menus WHERE pair_id=? AND seat=?').get(pairId,seat);return row?JSON.parse(String(row.data)) as Menu:undefined;}
   private keyLine(){
@@ -40,14 +51,15 @@ export class Menus {
     let choices:MenuChoice[]=[],title='Settings',search=false;
     if(!config&&phase==='home')phase='provider';
     const warnings=(phase==='home'||phase==='provider')?await this.warnings?.()??{}:{};
-    if(phase==='provider'){title='Choose a CLI';choices=PROVIDERS.map(p=>({label:p==='vercel'?`${LABELS[p]} (hundreds of models; API key)`:LABELS[p],value:p}));}
+    if(phase==='provider'){title='Choose a CLI';choices=PROVIDERS.map(p=>({label:p==='vercel'?`${LABELS[p]} (hundreds of models; API key)`:LABELS[p],value:p}));if(!['ready','verifying'].includes(slot.state))choices.push(...this.quickChoice(seat,config?.provider));}
     else if(phase==='home'&&config){
       const bypass=slot.permissions==='bypass',vercel=config.provider==='vercel';
-      choices=[{label:`Provider: ${LABELS[config.provider]}`,value:'provider'},{label:`Model: ${config.model||'Select model'}`,value:'model'},{label:`Effort: ${config.effort?.value??'Provider / model default'}`,value:'effort'},
+      choices=[{label:`Provider: ${LABELS[config.provider]}`,value:'provider'},{label:`Model: ${config.model?config.modelName??config.model:'Select model'}`,value:'model'},{label:`Effort: ${config.effort?.value??'Default'}`,value:'effort'},
         // The Gateway has one route (its key) and no speed setting.
-        ...(vercel?[{label:`Gateway key: ${this.keyLine()}`,value:'gateway-key'}]:[{label:`Speed: ${config.speed?.value??'Provider default'}`,value:'speed'},{label:`Access: ${config.auth}`,value:'auth'}]),
+        ...(vercel?[{label:`Gateway key: ${this.keyLine()}`,value:'gateway-key'}]:[{label:`Speed: ${config.speed?speedName(config.speed.value):'Default'}`,value:'speed'},{label:`Access: ${config.auth}`,value:'auth'}]),
         {label:`Permissions: ${bypass?`Bypass (${BYPASS_NAMES[config.provider]})`:'Ask'}`,value:'permissions'},
-        {label:slot.state==='ready'?'Reactivate with these settings (fresh session; one short model request)':'Activate and verify (one short model request)',value:'activate'}];
+        {label:slot.state==='ready'?'Reactivate with these settings (fresh session; one short model request)':'Activate and verify (one short model request)',value:'activate'},
+        ...(['ready','verifying'].includes(slot.state)?[]:this.quickChoice(seat,config.provider))];
     }
     else if(phase==='auth'){title='Choose account route';choices=[{label:'Existing provider login',value:'provider-login'},{label:'Configured API credential',value:'api'}];}
     else if(phase==='permissions'){title='Choose tool permissions (applies at once; no new session)';choices=[{label:PERMISSION_LABELS.ask,value:'ask'},{label:`${PERMISSION_LABELS.bypass}${config?` (${BYPASS_NAMES[config.provider]})`:''}`,value:'bypass'}];}
@@ -64,11 +76,11 @@ export class Menus {
       if(context.query){
         const q=context.query.toLowerCase(),found=models.filter(m=>m.id.toLowerCase().includes(q)||m.name.toLowerCase().includes(q)).sort((a,b)=>a.maker.localeCompare(b.maker)||b.released-a.released);
         title=found.length?`Models matching “${context.query}” (${found.length}${found.length>SEARCH_LIMIT?`, first ${SEARCH_LIMIT} shown`:''})`:`No model matches “${context.query}”`;
-        choices=found.slice(0,SEARCH_LIMIT).map(m=>({label:modelLabel(m,true),value:m.id}));
+        choices=found.slice(0,SEARCH_LIMIT).map(m=>({label:modelLabel(m,true),value:m.id,name:m.name}));
       }else if(context.maker){
         const own=models.filter(m=>m.maker===context.maker).sort((a,b)=>b.released-a.released||a.id.localeCompare(b.id)),pages=Math.max(1,Math.ceil(own.length/PAGE)),page=Math.min(Math.max(0,context.page??0),pages-1);
         title=`${makerName(context.maker)} models (${own.length})${pages>1?` · page ${page+1} of ${pages}`:''}`;
-        choices=own.slice(page*PAGE,page*PAGE+PAGE).map(m=>({label:modelLabel(m),value:m.id}));
+        choices=own.slice(page*PAGE,page*PAGE+PAGE).map(m=>({label:modelLabel(m),value:m.id,name:m.name}));
         if(page+1<pages)choices.push({label:`More ${makerName(context.maker)} models (page ${page+2} of ${pages})`,value:`page:${page+1}`});
         if(page>0)choices.push({label:`Previous page (${page} of ${pages})`,value:`page:${page-1}`});
       }else{
@@ -80,21 +92,21 @@ export class Menus {
     else if(config?.provider==='vercel'&&phase==='effort'){
       const model=(await this.gatewayModels()).find(m=>m.id===config.model);
       title=`Choose effort for ${config.model||'the model'}`;
-      choices=[...(model?.efforts??[]).map(e=>({label:e,value:e,config:{...config,effort:{key:'model_reasoning_effort',value:e}}})),{label:'Model default',value:'default',config:{...config,effort:undefined}}];
+      choices=[...(model?.efforts??[]).map(e=>({label:e,value:e,config:{...config,effort:{key:'model_reasoning_effort',value:e}}})),{label:'Default',value:'default',config:{...config,effort:undefined}}];
     }
-    else if(config?.provider==='vercel'&&phase==='speed'){choices=[{label:'Provider default — control unavailable',value:'default',config:{...config,speed:undefined}}];}
+    else if(config?.provider==='vercel'&&phase==='speed'){title='Choose speed (the Gateway has no speed setting)';choices=[{label:'Default',value:'default',config:{...config,speed:undefined}}];}
     else if(config){
       const data=await this.catalog(config.provider,phase==='model'?'':config.model,config.auth);
-      if(phase==='model'){title='Choose a model';choices=data.models.map(m=>({label:m.name,value:m.id}));}
+      if(phase==='model'){title='Choose a model';choices=data.models.map(m=>({label:m.name,value:m.id,name:m.name}));}
       else {
         const control=data.controls.find(c=>phase==='effort'?/effort/i.test(c.id):/fast|speed|service.tier/i.test(c.id));
         title=`Choose ${phase}`;
-        if(control){choices=control.options.map(v=>({label:v.name,value:v.value,config:{...config,[phase]:{key:control.id,value:v.value}}}));}
+        if(control){choices=control.options.map(v=>({label:phase==='speed'?speedName(v.value,v.name):v.name,value:v.value,config:{...config,[phase]:{key:control.id,value:v.value}}})).filter((c,i,all)=>all.findIndex(o=>o.label===c.label)===i);}
         else if(phase==='effort'&&config.provider==='antigravity'){
           const current=data.models.find(m=>m.id===config.model),base=current?.name.replace(/\s*\((?:High|Medium|Low)\)$/,'');
           choices=data.models.filter(m=>base&&m.name.replace(/\s*\((?:High|Medium|Low)\)$/,'')===base).map(m=>({label:m.name,value:m.id,config:{...config,model:m.id,effort:undefined}}));
         }
-        if(!choices.length)choices=[{label:'Provider default — control unavailable',value:'default',config:{...config,[phase]:undefined}}];
+        if(!choices.length){title+=` (${LABELS[config.provider]} has no ${phase} setting)`;choices=[{label:'Default',value:'default',config:{...config,[phase]:undefined}}];}
       }
     }
     const current=this.store.pair(pairId).slots[seat];if(current.generation!==slot.generation)throw new AvAError('STALE_MENU','Slot changed while the menu loaded. Open it again.');
@@ -122,6 +134,7 @@ export class Menus {
     }
     const index=Number(choice)-1,item=menu.choices[index];
     if(!Number.isInteger(index)||!item)throw new AvAError('INVALID_CHOICE','Choose a number from the displayed menu.');
+    if(item.value==='quick'&&this.quick){const activation=await this.quick.activate(pairId,seat);return {activation,menu:await this.show(pairId,seat)};}
     if(menu.phase==='home'){
       if(item.value==='activate'){
         if(!slot.config?.model)throw new AvAError('SELECT_MODEL','Select a model before activation.');
@@ -141,7 +154,7 @@ export class Menus {
     let config=slot.config??{provider:'codex',model:'',auth:'provider-login'} as ProviderConfig;
     // The Gateway has only API access.
     if(menu.phase==='provider'){config={provider:item.value as Provider,model:'',auth:item.value==='vercel'?'api':'provider-login'};}
-    if(menu.phase==='model'){config={...config,model:item.value,effort:undefined,speed:undefined};}
+    if(menu.phase==='model'){const {modelName:_old,...rest}=config;config={...rest,model:item.value,...(item.name&&item.name!==item.value?{modelName:item.name}:{}),effort:undefined,speed:undefined};}
     if(menu.phase==='auth'){config={...config,auth:item.value as ProviderConfig['auth']};}
     if(item.config)config=item.config;
     await this.activation.configure(pairId,seat,config);

@@ -40,8 +40,20 @@ test('doctor checks versions and documented login status, without model or login
   assert.equal(report.clis[1]!.compatible,true);assert.equal(report.clis[1]!.auth,'signed_out');
   assert.equal(report.clis[2]!.minimum,null);assert.equal(report.clis[2]!.auth,'unknown');
   assert.equal(report.clis[3]!.installed,false);assert.equal(report.gateway.status,'missing');
-  assert.deepEqual(calls.sort(),['codex --version','codex login status','claude --version','claude auth status --json','grok-build --version'].sort());
+  assert.deepEqual(calls.sort(),['codex --version','codex login status','claude --version','claude auth status --json','cursor --version','cursor status','grok-build --version'].sort());
   assert.match(formatDoctor(report),/Update required: npm install -g/);
+});
+
+// Cursor's agent reports its sign-in with `status` and its plan with `about` (no model requests, no login).
+test('doctor reads Cursor\'s version, sign-in and plan, and says a Free plan refuses agent requests',async()=>{
+  const reply=(signedIn:boolean,tier:string):DiagnosticRun=>async(_launch,args)=>({ok:true,stderr:'',stdout:args[0]==='--version'?'2026.09.28-64d2043':args[0]==='status'?(signedIn?'✓ Logged in as someone@example.com':'Not logged in. Run cursor-agent login.'):`About Cursor CLI\n\nSubscription Tier   ${tier}\n`});
+  const free=await diagnoseCli('cursor',inspect,{env:{},resolve:()=>({command:'node',args:['index.js']}),run:reply(true,'Free')});
+  assert.deepEqual([free.version,free.auth,free.minimum],['2026.09.28','signed_in',null]);assert.match(free.message,/Plan: Free; Cursor refuses agent requests on it\./);
+  const pro=await diagnoseCli('cursor',inspect,{env:{},resolve:()=>({command:'node',args:['index.js']}),run:reply(true,'Pro')});
+  assert.match(pro.message,/Plan: Pro\.$/);
+  const out=await diagnoseCli('cursor',inspect,{env:{},resolve:()=>({command:'node',args:['index.js']}),run:reply(false,'Free')});
+  assert.equal(out.auth,'signed_out');assert.doesNotMatch(out.message,/Plan:/);
+  assert.equal((await diagnoseCli('cursor',inspect,{env:{CURSOR_API_KEY:'not_a_real_secret'},resolve:()=>({command:'node',args:['index.js']}),run:reply(true,'Pro')})).auth,'api_key');
 });
 
 test('doctor reports failed probes and API-route conflicts without leaking command output',async()=>{

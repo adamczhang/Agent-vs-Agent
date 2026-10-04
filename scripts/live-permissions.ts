@@ -18,6 +18,7 @@ const CONFIGS:Record<Provider,ProviderConfig>={
   claude:{provider:'claude',model:'default',effort:{key:'effort',value:'low'},auth:'provider-login'},
   'grok-build':{provider:'grok-build',model:'grok-4.7',auth:'provider-login'},
   antigravity:{provider:'antigravity',model:'gemini-3.7-flash-high',auth:'provider-login'},
+  cursor:{provider:'cursor',model:'composer-2.5[fast=true]',auth:'provider-login'},
   vercel:{provider:'vercel',model:'openai/gpt-5.6-luna',effort:{key:'model_reasoning_effort',value:'low'},auth:'api'},
 };
 const root=mkdtempSync(join(tmpdir(),`ava-perm-${provider}-`)),shared=installedDataRoot(resolve('.'));

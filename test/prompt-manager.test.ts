@@ -83,7 +83,7 @@ test('Markdown import stays unsaved until Save and preserves the file contents',
   const file = new dom.window.File(['# Imported\n\nKeep this text.'], 'my-import.md', { type: 'text/markdown' }); Object.defineProperty(file, 'text', { value: async () => '# Imported\n\nKeep this text.' });
   Object.defineProperty(input, 'files', { configurable: true, value: [file] });
   await act(async () => input.dispatchEvent(new dom.window.Event('change', { bubbles: true }))); await tick();
-  assert.equal(service.prompts.list().prompts.length, 6);
+  assert.equal(service.prompts.list().prompts.length, 14);
   await click('Save prompt'); const saved = service.prompts.list().prompts.find(p => p.name === 'my-import')!;
   assert.equal(service.prompts.get(saved.id).text, '# Imported\n\nKeep this text.');
 });
@@ -119,6 +119,31 @@ test('an editor opened from the composer saves its files and mode without changi
   await click('Load into composer'); await click('Replace draft');
   assert.equal(used[0]!.prepared.prompt.mode, 'conversation'); assert.equal(used[0]!.prepared.attachments[0]!.name, 'draft.txt');
   assert.equal(service.store.attachmentData(attached.id).toString('utf8'), 'From composer'); assert.equal(saved.files.length, 1);
+});
+
+// G2: every Debate prompt is the debate template: the topic, each agent's private context and internet, and the rounds.
+test('a Debate prompt is written as the debate template and loads with it', async t => {
+  const { service, used } = await fixture(t, { mode: 'conversation' });
+  await click('Debate'); await click('New prompt');
+  assert.ok(document.querySelector('[aria-label="Debate setup"]'), 'a new prompt in the Debate tab is a debate template');
+  await fill('Prompt name', 'Car ban'); await fill('Saved prompt text', 'Should cities ban private cars downtown?');
+  await fill('Private context for Agent 1', 'You argue for the ban.'); await fill('Private context for Agent 2', 'You argue against it.');
+  await act(async () => document.querySelector<HTMLInputElement>('[aria-label="Internet for Agent 2"]')!.click()); await tick();
+  // Sides are assigned and opposite: putting Agent 1 against the motion puts Agent 2 for it.
+  await fill('Side for Agent 1', 'against');
+  assert.equal((document.querySelector('[aria-label="Side for Agent 2"]') as HTMLSelectElement).value, 'for');
+  await fill('Debate rounds', '0'); assert.equal(button('Save prompt').disabled, true, 'rounds must be 1 to 100');
+  await fill('Debate rounds', '6'); await click('Save prompt');
+  const saved = service.prompts.list().prompts.find(p => p.name === 'Car ban')!;
+  assert.deepEqual(saved.debate, { rounds: 6, agents: { cli1: { stance: 'against', context: 'You argue for the ban.', internet: false }, cli2: { stance: 'for', context: 'You argue against it.', internet: true } } });
+  assert.match(document.querySelector('.library-list')!.textContent!, /Debate · 6 rounds · internet/);
+  await click('Load into composer'); assert.deepEqual(used[0]!.prepared.prompt.debate, saved.debate);
+});
+test('Use current draft in Debate takes the room\'s debate options as the template', async t => {
+  const draftDebate = { rounds: 9, agents: { cli1: { stance: 'for' as const, context: 'Room context 1', internet: true }, cli2: { stance: 'against' as const, context: 'Room context 2', internet: false } } };
+  const { service } = await fixture(t, { mode: 'conversation', startWithDraft: true, draft: 'Room topic', draftDebate });
+  assert.equal((document.querySelector('[aria-label="Private context for Agent 1"]') as HTMLTextAreaElement).value, 'Room context 1');
+  await click('Save prompt'); assert.deepEqual(service.prompts.list().prompts.find(p => p.name === 'Room topic')!.debate, draftDebate);
 });
 
 test('deletion requires confirmation and does not re-seed the removed starter', async t => {

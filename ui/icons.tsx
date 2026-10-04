@@ -8,6 +8,7 @@ export const Icon = {
   compose: () => <Svg><path d="M11 4H6.5A2.5 2.5 0 0 0 4 6.5v11A2.5 2.5 0 0 0 6.5 20h11a2.5 2.5 0 0 0 2.5-2.5V13" /><path d="M18.3 3.7a1.9 1.9 0 0 1 2.7 2.7L12.6 14.8 9 15.8l1-3.6z" /></Svg>,
   search: () => <Svg size={15}><circle cx="11" cy="11" r="6.5" /><path d="m20 20-4.2-4.2" /></Svg>,
   pause: () => <Svg filled><rect x="6.5" y="5" width="3.6" height="14" rx="1" /><rect x="13.9" y="5" width="3.6" height="14" rx="1" /></Svg>,
+  bolt: () => <Svg size={14} filled><path d="M13.2 2.5 5 13.4a.6.6 0 0 0 .5 1H11l-1.2 7.1c-.1.6.6.9 1 .4L19 10.6a.6.6 0 0 0-.5-1H13l1.2-6.6c.1-.6-.6-.9-1-.5z" /></Svg>,
   play: () => <Svg filled><path d="M8 5.6v12.8a.8.8 0 0 0 1.2.7l10-6.4a.8.8 0 0 0 0-1.4l-10-6.4A.8.8 0 0 0 8 5.6z" /></Svg>,
   next: () => <Svg filled><path d="M5 6.1v11.8a.8.8 0 0 0 1.2.7l8.6-5.9a.8.8 0 0 0 0-1.4L6.2 5.4A.8.8 0 0 0 5 6.1z" /><rect x="16.5" y="5" width="2.6" height="14" rx="1" /></Svg>,
   stop: () => <Svg filled><rect x="6" y="6" width="12" height="12" rx="2.5" /></Svg>,

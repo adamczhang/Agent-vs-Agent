@@ -6,15 +6,15 @@ Work one item at a time, starting with `next`. An item is done when its "Done wh
 
 ## Where things stand
 
-- **Published:** v0.3.1 (2026-10-03), the first release after the v0.2.0 baseline. Its [release notes](release-v0.3.1.md) record what was tested.
-- **Phases A to C are done:** reliable installs, confined benchmark execution, and benchmarks worth sharing. Both hosts run 0.3.1 (H8).
+- **Published:** v0.4.3 (2026-10-03), with formal, judged debates, the prompt builder, Quick activate and service handover. Earlier: v0.3.5, with Windows CI passing. The [v0.3.1 release notes](release-v0.3.1.md) record what was tested.
+- **Phases A to C are done:** reliable installs, confined benchmark execution, and benchmarks worth sharing. Both hosts run 0.4.1 (not yet published), with Phase E, the Debate work (G1–G3) and the activation follow-ups (E11–E14).
 - **Shipped:**
   - Prompt, Debate, and Build and Review, with private 1:1 lines, history, replay, stats and previews.
   - Validated benchmark tasks, deterministic checks, saved attempts, a scoreboard and exports.
   - A prompt library, Resources and Stop all.
   - Ask-mode refusal of command execution.
 - **Toolchain:** ACPX 0.19.4, codex-acp 2.1.1 and claude-agent-acp 0.85.1 are the latest releases, and AvA uses them. Codex 0.160 and Claude Code 2.1.287 pass; Claude Code 2.1.288 is out.
-- **Tests:** 236 offline tests, 7 browser scenarios and smoke tests of both plugins. The v0.2.0 acceptance run used 99 live requests across all five providers.
+- **Tests:** 242 offline tests, 7 browser scenarios and smoke tests of both plugins. The v0.2.0 acceptance run used 99 live requests across all five providers.
 - **Benchmarks:** 20 validated starter tasks. In the full live run, Claude Code passed 20 of 20. Codex passed all 20 once the Review tasks came with their files.
 
 ### What changed the plan
@@ -31,7 +31,7 @@ Work one item at a time, starting with `next`. An item is done when its "Done wh
 | --- | --- | --- | --- |
 | H1 | Start with a data folder on a second drive (secret permissions no longer take ownership) | offline | done |
 | H2 | Install 0.2.1 in both hosts and confirm the service starts on the shared data folder | user | done |
-| H3 | Publish 0.3.1 (with the 0.3.2 to 0.3.5 fixes) | user | in progress |
+| H3 | Publish 0.3.1 (with the 0.3.2 to 0.3.5 fixes) | user | done |
 | H4 | Service start failures reach the host with their reason (0.2.2) | offline | done |
 | H5 | Test the plugin the way the hosts run it | offline | done |
 | H6 | Upkeep: dependency and CLI updates on a schedule | offline + live | done |
@@ -52,6 +52,10 @@ Work one item at a time, starting with `next`. An item is done when its "Done wh
     - **v0.3.4's CI run:** the Codex smoke test failed again, this time with an empty service log after 45 s.
     - **Diagnosis:** a diagnostic run on a temporary branch showed that securing one secret in the Codex host's environment took 22.6 s on the runner. The smoke test gives each plugin a fresh LOCALAPPDATA, so Windows PowerShell has no module cache. Each cmdlet then scans every installed module, and the runner has many.
     - **Fix (0.3.5):** secrets and process start times use .NET calls, no cmdlets, so PowerShell loads no module. The browser tests' two benchmark scenarios also get 90 s; one took 32 s on CI.
+    - **Done 2026-10-03:**
+      - **Before release:** v0.3.5 passed CI on a temporary branch. The service started in about 1.3 s in both smoke tests.
+      - **Release:** pushed with its tag and release page, and CI passed on the release commit.
+      - **Installed:** both hosts run 0.3.5.
   - Export the public commit, tag `v0.3.1`, and push with the owner's go-ahead.
   - Update the README's clone tag, and create the GitHub release page.
   - *Done when* the release is public and CI passes on it.
@@ -184,6 +188,101 @@ Work one item at a time, starting with `next`. An item is done when its "Done wh
     - **Imported tasks** are container-isolated. Tests validate an imported exercise inside Docker.
     - **Still planned:** Terminal-Bench-style container tasks and SWE-bench-style repositories.
 
+## Phase E — room feedback (owner, 2026-10-03; 0.4.0)
+
+From the owner's notes while setting agents up and running debates in the room.
+
+| ID | Item | Gate | Status |
+| --- | --- | --- | --- |
+| E1 | Change an agent's CLI at any time, before or after activation | offline | done |
+| E2 | Speed reads Fast or Normal | offline | done |
+| E3 | Every default choice reads "Default" | offline | done |
+| E4 | The setup window closes after a successful activation | offline | done |
+| E5 | The context-window ring fills in from the activation check | offline + live | done |
+| E6 | Debate asks for concise, plain-text turns (no word limit) | offline | done |
+| E7 | Debate gives your prompt to both agents at the start; Agent 1 still speaks first | offline + live | done |
+| E8 | Close thread: stop its run, close its agents, keep it in history, and open the next thread with the same agent settings | offline | done |
+| E9 | One thread history across modes, each thread labeled with its mode. Switching mode opens that mode's own screen; a thread stays active until it is closed | offline | done |
+| E10 | Prompt library tabs for Prompt, Debate and Build prompts | offline | done |
+
+- **E1:** once a CLI was picked, the agent's header showed only Activate. Changing the CLI meant finding the "Provider" line inside the menu.
+- **E5:** the owner decided to keep the one-request model check (it proves the model answers), and to show the usage it reports at once.
+  - **Checked live (4 requests):** Codex and Claude Code report their context window with the activation check itself, so the ring fills in as soon as activation finishes. Grok Build and Antigravity report nothing, and their ring now says so plainly instead of "not reported yet".
+- **E6:** the owner decided on no artificial word limit, only clear wording asking for concise replies.
+- **E7:** today Agent 2 first sees the prompt with Agent 1's opening, so a long opening or an early stop leaves Agent 2 without it. The owner chose to send it to both up front: Agent 2 acknowledges (hidden; one extra short request) and replies only after Agent 1's opening.
+  - **Done:** the briefing runs in parallel with the opening, in a phase of its own ("briefing") that doesn't count as speaking. A failed briefing isn't fatal.
+  - **Live (6 requests):** Codex opened while Claude Code was briefed (reply READY, not posted). Claude Code's first posted reply answered the opening, and every reply was short and conversational.
+- **E8:** a new session kept the old thread's two agents running, against the 4-agent limit, and forgot both agents' settings.
+  - **Done:** Close thread, in the thread header and the More menu, stops the conversation, closes both agents and any app servers they kept, and leaves the thread in history. Both agents keep their settings (CLI, model, effort, speed, permissions, internet), and Activate both starts them again with one short check each. It shares its steps with Clear Session, which also reactivates at once.
+- **E9:** switching between Prompt, Build and Debate went to completely separate thread lists. The owner asked for one history, with each thread's mode clearly labeled. Switching to Build after activating in Debate should open a clear Build screen, and switching back finds the Debate thread still active unless it was closed.
+  - **Done:** a room keeps one pair of agents per mode. The first pair serves the mode of its current thread, or else the first mode used. A further mode's pair is created on first use, named room-mode:<room>:<mode>, with the agent settings last verified in the room, ready for Activate both. Each pair records its mode in its own data, so no schema change was needed and the installed version still opens the shared data folder. The thread list shows every mode, each thread labeled.
+- **E10:** the three modes need different prompts, so the library gets a tab for each.
+  - **Done:** each saved prompt already had a mode. The library's mode dropdown became tabs (Prompt, Debate, Build, All) that open on the current mode, and prompts saved for any mode show in every tab.
+
+### Activation follow-ups (owner, 2026-10-03; 0.4.1)
+
+From the owner's second pass at activation. They saw "Provider / model default" and Speed On/Off because the room still ran the 0.3.1 service: a newly installed plugin connected to the service already running, and each host's heartbeat kept that service from ever idling out.
+
+| ID | Item | Gate | Status |
+| --- | --- | --- | --- |
+| E11 | Speed reads Default or Fast | offline | done |
+| E12 | Models show their name and version (Opus 5.5, not opus) | offline | done |
+| E13 | Quick activate: an agent's last settings, or the strongest model at high effort with Ask and internet off | offline | done |
+| E14 | The version in the room, and a newer plugin replaces an older idle service | offline | done |
+
+- **E12:** the name comes from the CLI's own model list. It's kept with the settings when a model is chosen and confirmed at activation.
+- **E13:** settings are remembered per agent and per CLI when an agent activates or its internet or permissions change, in the shared data (no schema change); benchmark sessions are left out.
+  - **CLI:** the one chosen for the agent, else the one it last used. The first time, that's Claude Code for Agent 1 and Codex for Agent 2.
+  - **Model:** "strongest" is the first full model the CLI lists (CLIs list best first), skipping fast and light variants. For Antigravity, it's its Pro model at High.
+  - **Gateway models** are chosen once by hand.
+- **E14:** a plugin newer than the running service asks it to step aside (`service.retire`). The service agrees only when no conversation, 1:1 reply, activation, preparation or benchmark is running, then closes its idle agents and exits, and the plugin starts its own. Services from before 0.4.1 can't be asked.
+
+## Phase G — Debate mode (owner, 2026-10-03; 0.4.0)
+
+The owner is going through the modes one at a time, Debate first. In their tests the agents agreed and stopped after a few turns. Three causes:
+
+- **How a debate ended.** By default a debate ended as soon as either agent asked to stop. Every turn also told both agents to ask once the discussion "reached a useful conclusion".
+- **Same starting point.** Both agents are assistants trained to be agreeable. Without assigned sides they start from the same view and converge in a turn or two.
+- **The starter prompts.** The Vikings starter asked them to "finish with your strongest point of agreement".
+
+| ID | Item | Gate | Status |
+| --- | --- | --- | --- |
+| G1 | A debate runs for a set number of rounds (8 by default) instead of ending when one agent asks to. Each turn shows its round, and the last is a closing statement | offline | done |
+| G2 | The debate prompt template: the topic both agents see, each agent's private (1:1) context and internet on or off, and the rounds. The library editor and the room's Options use the same fields | offline | done |
+| G3 | Built-in debate prompts that hold up for every round, checked live | offline + live | done |
+| G4 | Install 0.4.0 (Phase E plus G1–G3) in both hosts, so the owner can try Debate there | user | done (as 0.4.1) |
+| G5 | A rounds chip beside the message box: the next debate's length at a glance, changed in one click | offline | done |
+| G6 | Formal debates: assigned sides, a private brief through each agent's 1:1 line before the start, speeches (opening, rebuttals, closing) built on evidence; 7 rounds by default | offline | done |
+| G7 | An independent judge: the strongest Claude Code or Codex model at max effort scores each side 1 to 5 on evidence, clash and a cohesive stance, and names a winner | offline + live | done |
+| G8 | Ten formal motions replace the built-in debates | offline + live | done |
+| G9 | A time limit per speech (2 minutes by default): a speech that runs over is forfeited and the debate goes on | offline | done |
+| G10 | The prompt builder: a guided Debate form (with hints that disappear as you type), simple Prompt and Build forms, saving to the library and editing saved prompts | offline | done |
+| G11 | Each debate is its own thread, kept with its ballot; the thread list shows the result | offline | done |
+| G12 | Delete one thread from history (a button shown on hover) | offline | done |
+| G13 | Publish v0.4.3 (0.4.0 to 0.4.3) | user | in progress |
+
+- **G1:** the agents still answer with stop_requested, but with rounds only a stop condition the operator wrote ends the debate early. An hour is the time limit's backstop, and the request limit is two per round plus the briefing.
+- **G2:** the template lives in `debate.json` beside `prompt.md`, so versions before it still read a debate prompt (as its topic alone). Internet is chosen per agent, so one agent can have the web and the other not. It's applied through each agent's own switch when the debate starts, because Codex and Grok Build restart to change it.
+- **G3:** ten built-in debates, each giving every agent a side to keep or a role with private facts:
+  - **Arguments:** six, on policy, software design, sports, history, science and a prediction.
+  - **Role plays:** three with a decision in the last round (negotiation, interrogation, investor pitch).
+  - **A light one:** is a hot dog a sandwich?
+  - **Older libraries** get them once. Their two old debate starters are replaced only if unedited.
+- **G3 live, Codex vs Claude Code (about 73 requests, ceiling 87):**
+  - **Baseline,** the old Vikings starter with the old ending: Codex switched sides on its second turn, said "That split works" and asked to stop. 5 replies, 48 seconds.
+  - **Ban cars downtown** (internet on): all 8 rounds. Each held its side, cited Ghent from the web, and closed on the other's concession.
+  - **Negotiate a used car:** all 10 rounds, from $17,500 down to a deal at $16,000, the buyer's secret ceiling, stated in the last turn.
+  - **The museum interrogation:** all 10 rounds. The suspect kept the lie until the evidence broke it, and the detective gave a verdict at the end.
+  - **No agent asked to stop** in a template debate. Replies averaged 46 to 119 words.
+  - **Evidence:** pilot-evidence/stage-d/g3-debate-starters-live.json.
+- **G6–G8 live, Codex and Claude Code debating 7 rounds each (40 requests):**
+  - **Smartphones in schools,** Codex for and Claude Code against: judged by Claude Code (Opus 5.5, max effort) in 6 minutes, 15/15 to 12/15, with 4 claims questioned.
+  - **The fall of Rome,** Claude Code for and Codex against: judged by Codex (its strongest model, max effort) in 5 minutes, 13/15 to 15/15, with 3 claims questioned.
+  - **The run:** briefs were answered READY in under half a minute, and speeches averaged about 530 words.
+  - **Evidence:** pilot-evidence/stage-d/g7-formal-debate-judge-live.json.
+- **G9:** the CLIs can't separate thinking from writing, so the limit covers the whole speech: wall-clock time from the request to the answer. The request is cancelled at the limit; a settled cancel commits a forfeit message in that seat's place.
+- **G4:** 0.4.0 is installed in both hosts and verified: both smoke tests, both installed copies match, Codex's hook is trusted, and doctor answers through each. The service on AvA-Data is still 0.3.1, started by a Claude Code session opened at 7:03 PM, and new installs connect to the service already running. Closing that session didn't help: each host's heartbeat kept it from idling out. 0.4.1 (E14) adds the handover for future updates. With the owner's OK, the 0.3.1 service was stopped (Stop all, then its process), and 0.4.1 now serves AvA-Data: doctor shows Cursor, and the library has the ten debates (both old starters were unedited and were upgraded).
+
 ## Phase D — reach (later; versions assigned when scope is accepted)
 
 | ID | Item | Dependency or boundary |
@@ -196,10 +295,20 @@ Work one item at a time, starting with `next`. An item is done when its "Done wh
 | F8 | The room inside the host | Only through a mechanism both hosts support (for example MCP Apps), per host parity |
 | F7 | Games and scenarios | A separate referee owns the state and validates actions before messages are forwarded |
 
-- **F3 proposed scope** (awaiting the owner's acceptance):
+- **F3 scope** (accepted by the owner 2026-10-03, with live checks on the owner's Cursor plan):
   - Cursor's agent through ACPX's registry entry (`cursor-agent acp`). Version 2026.09.28 is installed on this machine, as a `.cmd` and `.ps1` shim in `%LOCALAPPDATA%\cursor-agent`. Gemini CLI and Copilot aren't installed.
   - It passes the adapter checklist: activation through the login route, Ask refusing commands, cancellation, usage reporting, and isolation from the owner's own Cursor settings. Its process tree also stays inside AvA's job objects, shim included.
   - Live checks would use the owner's Cursor plan, which isn't among the four pre-approved subscriptions, so they need the owner's OK.
+  - **Status: in progress. The live checks are blocked by the Cursor plan.**
+    - **Built and tested offline:**
+      - **Launch:** AvA starts Cursor's bundled Node and entry file (newest version) instead of its `.cmd` shim, so it needs no shell and runs inside AvA's job objects.
+      - **Isolation:** AvA's Cursor agents get their own settings folder (`CURSOR_CONFIG_DIR`). Nothing runs without asking (the default allow list lets `ls` run), web searches ask, and commits aren't attributed to the agent. The sign-in is kept.
+      - **Doctor:** `/ava doctor` shows Cursor's version, sign-in and plan.
+      - **Plan refusal:** an activation that Cursor refuses for its plan says so.
+    - **Live, 2026-10-03:**
+      - Through AvA, discovery found 43 models and Cursor's mode and model settings, and Cursor's own sessions stayed in AvA's folder.
+      - Every prompt (8 in all, including the default Auto model) came back "Upgrade your plan to continue". The account is on Cursor's Free plan. The probe's file write never happened.
+    - **To finish:** a Cursor plan that includes agent requests (or another signed-in account). Then the checklist runs live: activation, Ask refusing commands, a Build's scoped edits, web searches following the internet switch, cancellation, usage reports and job containment.
 
 ## Standing decisions
 
