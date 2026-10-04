@@ -1,6 +1,6 @@
 # Agent vs Agent v0.4.4
 
-**Prepared 2026-10-04.** Prompt mode gets challenges and races with answer keys. Every Prompt run and formal debate is a clean thread of its own, without restarting the agents. This release also fixes the issues found in a review of the whole codebase, including two security problems and a crash. Update soon if you use Build mode or previews.
+**Released 2026-10-04.** Prompt mode gets challenges and races with answer keys. Every Prompt run and formal debate is a clean thread of its own, without restarting the agents. This release also fixes the issues found in a review of the whole codebase, including two security problems and a crash. Update soon if you use Build mode or previews.
 
 ## Install
 

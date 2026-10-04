@@ -6,8 +6,7 @@ Work one item at a time, starting with `next`. An item is done when its "Done wh
 
 ## Where things stand
 
-- **Published:** v0.4.3 (2026-10-03), with formal, judged debates, the prompt builder, Quick activate and service handover. Both hosts run it. Unreleased work was also pushed to GitHub's main as a snapshot (no tag).
-- **Ready to publish:** v0.4.4, with Prompt challenges and races, a fresh thread per Prompt run and debate, and the codebase review fixes (Phase Q). Its [release notes](release-v0.4.4.md) record what was tested.
+- **Published:** v0.4.4 (2026-10-04), with Prompt challenges and races, a fresh thread per Prompt run and debate, and the codebase review fixes (Phase Q). Both hosts run it, with Windows CI passing. Its [release notes](release-v0.4.4.md) record what was tested. Before it: v0.4.3 (2026-10-03), formal judged debates.
 - **Phases A to C are done:** reliable installs, confined benchmark execution, and benchmarks worth sharing.
 - **Shipped:**
   - Prompt, Debate, and Build and Review, with private 1:1 lines, history, replay, stats and previews.
@@ -262,6 +261,8 @@ The owner is going through the modes one at a time, Debate first. In their tests
 | G12 | Delete one thread from history (a button shown on hover) | offline | done |
 | G13 | Publish v0.4.3 (0.4.0 to 0.4.3) | user | done |
 | G14 | Install 0.4.3 in both hosts (the running 0.4.1 service steps aside for it once idle) | user | done |
+| G15 | Harder debates: technical motions where easy talking points lose, two of them closed book (internet off), judged as before | live | done |
+| G16 | Panel judging: both the strongest Claude Code and Codex models judge a debate, and the ballot combines them, so neither judge favors its own CLI | offline + live | todo |
 
 - **G1:** the agents still answer with stop_requested, but with rounds only a stop condition the operator wrote ends the debate early. An hour is the time limit's backstop, and the request limit is two per round plus the briefing.
 - **G2:** the template lives in `debate.json` beside `prompt.md`, so versions before it still read a debate prompt (as its topic alone). Internet is chosen per agent, so one agent can have the web and the other not. It's applied through each agent's own switch when the debate starts, because Codex and Grok Build restart to change it.
@@ -283,6 +284,15 @@ The owner is going through the modes one at a time, Debate first. In their tests
   - **The run:** briefs were answered READY in under half a minute, and speeches averaged about 530 words.
   - **Evidence:** pilot-evidence/stage-d/g7-formal-debate-judge-live.json.
 - **G14:** both hosts run 0.4.3. The idle 0.4.1 service stepped aside on the first 0.4.3 call (the handover's first real use), and the library holds the ten formal debates. Codex couldn't move its old 0.4.1 folder aside while its open sessions use it; it loads 0.4.3 and drops the old folder after a restart.
+- **G15 (2026-10-04, about 38 requests, ceiling 40):** five hard debates, built in alongside the ten:
+  - **The motions:** ranked-choice voting, the replication crisis, nominal GDP targeting, the strategic bombing of Germany (closed book) and living standards in the Industrial Revolution (closed book).
+  - **What makes them hard:** each is technical, and its briefs ask for exact figures and the strongest counter-mechanisms. The closed-book ones tell both sides the judge will test every figure.
+  - **Live:** Claude Code (Opus 5.5) and Codex (6.1 Sol) debated two of them over 7 rounds each, with the strongest model of each CLI judging at max effort.
+    - **Ranked-choice voting** (internet on): Claude Code argued for and Codex against, and Codex judged. The Opposition won 15 to 11. The judge questioned 4 claims, among them a study figure the Proposition had misread and then corrected itself. 11.7 minutes; speeches averaged 520 words.
+    - **Strategic bombing** (closed book): Codex argued for and Claude Code against, and Claude Code judged. The Opposition won 13 to 11. The judge questioned 7 figures, mostly approximations (it checked the Opposition's fuel, pilot-loss and sortie figures and found them right). 12.1 minutes; speeches averaged 566 words.
+  - **Compared with G7's general motions:** more claims questioned (4 and 7, against 4 and 3) and lower evidence scores (3 for the losing side in both debates).
+  - **A pattern to watch:** in three of the four judged debates so far (G7 and G15), the winner was the judge's own CLI, although the judge sees only the speeches. Four debates are too few to tell. A panel of both judges would cancel it out (G16).
+  - **Evidence:** `pilot-evidence/stage-d/g15-hard-debates-live.json`.
 - **G9:** the CLIs can't separate thinking from writing, so the limit covers the whole speech: wall-clock time from the request to the answer. The request is cancelled at the limit; a settled cancel commits a forfeit message in that seat's place.
 - **G4:** 0.4.0 is installed in both hosts and verified: both smoke tests, both installed copies match, Codex's hook is trusted, and doctor answers through each. The service on AvA-Data is still 0.3.1, started by a Claude Code session opened at 7:03 PM, and new installs connect to the service already running. Closing that session didn't help: each host's heartbeat kept it from idling out. 0.4.1 (E14) adds the handover for future updates. With the owner's OK, the 0.3.1 service was stopped (Stop all, then its process), and 0.4.1 now serves AvA-Data: doctor shows Cursor, and the library has the ten debates (both old starters were unedited and were upgraded).
 
@@ -302,12 +312,22 @@ The owner moved on from Debate to Prompt mode.
 | P5 | New threads without closing the agents: fresh sessions start beside the current ones (Prompt and Debate) | offline | done |
 | P6 | The Prompt builder: task, answer form and hidden expected answer; the library editor gets the answer key | offline | done |
 | P7 | Live check of the challenges and races with Codex and Claude Code | live | done |
-| P8 | Publish v0.4.4 (Prompt challenges and races, fresh threads, the review fixes) and install it in both hosts | user | next |
-| P9 | Harder challenges: prompts the strongest models need one to five minutes for, and sometimes miss, each answer still computed by program | live | todo |
+| P8 | Publish v0.4.4 (Prompt challenges and races, fresh threads, the review fixes) and install it in both hosts | user | done |
+| P9 | Harder challenges: prompts the strongest models need one to five minutes for, and sometimes miss, each answer still computed by program | live | done |
 
 - **P3:** the logic puzzle was brute-forced to make sure it has exactly one solution, and the code-tracing answer was taken from running the code. The two earlier Prompt starters are retired (set 4) where unedited.
 - **P7 (2026-10-04, 40 requests):** Claude Code (Opus 5.5) against Codex (6.1 Sol), both at high effort, in two rooms of five prompts. Every answer line was read and checked, every prompt was its own thread with fresh sessions, and the agents stayed Ready. Both agents answered all ten correctly, in 5 to 18 seconds each: the challenges work but are far easier than the one to five minutes intended, so P9 makes harder ones. Evidence: `pilot-evidence/stage-d/p7-prompt-challenges-live.json`.
-- **P8:** the release docs are ready as v0.4.4 (version bumped, notes in `docs/release-v0.4.4.md`). Publishing and installing wait for the owner's word.
+- **P8 (2026-10-04):**
+  - **Published:** v0.4.4 on GitHub (public main d887924, the tag and the release), with Windows CI passing.
+  - **Installed:** both hosts run it. Both packaged plugins passed their smoke tests, both installed copies match `release/marketplace`, and Codex's hook stays trusted (Codex replaced its 0.4.3 folder this time).
+  - **Handover:** the idle 0.4.3 service stepped aside on the first 0.4.4 connection, and 0.4.4 served the shared data folder 2.6 s later.
+  - **Still to do:** Claude Code sessions that were open keep their 0.4.3 MCP server, which uses the new service as it is, until they reload.
+- **P9 (2026-10-04, 36 + 28 requests):** two rounds of calibration, Claude Code (Opus 5.5) against Codex (6.1 Sol) at high effort, without tools.
+  - **Round one:** nine harder problems (seven challenges, two races): blocked lattice paths, a prime-step elimination circle, ten generations of Life, spanning trees, a king's random walk, a code trace, the digits of 3^60. Both agents answered all nine correctly; the challenges took 0.25 to 1.9 minutes and the races 7 to 12 seconds.
+  - **Round two:** the same kinds, scaled up. Both answered all seven correctly. Five reached the target: Life at 20 generations (5.8 and 6.1 minutes), a 150-step trace (1.5 and 6.8), the digits of 3^300 (4.7 and 6.8), queens off the diagonals (0.8 and 3.1) and a king's walk on 5 × 5 (0.5 and 1.6). Spanning trees of a 12-point graph and an 80-person circle took under a minute and were dropped.
+  - **Built in:** the five, as hard challenges (starter set 5).
+  - **Finding:** no agent missed a single answer, at any size. They work exactly and check their own work, so a harder problem takes them longer but doesn't trip them. Separating them on correctness needs problems that call for an insight, not more of the same work.
+  - **Evidence:** `pilot-evidence/stage-d/p9-hard-challenges-live.json` and `p9-hard-challenges-round2-live.json`.
 - **P5:** before, the next thread closed and reactivated both agents, so they briefly showed as not active. Now each fresh session runs its readiness check beside the current one and takes over in one write. A fresh session that fails leaves the agent as it was.
 
 ## Phase Q — codebase review fixes (owner, 2026-10-04)
@@ -327,6 +347,67 @@ A review of the whole codebase found 59 issues. They are fixed in batches, most 
 - **Q6:** the events table already had its `(run_id, seq)` index, so no new index was needed; the room's costs were the full-history scans around it. `/ava doctor`'s data-folder check (two PowerShell starts, about a second) stays synchronous: it runs only on request.
 - **Phase Q is done.** It ships in v0.4.4.
 - **Q2:** the logon session's start is its `winlogon.exe` start time, since Windows Fast Startup keeps the boot time running across a shutdown. Before, an orphan such as `explorer.exe` (its parent `userinit` exits) whose dead parent's PID matched an old record could be tree-killed by Stop all.
+
+## Phase H — Build: app builds and bug hunts (owner, 2026-10-04)
+
+The owner moved on to Build mode: a dedicated mode for two kinds of task, app builds and bug hunts. Each gets its own builder form and built-in prompts, and its runs behave as Prompt and Debate runs do.
+
+| ID | Item | Gate | Status |
+| --- | --- | --- | --- |
+| H1 | Each build is its own thread: fresh sessions for the same agents, copies in their new folders, no Clear Session between builds; the two kinds are named **App build** and **Bug hunt** | offline | done |
+| H2 | Scored bug hunts: a hunt names its repository (and a commit to copy), leaves folders out of the copies, and plants bugs in them before the baseline; agents report `BUG:` lines, and a result card shows what each found | offline | done |
+| H3 | Builders for both kinds: an App build form, and a Bug hunt form with the repository (checked before saving), the commit, folders to leave out and the planted bugs; loading a prompt fills in its kind and folder | offline | done |
+| H4 | Built-ins: five app builds, and three bug hunts in CLI-MODE of increasing difficulty (1, 3 and 5 planted bugs) | offline | done |
+| H5 | Live check: an app build and the three hunts, with Claude Code and Codex | live | done |
+| H6 | Harder hunts: bugs that don't contradict a nearby docstring, no count given, and a few decoys, so the strongest agents miss some | live | done |
+| H7 | Portable hunts: a hunt's repository can be a public git address; AvA fetches one commit (no history, only the slice's files) into a cache and copies from it; the built-in hunts use CLI-MODE on GitHub | offline + live | done |
+| H8 | Harder app builds: specifications with exact, checkable behavior that the strongest agents get partly wrong | live | done |
+| H9 | Publish v0.4.5 (Build: app builds and bug hunts, portable and expert hunts, and the harder prompts of every mode) and install it in both hosts | user | next |
+
+- **Harder prompts in every mode (owner, 2026-10-04: "add harder prompts in all modes"):** H6 (hunts), P9 (challenges), H8 (app builds) and G15 (debates), in that order, each calibrated live against Claude Code and Codex at their strongest.
+
+- **H8 (2026-10-04, 8 requests):** three hard app builds, each exposing its exact behavior on `window` so it can be checked from outside: chess (`perft(fen, depth)`), a spreadsheet (`evaluateSheet(cells)`) and a regex engine with no RegExp (`regexFullMatch(pattern, text)`).
+  - **Live:** chess and the regex engine, built by Claude Code (Opus 5.5) and Codex (6.1 Sol) at high effort under Ask, so neither could run its code. Each app was then served locally and checked in a headless browser with cases the agents weren't given.
+    - **Chess:** both passed all 7 perft checks: the starting position and Kiwipete as given, and five unseen positions (mirrored with colors swapped, and positions 3, 4 and 5 of the standard suite) to depth 3 or 4. Claude Code took 5.5 minutes, Codex 9.6.
+    - **Regex:** both passed all 9 given and 19 unseen cases (catastrophic patterns included, slowest 4 ms), with engines of their own and no RegExp. Claude Code took 5.8 minutes, Codex 6.9.
+  - **Finding:** the strongest agents got these exactly right without running anything, so like the challenges, they separate on time, not correctness. The spreadsheet wasn't run live.
+  - **The check is fair:** a fake app that returns the published perft numbers passes only the three given positions.
+  - **Evidence:** `pilot-evidence/stage-d/h8-hard-builds-live.json`.
+- **H6 (2026-10-04, 8 requests):**
+  - **The scoring:** decoys (correct code made to look wrong; a BUG line on one counts against the agent, and the winner found more bugs, then fell for fewer decoys, then was sooner) and a cap on the BUG lines that count.
+  - **Two expert hunts in CLI-MODE**, neither saying how many bugs it has:
+    - **Bug hunt 4:** state and queue, 4 bugs and 1 decoy, first 6 BUG lines count.
+    - **Bug hunt 5:** the whole plugin, 6 bugs and 2 decoys, first 8 count.
+  - **The bugs:** none contradicts a nearby comment. Each needs a caller, a data shape or an invariant kept elsewhere to see. They were checked to apply once at 270a280 and to compile together. One candidate decoy sat five lines from a bug, so it was left out.
+  - **Live, Claude Code (Opus 5.5) against Codex (6.1 Sol), high effort, Ask:**
+    - **Bug hunt 4:** both found 3 of 4 and missed the same one (`/cli dir` sorted by size). Claude Code took 1.8 minutes with 3 BUG lines; Codex took 5.3 minutes with 6.
+    - **Bug hunt 5:** both found 5 of 6 and missed the same one (`acpx.py`'s `-s` control). Claude Code took 6.4 minutes with 5 lines, all hits; Codex took 7.9 minutes with 8.
+    - **Neither reported a decoy.** Claude Code won both on time.
+  - **Possible real bugs:** Codex's six other BUG lines name code that wasn't planted and may be real bugs in CLI-MODE (recorded in the evidence, not verified).
+  - **The builder:** loading a saved Build prompt now puts each section of its text (requirements, how it's judged, what counts as a bug) back in its own field.
+  - **Evidence:** `pilot-evidence/stage-d/h6-expert-hunts-live.json`.
+- **H7 (owner, 2026-10-04: "how do we make bug hunts portable?"):** the three CLI-MODE hunts named this machine's checkout, at a commit only its local history has.
+  - **Who fetches:** AvA fetches the code, never the agents. A clone's history would show every planted bug in a diff, and Ask refuses network commands.
+  - **What a hunt names:** a repository on the web (an https address), a full commit hash, and optionally a slice (only these folders) besides the paths left out.
+  - **The fetch:** one commit without history or file contents, then the slice's files in one batch, into `<data>/repos/`. Copies come from there.
+  - **The built-in hunts:** they now fetch https://github.com/adamczhang/CLI-MODE at 270a280 (public `main`). All nine planted bugs apply there at the same lines as before.
+  - **Live, from GitHub:** the default branch took 0.4 s to look up and the first fetch took 2.1 s (1.3 MB packed, 113 files). Fetching again found the cache (0.09 s), and a seeded copy took 1 s. A scripts-only slice is 43 files.
+- **H5 (2026-10-04, 16 + 12 requests):** Claude Code (Opus 5.5) against Codex (6.1 Sol), both at high effort under Ask, as Quick activate sets them up.
+  - **Pomodoro build:** both finished in 5.1 minutes, each with a working page and its own thread.
+  - **The first hunt batch exposed two faults, both fixed and retested:**
+    - **Codex couldn't read the code:** it reads only through commands, which the Ask instructions forbade. A hunt now lets it read and search with read-only commands.
+    - **Claude Code went straight to the planted files:** planting had given them the newest times, and its file search lists files newest first. Planted files now keep their copy time. Claude Code's hard hunt went from 31 seconds to 4.4 minutes.
+  - **The retest:** both found every planted bug with no stray BUG lines. Easy: 9 s and 30 s. Medium: 15 s and 51 s. Hard: 4.4 and 3.1 minutes; Codex won the hard hunt on time.
+  - **Finding:** like the Prompt challenges, the hunts don't yet separate the strongest agents (H6).
+  - **Evidence:** `pilot-evidence/stage-d/h5-build-hunts-live.json` and `h5-hunts-retest-live.json`.
+- **H4:**
+  - **The app builds:** a Pomodoro timer, a Kanban board, a trip expense splitter, Sudoku with a solver, and a pixel art editor. Each runs in the browser as plain files.
+  - **The hunts:** each copies CLI-MODE at commit 5fc3198 (read only) and leaves out `checks/` and the agent instructions; 113 files, 2.7 MB.
+  - **The planted bugs:** 1 in `names.py`; 3 in `changes.py` and `catalogs.py`; 5 across `operations.py`, `test_gate.py`, `progress.py`, `confirmation.py` and `agent_folder.py`. Each is a one-line slip against a docstring or comment, and each was checked to apply once at that commit.
+  - **Starter set 5:** older libraries get these once.
+  - **A limit:** the hunts name this machine's checkout, and that commit may exist only in its local history.
+- **H2:** no clone step. A hunt's copy is a working-tree (or one-commit) copy without git history, made by the worker at the start, so the history can't give a planted bug away, and each thread keeps its own copy. One BUG line finds at most one planted bug.
+- **H1:** a build used to hold its thread, so the next one needed Clear Session (and the agents briefly showed as closed). Now the next build renews both sessions beside the current ones, as P5 does for Prompt runs.
 
 ## Phase D — reach (later; versions assigned when scope is accepted)
 

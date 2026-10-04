@@ -49,13 +49,18 @@ Bypass trusts the agent with your machine. Use it for tasks you'd let that CLI r
 
 ## Saved prompts and their files
 
-**Prompt library** in the sidebar opens the same saved library in Prompt, Debate and Build, including Build's Review task. Its tabs show each mode's prompts (and **All**); it opens on the current mode, and prompts saved for any mode appear in every tab. The library is shared by the Codex and Claude Code hosts. It includes starter prompts that you can edit or delete: two for Prompt, two for Build and Review, and ten debates (below).
+**Prompt library** in the sidebar opens the same saved library in Prompt, Debate and Build, including Build's bug hunts. Its tabs show each mode's prompts (and **All**); it opens on the current mode, and prompts saved for any mode appear in every tab. The library is shared by the Codex and Claude Code hosts. It includes starter prompts that you can edit or delete: fifteen challenges and races for Prompt, fifteen debates (below), and for Build nine app builds and six bug hunts.
+  - **The app builds:** a Snake game, a Pomodoro timer, a Kanban board, a trip expense splitter, Sudoku with a solver, and a pixel art editor. Each runs in the browser as plain files, so both open side by side in Results.
+  - **Three hard app builds:** chess with every rule, a spreadsheet with formulas, and a regular-expression engine written from scratch.
+    - **Exact behavior:** each must get something exactly right: chess move generation (perft), formula evaluation, or matching.
+    - **Checking it:** each app exposes a function on `window` (`perft`, `evaluateSheet`, `regexFullMatch`), so you can test it in the browser's console. The prompt gives some expected results; check with others too.
+  - **The bug hunts:** three scored hunts in CLI-MODE, of increasing difficulty: one planted bug in a named file, three in two named modules, and five anywhere in the plugin's scripts. Each fetches the same pinned commit of CLI-MODE from GitHub (https://github.com/adamczhang/CLI-MODE) and leaves out its tests, so they work on any computer with internet access. A fourth, unscored hunt works on any repository you give it.
 
 - **New prompt** creates a saved prompt. Give it a name, select a mode (or **Any mode**), and write its instructions in Markdown. **Import .md / .txt** brings an existing prompt into the editor; **Export Markdown** downloads its text.
 - The folder button beside the composer saves the current draft and its attached files. **Use current draft** does the same from inside the library.
 - **Files** keeps up to eight reference images or text files with each prompt. Add or drop files, edit their names, preview them, download them, or remove them before saving. The room's usual limits apply: 8 MB per image and 512 KB per text file. Removing a file in the editor takes effect when you save.
 - **Save prompt** keeps the prompt and its files. **Load into composer** brings them into the current room and selects the saved mode. You can adjust the draft before sending. Loading alone sends no model request.
-- **Run now** saves and sends the prompt to both active agents in the current mode, using the room's current options and project folder. It waits for a ready session; a finished Build still needs a new session. A Review needs a project folder. Saving a prompt never changes provider, model or permissions, and only a Debate prompt sets internet access (below).
+- **Run now** saves and sends the prompt to both active agents in the current mode, using the room's current options and project folder. It waits for a ready session. A Bug hunt needs a repository folder. Saving a prompt never changes provider, model or permissions, and only a Debate prompt sets internet access (below).
 - **Debate prompts** all follow one template:
   - **Motion:** both debaters see it, with any definitions both sides should use.
   - **Agent 1 and Agent 2:** each has its **side** (for or against the motion; the two are always opposite) and a private brief that only it sees. Each also has an **Internet** on or off choice.
@@ -82,7 +87,7 @@ Every debate runs like a competitive debate:
   - **What it sees:** the motion and the speeches, never the briefs or which CLI argued which side. It can search the web to check facts.
   - **The score:** 1 to 5 for each debater in three categories (factual accuracy and evidence; challenging the opposition's strongest points; a cohesive stance), plus a winner and the reasons.
   - **The ballot** appears below the debate, with any factual claims the judge questioned. **Judge this debate** or **Judge again** asks it on demand, for example after a debate you stopped.
-- **The library's ten built-in debates** are formal motions, each with briefs for both sides:
+- **The library's built-in debates** are formal motions, each with briefs for both sides. Ten are on general topics:
   - smartphones in schools;
   - social media and teenagers;
   - nuclear power;
@@ -94,6 +99,13 @@ Every debate runs like a competitive debate:
   - youth tackle football;
   - the fall of Rome.
 
+  Five hard ones are technical: winning them takes exact evidence and real clash on mechanisms, not general points:
+  - ranked-choice (instant-runoff) voting;
+  - the replication crisis in social psychology;
+  - nominal GDP targeting;
+  - the strategic bombing of Germany (closed book: internet off for both sides);
+  - living standards in the Industrial Revolution (closed book).
+
   They replace the earlier debate starters you never edited.
 - **A time per speech,** 2 minutes by default (Options, or a debate prompt), covers thinking, web searches and writing together. A speech that runs over is cut off and recorded as forfeited, the other side speaks next, and the judge counts the forfeit.
 - **One debate per thread.** A concluded, judged debate stays in history as its own thread, with its ballot, and the thread list shows the result ("Agent 2 won 14–10").
@@ -102,7 +114,19 @@ Every debate runs like a competitive debate:
 - **The Debate builder** (the third button in the sidebar, under the mode switch) sets a debate up step by step.
   - **The form:** the motion and its definitions, which side Agent 1 argues, a private brief for each side, internet, rounds and speech time. The grey hint in each box says what a good entry looks like and disappears as you type.
   - **Saving:** **Save** adds the debate to the prompt library, and **Save and load** also fills the room's composer and Options. **Start from** opens any saved debate to edit.
-  - **Prompt and Build** have simple builders for now.
+  - **The Build builder** has a form for each kind.
+    - **App build:** what to build, its requirements, how it will be judged, and an optional project to start from.
+    - **Bug hunt:** the repository to hunt in, what to hunt for (name a file for an easy hunt, the whole repository for a hard one), and what counts as a bug.
+      - **The repository** is a folder, or a public git repository's address such as `https://github.com/owner/repo`.
+      - **Check** reports what a copy would hold. For an address, it also gives the default branch's commit, and fetches what the hunt needs so its first run starts at once.
+    - **Score this hunt** adds:
+      - **The commit to copy.** A repository on the web needs the full hash: **Check**, then **Use**.
+      - **Only these folders:** a slice of a large repository.
+      - **The paths to leave out:** tests and agent instructions by default.
+      - **The bugs to plant:** each one's file, its original code exactly as it is, the bugged code, and what's wrong. **Check** says whether each one applies.
+      - **Decoys:** tick **A decoy** on a planted change that keeps the code correct but makes it look wrong. A BUG line on a decoy counts against the agent that wrote it.
+      - **BUG lines that count:** only each agent's first ones count. Use this for a hunt that doesn't say how many bugs it has, so reporting everything can't win.
+    - **Loading:** a saved Build prompt fills in its kind and its folder. A scored hunt shows **Planted bugs** beside the message box while the box still holds its text.
 
 ## The room
 
@@ -118,23 +142,35 @@ There is no third model acting as a relay. One message of yours goes to both age
 Switched at the top of the sidebar. Each mode has its own thread and its own two agents in this room: switching to Build after a debate opens a clear Build screen, and switching back finds the debate as you left it, still running if it was, until you close it. A mode used for the first time starts with the same agent settings, ready for **Activate both**. Two modes with active agents use four agents, the default limit (Settings).
 
 - **Prompt:** one prompt goes to both agents at the same moment, exactly as you wrote it. Each answers once in plain text, shown with how long it took, and the run ends. **Stats** has the timing and speed. Tools follow each agent's permissions.
-  - **Challenges and races.** A challenge is short to write, takes real reasoning and has one exact answer. A race is the same kind of question, judged on speed. The strongest models answer the built-in ones correctly within seconds, so write harder ones in the Prompt builder to separate them.
+  - **Challenges and races.** A challenge is short to write, takes real reasoning and has one exact answer. A race is the same kind of question, judged on speed. The strongest models answer the first ten built-in ones correctly within seconds; the five hard ones take them minutes.
     - **The answer key:** each has one, which the agents never see. They end with a line `ANSWER: …`, and when both have answered, AvA checks that line. Numbers are compared by value (2,131 is 2131, 74/144 is 37/72, and after an `=` only what follows counts). A number must be exact and the only candidate: 3.5 isn't 3, and "12 or 13" counts as no answer.
     - **The result:** it appears below the answers, with each agent's final answer, right or wrong, and its time. The winner is the agent that got it right, or the faster one if both did.
-    - **Built in:** six challenges (domino tilings, a logic puzzle, tracing code, rising digits, a dice-triangle probability, a shortest route) and four races (trailing zeros, base seven, counting sevens, a day of the week). Every answer was computed by program.
+    - **Built in:** every answer was computed by program.
+      - **Six challenges:** domino tilings, a logic puzzle, tracing code, rising digits, a dice-triangle probability, a shortest route.
+      - **Four races:** trailing zeros, base seven, counting sevens, a day of the week.
+      - **Five hard challenges:** twenty generations of the Game of Life, the eight queens kept off both long diagonals, a king's random walk, a 150-step code trace, and the digit sum of 3^300. Without tools, the strongest models need about 1 to 7 minutes for each.
     - **The Prompt builder** (sidebar) sets up your own: the task, the answer form, and the expected answer, which stays hidden from the agents. A loaded prompt with a key shows **Answer key** beside the message box.
   - **One thread per prompt.** Each Prompt run is its own thread. The next prompt gives both agents a fresh session (clean context) with the same settings. The agents stay loaded and **Ready** throughout, because each fresh session starts beside the current one before taking over.
 - **Debate:** the agents talk to each other. Prime each one privately with its 1:1 line (say "you are a CEO" and "you are a college student"), then give the shared topic. **Options → First to speak** picks who opens: Agent 1 (the default), Agent 2, or both independently at once. The choice is remembered in this browser and in saved presets. Your topic reaches both agents at the start: while Agent 1 writes its opening, Agent 2 reads the topic (it replies READY, which isn't posted; one extra short request) and then answers that opening. After the opening, agents alternate. Turns are asked to be short and conversational, in plain text, with no word count; any length or format you give in the topic comes first. A new shared message waits for the next turn; the next speaker answers first, then the other receives both the message and that answer. The room shows who is speaking, who is next, and how many prompts are queued.
-- **Build:** both agents build the same thing at the same moment, each in its own folder, and post a link to their app in the shared channel.
-  - **One prompt per session,** with no messages while it runs. **New build session** (or Clear Session) starts the next one.
+- **Build** has two kinds, chosen in the row above the text box: **App build** and **Bug hunt**.
+- **App build:** both agents build the same thing at the same moment, each in its own folder, and post a link to their app in the shared channel.
+  - **Each build is its own thread,** with no messages while it runs. The next build gives both agents fresh sessions (the same agents, clean context) and folders of their own; the earlier build keeps its folders, so its Results still open.
   - **Setting up first:** in a Build session, an agent's 1:1 line may use the same scoped file tools. Under Ask, provide an existing project to copy; cloning, installing dependencies and running tests require execution isolation or an explicit Bypass choice.
   - **Where they work:** from scratch, each agent starts with an empty folder. Type a project folder in the row above the text box to have each start from its own copy of it instead. In a git repository, the copy holds tracked files plus uncommitted work, without ignored output such as `node_modules`. Your original is never touched.
   - **The app link:** each agent ends its report with `APP:` and the page to open, or the address of a server it left running. The room shows that as **Open app**:
     - **A page:** AvA serves the agent's folder on a loopback port of its own, so the app can't reach the room or its token, and the link works only from the room.
-    - **A server** (an app with an API, say): it keeps running until Clear Session or Clear history. Anything else an agent leaves running, such as a file watcher, is stopped when its build ends, and its screen says so.
+    - **A server** (an app with an API, say): it keeps running until the next build starts, Clear Session, or Clear history. Anything else an agent leaves running, such as a file watcher, is stopped when its build ends, and its screen says so.
   - **Results** (the window button, or **Side by side** under a report) shows both apps running, each under its own agent's screen, with the prompt row below. Drag the horizontal divider to change the height of the previews. **Apps / Changes** in the prompt row switches to what each agent changed, file by file. The chat button brings the conversation back.
   - **If an agent stops early,** the other still finishes, and the stopped agent's screen says why. (Grok Build, for example, ends its turn when a permission is refused.) If an agent's report is complete but a command it ran is stuck waiting for input, AvA takes the report as final after a minute of quiet.
-  - **Review:** switch the row above the text box to **Review** and give a project folder. Each agent reports its findings from its own copy. A small project (up to 40 files and 64 KB of text) also comes with the prompt, numbered by line. That way an agent that reads files only through commands, such as Codex under Ask, can still review it. Build output, binary files, and files that may hold secrets (such as `.env` or private keys) are left out of the prompt; the prompt names those files, and they stay in each copy.
+  - **Bug hunt:** switch the row above the text box to **Bug hunt** and give the repository to hunt in. Each agent hunts in its own copy and reports each bug on a line `BUG: <file>:<line> — <what is wrong>`; each hunt is its own thread, as each build is.
+    - **Reading the code under Ask:** Claude Code reads and searches with its file tools, which AvA allows inside the copy. Codex reads only through commands, so in a bug hunt it may run read-only ones (`rg`, `cat`, `ls`) and is told to run nothing else; in an app build under Ask it runs no commands.
+    - **No clone to make:** AvA copies the repository's files into each agent's folder when the hunt starts (a second or two for a few hundred files), without its git history, and the original is never touched.
+    - **A repository on the web:**
+      - **Fetching:** AvA fetches the one commit it needs: no history, and only the files the copies take (a few seconds for CLI-MODE).
+      - **The cache:** the fetch goes into `repos` in its data folder, and later runs copy from there without downloading anything.
+      - **Public repositories only:** AvA never uses your saved git passwords and never asks for one.
+      - **Why AvA fetches, not the agents:** a clone's history would show the planted bugs in a diff, and under Ask the agents can't fetch anything anyway.
+    - **Scored hunts** come with planted bugs: small edits made to every copy before the agents start, so both begin from the same seeded code. A hunt may be pinned to one commit (so every run gets the same code) and leave out folders, such as the tests that would point at the bugs. When both agents have reported, a result card lists the planted bugs and which agent found each: a BUG line counts when it names the bug's file and a line within three lines of it. The agent that found more wins; with as many found, the one that reported fewer decoys (correct code planted to look wrong), then the faster one. Nothing about the planted bugs reaches the agents, not even which files changed: planted files keep the time they were copied. A small project (up to 40 files and 64 KB of text) also comes with the prompt, numbered by line. That way an agent that reads files only through commands, such as Codex under Ask, can still review it. Build output, binary files, and files that may hold secrets (such as `.env` or private keys) are left out of the prompt; the prompt names those files, and they stay in each copy.
   - **Folder access:** under Ask, scoped file operations are approved inside the working folder. Commands, unknown tools, paths outside it, links, and requests to leave the sandbox are refused.
     - Codex switches to its own `workspace-write` sandbox for the build, and back after.
     - A command that mentions the working folder is still refused: its effects are not confined by that path. Builds that need execution must wait for execution isolation or use an explicitly chosen Bypass mode.
@@ -142,7 +178,7 @@ Switched at the top of the sidebar. Each mode has its own thread and its own two
 
 ### Threads
 
-A thread is one continuous session with both agents. In Prompt and Debate, send as many prompts as you like; the agents remember the whole thread. A Build session takes one.
+A thread is one continuous session with both agents. In a plain conversation, send as many prompts as you like; the agents remember the whole thread. A Prompt run, a formal debate and a build each get a thread of their own, with the same agents in fresh sessions.
 
 - **Close thread** (in the thread's header, or **⋯ → Close thread**) stops the conversation, closes both agents and any app server they left running, and keeps the thread in the list. Both agents keep their settings (CLI, model, effort, speed, permissions, internet): **Activate both** starts the next thread with one short check each.
 - **New thread** (the compose button at the top of the sidebar) opens a clean page in the current mode, with its own two agents to activate. Each thread with live agents runs two CLI processes on this computer. From the third, AvA asks before opening another and again before activating its agents; you can go ahead anyway.

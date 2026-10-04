@@ -7,7 +7,7 @@ import type { Starter } from './debate-starters.js';
 // Every answer was computed by program, and the logic puzzle was checked to have exactly one solution.
 const prompt = (id: string, name: string, kind: AnswerCheck['kind'], body: string, form: string, answers: string[]): Starter & { check: AnswerCheck } => ({
   id, name, mode: 'benchmark', buildKind: 'build',
-  text: `# ${name.replace(/^(Challenge|Race): /, '')}\n\n${body}\n\n${answerInstructions(kind, form)}`,
+  text: `# ${name.replace(/^(?:Hard challenge|Challenge|Race): /, '')}\n\n${body}\n\n${answerInstructions(kind, form)}`,
   check: { kind, answers },
 });
 
@@ -42,6 +42,24 @@ export const PROMPT_STARTERS = [
   prompt('prompt-day-of-week', 'Race: Day of the week', 'race',
     'On what day of the week will 13 March 2147 fall, in the Gregorian calendar?',
     '<a day of the week>', ['Monday']),
+];
+// Hard challenges (P9): the strongest models answered every earlier challenge in under 20 seconds, so these take the
+// same kinds of problem to a scale that needs minutes of exact work: a long simulation, a large count, a long trace.
+// Every answer was computed by program, and each was calibrated live with Claude Code and Codex at high effort, without
+// tools: both answered every one correctly, in 0.5 to 6.8 minutes.
+const LIFE = 'In Conway’s Game of Life on an unbounded grid, a live cell with two or three live neighbours (of its eight) stays alive, a dead cell with exactly three live neighbours comes alive, and every other cell is dead in the next generation. Start with exactly these five live cells, given as (column, row) with rows numbered downward: (1, 0), (2, 0), (0, 1), (1, 1), (1, 2).';
+export const HARD_PROMPTS = [
+  prompt('prompt-hard-life', 'Hard challenge: Twenty generations', 'challenge', `${LIFE} How many cells are alive after 20 generations?`, '<a whole number>', ['32']),
+  prompt('prompt-hard-queens', 'Hard challenge: Queens off the diagonals', 'challenge',
+    'The eight queens puzzle has 92 solutions: ways to place eight queens on a chessboard so that no two attack each other. In how many of those 92 solutions is no queen on either of the board’s two long diagonals (a1 to h8 and a8 to h1)?',
+    '<a whole number>', ['12']),
+  prompt('prompt-hard-king', 'Hard challenge: The wandering king', 'challenge',
+    'A king starts in a corner of an empty 5 × 5 board. On each move it goes to one of the squares it can reach in one king’s move (horizontally, vertically or diagonally adjacent, and on the board), each with equal probability. What is the expected number of moves until it first reaches the diagonally opposite corner?',
+    '<a fraction in lowest terms, such as 3/8>', ['9540/127']),
+  prompt('prompt-hard-trace', 'Hard challenge: The long trace', 'challenge',
+    'What does this Python program print?\n\n```python\ns = [3, 1, 4, 1, 5, 9, 2, 6, 5, 3]\nfor step in range(150):\n    i = (step * 7) % len(s)\n    j = (i + s[i] + step) % len(s)\n    s[i], s[j] = (s[i] * 3 + s[j] + step) % 10, (s[i] + 2 * s[j]) % 10\nprint("".join(map(str, s)))\n```',
+    '<the ten digits it prints>', ['6363896389']),
+  prompt('prompt-hard-power', 'Hard challenge: Digits of a power', 'challenge', 'What is the sum of the decimal digits of 3^300 (3 to the power 300)?', '<a whole number>', ['693']),
 ];
 // The Prompt starters before the answer keys, retired where unedited (fingerprints as in debate-starters.ts).
 export const RETIRED_PROMPT_STARTERS: Record<string, string[]> = {

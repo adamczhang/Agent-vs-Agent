@@ -51,6 +51,8 @@ test('a process started outside the job by a Store app (PowerShell 7) is still f
   await host.create('pair/cli1/1/d');
   const child=spawn(launched.argv[0]!,launched.argv.slice(1),{stdio:'ignore',windowsHide:true});await host.release('pair/cli1/1/d',child.pid!,launched.token);
   const find=()=>spawnSync('powershell.exe',['-NoProfile','-Command',`Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object { $_.CommandLine -match '${marker}' } | ForEach-Object { $_.ProcessId }`],{encoding:'utf8',windowsHide:true}).stdout.split(/\s+/).filter(Boolean).map(Number);
+  // Whatever happens, nothing this test started outlives it, even a process that appears only after the wait.
+  t.after(()=>{for(const pid of find())try{process.kill(pid);}catch{/* gone */}});
   let started:number[]=[];assert.ok(await until(()=>(started=find()).length===1,20000),'the background process started');
   try{
     assert.ok(await until(async()=>(await host.members('pair/cli1/1/d')).includes(started[0]!),5000),'it is a member through the lineage, though outside the job');

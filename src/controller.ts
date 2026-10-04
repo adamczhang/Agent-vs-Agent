@@ -1,5 +1,6 @@
 import { Store } from './store.js';
 import { FORMAL_STYLE, SIDE, forfeitText, speechRule, timeRule } from './debate.js';
+import { BUG_FORMAT, huntRules } from './bug-hunt.js';
 import { AvAError, SEATS, other, systemClock, type AgentResult, type AttachmentRef, type Clock, type Participant, type RoomMessage, type Run, type RunConfig, type Seat } from './types.js';
 
 interface LiveRun {
@@ -301,14 +302,19 @@ export class ConversationController {
       const bypass = this.store.pair(run.pairId).slots[seat].permissions === 'bypass';
       const tools = bypass ? 'The operator enabled Bypass: commands are permitted. Keep work inside your copy and never stop unrelated processes.'
         : 'Ask mode permits scoped file tools only. Do not run shell commands, scripts, interpreters, package managers, tests, or process-control tools. A working folder is not a sandbox. Report any execution checks you could not perform.';
+      // Codex reads files only through commands, in its own sandbox: under Ask, a bug hunt lets it read and search (H5; the
+      // ban on every command left it unable to open a large repository, which isn't inlined).
+      const reader = ['codex', 'vercel'].includes(this.store.pair(run.pairId).slots[seat].config?.provider ?? '');
       if (b.kind === 'review') {
+        const huntTools = !bypass && reader ? 'Ask mode: read and search the code with read-only commands inside your copy, such as rg, cat, ls, Get-Content or Select-String. Run nothing else: no scripts, interpreters, tests or package managers, and nothing that changes files or starts or stops processes.' : tools;
         const inline = this.reviewFiles?.(run, seat) ?? '';
         return [
-        `You are reviewing a software project. Your own private copy of it is in the folder "${b.folder}" inside your working directory. Another agent works on a separate copy of the same project, and the original is never touched.`,
-        'You may read files in your copy. Keep any changes inside your copy; you do not need to fix anything.', tools, NO_INPUT,
+        `You are hunting for bugs in a software project. Your own private copy of it is in the folder "${b.folder}" inside your working directory. Another agent works on a separate copy of the same project, and the original is never touched.`,
+        'You may read files in your copy. Keep any changes inside your copy; you do not need to fix anything.', huntTools, NO_INPUT,
         `Task: ${task}`, ...attached,
         ...(inline ? [`The project is small, so its files follow, with line numbers (the same files are in your copy):\n\n${inline}`] : []),
-        'When you are done, reply in plain text with your findings. For each issue give the file and line, its severity (high, medium, or low), what is wrong, and how to fix it. End with a one-line summary.',
+        [BUG_FORMAT, huntRules(b.hunt)].filter(Boolean).join(' '),
+        'When you are done, reply in plain text: one BUG line for each bug (after its description you may add its severity, high, medium or low, and how to fix it), then a one-line summary.',
         `(Operator setting for you: ${web})`,
       ].join('\n\n');
       }

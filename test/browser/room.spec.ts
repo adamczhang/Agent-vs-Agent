@@ -190,3 +190,47 @@ test('benchmark results filter models, retain evidence across reload, and export
   await page.reload();await page.getByRole('button',{name:'More',exact:true}).click();await page.getByRole('menuitem',{name:'Benchmarks',exact:true}).click();await panel.getByRole('tab',{name:'Results',exact:true}).click();
   await expect(results.getByRole('status')).toContainText('6 attempts');expect(room.service.benchmarks.jobs()).toHaveLength(1);
 });
+
+test('the Bug hunt builder checks the repository and each planted bug, then saves the hunt with the prompt',async({page,room})=>{
+  const { mkdtempSync, writeFileSync } = await import('node:fs'), { tmpdir } = await import('node:os'), { join } = await import('node:path'), { spawnSync } = await import('node:child_process');
+  const repo=mkdtempSync(join(tmpdir(),'ava-browser-hunt-'));writeFileSync(join(repo,'calc.py'),'def add(a, b):\n    return a + b\n');
+  for(const args of [['init','-q'],['add','-A'],['-c','user.name=t','-c','user.email=t@t','commit','-qm','one']])spawnSync('git',args,{cwd:repo,windowsHide:true});
+  await page.goto(room.url);await page.getByRole('radio',{name:'Build',exact:true}).click();
+  await page.getByRole('button',{name:'Build builder',exact:true}).click();
+  const builder=page.getByRole('dialog',{name:'Build builder'});
+  await builder.getByRole('radio',{name:'Bug hunt',exact:true}).click();
+  await builder.getByLabel('Prompt name',{exact:true}).fill('Hunt the adder');
+  await builder.getByLabel('Repository to hunt in',{exact:true}).fill(repo);
+  await builder.getByLabel('What to hunt for',{exact:true}).fill('calc.py has one bug. Find it.');
+  await builder.getByRole('checkbox',{name:/Score this hunt/}).check();
+  await builder.getByRole('button',{name:'Add a planted bug',exact:true}).click();
+  await builder.getByLabel('File of planted bug 1',{exact:true}).fill('calc.py');
+  await builder.getByLabel('Original code of planted bug 1',{exact:true}).fill('return a + b');
+  await builder.getByLabel('Bugged code of planted bug 1',{exact:true}).fill('return a - b');
+  await builder.getByLabel("What's wrong with planted bug 1",{exact:true}).fill('Subtracts instead of adding.');
+  await builder.getByRole('button',{name:'Check',exact:true}).click();
+  await expect(builder.getByText('✓ Its original code is there once')).toBeVisible();await expect(builder.getByText(/A copy holds 1 file/)).toBeVisible();
+  await builder.getByRole('button',{name:/^Use [0-9a-f]{7}$/}).click();
+  await builder.getByRole('button',{name:'Save',exact:true}).click();await expect(builder.getByText('Saved “Hunt the adder” to the prompt library.')).toBeVisible();
+  const saved=room.service.prompts.list().prompts.find(p=>p.name==='Hunt the adder')!;
+  expect(saved.buildKind).toBe('review');expect(saved.build?.project).toBe(repo);
+  expect(saved.build?.hunt?.bugs).toEqual([{file:'calc.py',find:'return a + b',replace:'return a - b',what:'Subtracts instead of adding.'}]);
+  expect(saved.build?.hunt?.commit).toMatch(/^[0-9a-f]{12}$/);expect(saved.build?.hunt?.exclude).toEqual(['tests','AGENTS.md','CLAUDE.md']);
+  // H7: the same hunt in a repository on the web (a file:// address speaks git's network protocol): Check fetches it,
+  // Use gives the full hash such a hunt needs, and the slice is saved.
+  for(const [k,v] of [['uploadpack.allowFilter','true'],['uploadpack.allowAnySHA1InWant','true']])spawnSync('git',['config',k!,v!],{cwd:repo,windowsHide:true});
+  const url=(await import('node:url')).pathToFileURL(repo).href;
+  await builder.getByLabel('Repository to hunt in',{exact:true}).fill(url);await builder.getByLabel('Only these folders',{exact:true}).fill('calc.py');
+  await builder.getByRole('button',{name:'Check',exact:true}).click();
+  await expect(builder.getByText(/on the web, its default branch now at [0-9a-f]{7}\. A copy holds 1 file/)).toBeVisible();
+  await builder.getByRole('button',{name:/^Use [0-9a-f]{7}$/}).click();
+  await builder.getByRole('button',{name:'Save',exact:true}).click();
+  await expect.poll(()=>room.service.prompts.list().prompts.find(p=>p.name==='Hunt the adder')?.build?.project).toBe(url);
+  const web=room.service.prompts.list().prompts.find(p=>p.name==='Hunt the adder')!;
+  expect(web.build?.hunt?.commit).toMatch(/^[0-9a-f]{40}$/);expect(web.build?.hunt?.include).toEqual(['calc.py']);
+  // A saved hunt opens with each part of its text in its own field, and its decoys and cap (H6).
+  await builder.getByLabel('Open a saved prompt',{exact:true}).selectOption('hunt-cli-mode-whole');
+  await expect(builder.getByLabel('What counts as a bug',{exact:true})).toHaveValue(/^Code that does the wrong thing/);
+  await expect(builder.getByLabel('What to hunt for',{exact:true})).not.toHaveValue(/## What counts/);
+  await expect(builder.getByText('Planted decoy 7',{exact:true})).toBeVisible();await expect(builder.getByLabel('BUG lines that count',{exact:true})).toHaveValue('8');
+});

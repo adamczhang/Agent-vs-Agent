@@ -49,6 +49,19 @@
 .builder-side textarea { width: 100%; resize: vertical; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; background: var(--bg); font: inherit; font-size: 12.5px; line-height: 1.5; }
 .builder-note { margin: 0 0 8px; font-size: 12px; color: var(--text-3); }
 .builder-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+/* Build builder (H3): the repository with its Check button, and the planted bugs. */
+.builder-repo { grid-template-columns: 1fr auto; align-items: end; }
+.builder-repo > .button { margin-bottom: 12px; }
+.builder-inline { display: flex; gap: 8px; }
+.builder-inline input { flex: 1; min-width: 0; }
+.planted-bugs { display: flex; flex-direction: column; gap: 10px; margin: 4px 0 10px; }
+.planted-bug { display: flex; flex-direction: column; gap: 4px; margin: 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; }
+.planted-bug legend { padding: 0 4px; font-size: 12px; font-weight: 600; }
+.planted-bug > .button { align-self: flex-start; }
+.library-field textarea.code { font-family: var(--mono); font-size: 12px; white-space: pre; }
+.bug-check { margin: 0 0 4px; font-size: 12px; }
+.bug-check.ok { color: #1b6a32; }
+.bug-check.bad { color: var(--danger); }
 .library-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 20px 24px 16px; border-bottom: 1px solid var(--line); }
 .library-heading h2 { display: flex; align-items: center; gap: 9px; margin: 0; font-size: 19px; letter-spacing: -.025em; }
 .library-heading p { margin: 5px 0 0; color: var(--text-2); font-size: 12.5px; }
@@ -443,6 +456,13 @@ kbd { font: 12px var(--mono); background: var(--field); border-radius: 5px; padd
 .prompt-result td.right { color: #1b6a32; }
 .prompt-result td.wrong { color: var(--danger); }
 .prompt-result tr.won th { font-weight: 600; }
+/* A scored bug hunt (H2): each planted bug, and which agent found it. */
+.hunt-bugs { margin: 10px 0 0; padding-left: 20px; display: grid; gap: 6px; }
+.hunt-bugs code { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
+.hunt-bugs li.decoy { color: var(--text-2); }
+.hunt-found { display: inline-flex; gap: 8px; margin-left: 8px; font-size: 12px; }
+.hunt-found .right { color: #1b6a32; }
+.hunt-found .wrong { color: var(--danger); }
 .rounds-chip .chip { height: 26px; padding: 0 10px; color: var(--text-2); white-space: nowrap; }
 .rounds-chip .chip.pressed { background: var(--selected); color: var(--text); }
 .rounds-pop { position: absolute; bottom: calc(100% + 8px); left: 0; z-index: 30; width: 260px; padding: 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg); box-shadow: 0 8px 28px rgba(0, 0, 0, .14); display: flex; flex-direction: column; gap: 10px; }

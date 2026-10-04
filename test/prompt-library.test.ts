@@ -3,8 +3,9 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { AvAService } from '../src/service.js';
-import { PromptLibrary } from '../src/prompt-library.js';
-import { DEBATE_STARTERS } from '../src/debate-starters.js';
+import { PromptLibrary, STARTERS } from '../src/prompt-library.js';
+import { DEBATE_STARTERS, HARD_DEBATES } from '../src/debate-starters.js';
+import { BUILD_STARTERS } from '../src/build-starters.js';
 import { debateMarkdown, parseDebateMarkdown, type PromptSave, type SavedPrompt } from '../src/prompt-types.js';
 import type { AttachmentRef, Pair, Run } from '../src/types.js';
 import { TestFactory, flush } from './fakes.js';
@@ -23,13 +24,13 @@ test('library preloads all three modes once, preserves edits/deletions across re
   const { service, factory, library, root } = fixture(t);
   const first = library.list(); assert.equal(first.directory, join(root, 'prompts'));
   assert.deepEqual(new Set(first.prompts.map(p => p.mode)), new Set(['benchmark', 'conversation', 'build']));
-  assert.equal(first.prompts.length, 22); assert.equal(factory.agents.length, 0);
+  assert.equal(first.prompts.length, STARTERS.length); assert.equal(factory.agents.length, 0);
   const starter = library.get('prompt-domino-tiling');
   library.save({ ...input(), id: starter.id, revision: starter.revision, name: 'Edited starter' });
   const removed = library.get('starter-snake'); library.delete(removed.id, removed.revision);
   const reopened = new PromptLibrary(root, service.store);
   assert.equal(reopened.get(starter.id).name, 'Edited starter');
-  assert.equal(reopened.list().prompts.length, 21); assert.equal(factory.agents.length, 0);
+  assert.equal(reopened.list().prompts.length, STARTERS.length - 1); assert.equal(factory.agents.length, 0);
 });
 
 // G2: a debate prompt carries the debate template in debate.json beside prompt.md, so older versions still read the topic.
@@ -69,7 +70,7 @@ test('built-in debates are formal motions, and replace earlier debate starters o
     assert.equal(starter.debate.rounds, 7);
     for (const seat of ['cli1', 'cli2'] as const) assert.ok(starter.debate.agents[seat].context.length > 150, `${starter.id} briefs ${seat}`);
   }
-  assert.deepEqual(fresh.list().prompts.filter(p => p.mode === 'conversation').map(p => p.id).sort(), DEBATE_STARTERS.map(s => s.id).sort(), 'a new library has only the formal debates');
+  assert.deepEqual(fresh.list().prompts.filter(p => p.mode === 'conversation').map(p => p.id).sort(), [...DEBATE_STARTERS, ...HARD_DEBATES].map(s => s.id).sort(), 'a new library has only the formal debates');
   // A library as 0.4.1 left it (marker 2): a G3 starter as shipped, one edited, and the user's own debate prompt.
   const old = join(root, 'older'), prompts = join(old, 'prompts'); mkdirSync(prompts, { recursive: true });
   const write = (id: string, name: string, text: string, debate?: object) => { mkdirSync(join(prompts, id)); writeFileSync(join(prompts, id, 'prompt.md'), text); writeFileSync(join(prompts, id, 'prompt.json'), JSON.stringify({ version: 1, id, name, mode: 'conversation', buildKind: 'build', createdAt: 'x', updatedAt: 'x', files: [] })); if (debate) writeFileSync(join(prompts, id, 'debate.json'), JSON.stringify({ version: 1, ...debate }, null, 2) + '\n'); };
@@ -82,12 +83,13 @@ test('built-in debates are formal motions, and replace earlier debate starters o
   assert.ok(!ids.includes('starter-debate-hot-dog'), 'the starter as shipped is retired');
   assert.ok(ids.includes('starter-debate-mammoth') && ids.includes('my-debate'), 'edited and own prompts stay');
   assert.ok(DEBATE_STARTERS.every(s => ids.includes(s.id)), 'the formal debates are added');
-  assert.equal(readFileSync(join(prompts, '.initialized'), 'utf8'), '4\n');
+  assert.ok(BUILD_STARTERS.every(s => ids.includes(s.id)), 'and the app builds and bug hunts (H4)');
+  assert.equal(readFileSync(join(prompts, '.initialized'), 'utf8'), '5\n');
   // Once only: a formal debate the user deletes isn't added again, and a newer marker stays.
   const removed = library.get('debate-fall-of-rome'); library.delete(removed.id, removed.revision);
   assert.ok(!new PromptLibrary(old, service.store).list().prompts.some(p => p.id === 'debate-fall-of-rome'));
-  writeFileSync(join(prompts, '.initialized'), '5\n'); new PromptLibrary(old, service.store).list();
-  assert.equal(readFileSync(join(prompts, '.initialized'), 'utf8'), '5\n');
+  writeFileSync(join(prompts, '.initialized'), '6\n'); new PromptLibrary(old, service.store).list();
+  assert.equal(readFileSync(join(prompts, '.initialized'), 'utf8'), '6\n');
 });
 test('a debate prompt exports to one Markdown file and imports back with its template', () => {
   const debate = { rounds: 5, agents: { cli1: { stance: 'against' as const, context: 'Side A.\n\nWith a blank line.', internet: true }, cli2: { stance: 'for' as const, context: '', internet: false } } };
@@ -178,7 +180,7 @@ test('linked files directories and a linked library root are refused', t => {
 test('corrupt tasks do not hide healthy prompts or get overwritten', t => {
   const { library, root } = fixture(t); library.list();
   const broken = join(root, 'prompts', 'broken'); mkdirSync(broken); writeFileSync(join(broken, 'prompt.json'), 'not JSON'); writeFileSync(join(broken, 'prompt.md'), 'hello');
-  const result = library.list(); assert.equal(result.prompts.length, 22); assert.equal(result.warnings.length, 1);
+  const result = library.list(); assert.equal(result.prompts.length, STARTERS.length); assert.equal(result.warnings.length, 1);
   assert.throws(() => library.save(input({ id: 'broken' })));
   assert.equal(readFileSync(join(broken, 'prompt.json'), 'utf8'), 'not JSON');
 });
@@ -241,4 +243,19 @@ test('Q6: one file is read on its own; a delete moves the prompt aside first; le
   for (const name of ['.pending-x-1', '.deleting-y-2']) mkdirSync(join(root, 'prompts', name, 'files'), { recursive: true });
   new PromptLibrary(root, service.store).list();
   assert.ok(!readdirSync(join(root, 'prompts')).some(name => name.startsWith('.pending-') || name.startsWith('.deleting-')));
+});
+
+test('G15: five hard debates: formal, technical motions with full briefs; two are closed book, and a library from 0.4.4 gets them once', async t => {
+  const { service, root } = fixture(t);
+  assert.equal(HARD_DEBATES.length, 5);
+  for (const starter of HARD_DEBATES) {
+    assert.match(starter.name, / \(hard\)$/); assert.match(starter.text, /^# Motion: This house /); assert.equal(starter.debate!.rounds, 7);
+    assert.deepEqual([starter.debate!.agents.cli1.stance, starter.debate!.agents.cli2.stance], ['for', 'against']);
+    for (const seat of ['cli1', 'cli2'] as const) assert.ok(starter.debate!.agents[seat].context.length > 300, `${starter.id} briefs ${seat} fully`);
+  }
+  const closed = HARD_DEBATES.filter(s => !s.debate!.agents.cli1.internet && !s.debate!.agents.cli2.internet);
+  assert.equal(closed.length, 2); for (const s of closed) assert.match(s.text, /No internet: argue from what you know/);
+  const old = join(root, 'set4'), prompts = join(old, 'prompts'); mkdirSync(prompts, { recursive: true }); writeFileSync(join(prompts, '.initialized'), '4\n');
+  const ids = new PromptLibrary(old, service.store).list().prompts.map(p => p.id);
+  assert.ok(HARD_DEBATES.every(s => ids.includes(s.id))); assert.ok(!DEBATE_STARTERS.some(s => ids.includes(s.id)), 'the earlier debates came with set 3');
 });

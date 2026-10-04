@@ -19,10 +19,10 @@ AvA installs as a plugin for Codex or Claude Code. Type `/ava start` in either o
 **Highlights**
 
 - **Prompt:** both agents answer the same prompt and attachments at the same moment, independently. Compare their answers, timing and speed. Challenges and races come with a hidden answer key: AvA checks each agent's final answer and names the winner, the right answer or the faster one. Each prompt runs in a clean thread of its own, with the same agents.
-- **Debate:** a formal debate. Each agent argues an assigned side after a private brief, in timed speeches over a set number of rounds. An independent judge (the strongest Claude Code or Codex model at max effort) then scores both on evidence, clash and a cohesive case, and names a winner. A Debate builder and ten built-in motions help you set one up.
-- **Build and Review:** each agent works in its own copy of a project. Open the two apps side by side, compare their changes, or rank their code-review findings.
+- **Debate:** a formal debate. Each agent argues an assigned side after a private brief, in timed speeches over a set number of rounds. An independent judge (the strongest Claude Code or Codex model at max effort) then scores both on evidence, clash and a cohesive case, and names a winner. A Debate builder and fifteen built-in motions (five of them hard) help you set one up.
+- **Build:** app builds and bug hunts. Both agents build the same app, each in its own folder, and you open the two side by side and compare their changes. Or both hunt for bugs in their own copies of a repository, a local one or one on GitHub. A scored hunt plants bugs (and decoys) first and shows which ones each agent found.
 - **Benchmarks:** validated tasks with deterministic checks, so every attempt is saved with an explicit pass or fail. Repeat runs, a scoreboard, exports, and shareable HTML or Markdown reports, with 20 starter tasks. Add optional rubric scores from a judge agent, or import Exercism and JSON Lines tasks.
-- **Prompt library:** saved Markdown prompts and reference files in every mode, with 22 editable built-ins (ten formal debates, ten challenges and races, two Build tasks) and builders for Debate and Prompt.
+- **Prompt library:** saved Markdown prompts and reference files in every mode, with 45 editable built-ins (fifteen formal debates, fifteen challenges and races, nine app builds and six bug hunts) and a builder for each mode.
 - **In the room:** private 1:1 lines to brief each agent on its own, a context ring per agent, searchable history, replay and usage statistics.
 - **Control:** permissions and internet access per agent, and a Settings view of running agents and their memory, with an activation limit and Stop all. Everything runs locally, behind a random token.
 
@@ -33,7 +33,7 @@ The [user guide](docs/user-guide.md) and [benchmark guide](docs/benchmarks.md) c
 Requires **Windows**, **Node.js 24+**, **Git**, and **Codex or Claude Code** as the plugin host. Install and sign in to the CLI agents you want to use; see [supported agents](#supported-agents).
 
 ```powershell
-git clone --branch v0.4.4 --depth 1 https://github.com/adamczhang/Agent-vs-Agent.git
+git clone --branch v0.4.5 --depth 1 https://github.com/adamczhang/Agent-vs-Agent.git
 cd Agent-vs-Agent
 npm ci
 npm run package
@@ -83,7 +83,7 @@ Read the [security policy](SECURITY.md) and [known limits](docs/architecture.md#
 
 ## Documentation and development
 
-[User guide](docs/user-guide.md) · [Benchmarks](docs/benchmarks.md) · [Architecture](docs/architecture.md) · [Roadmap](docs/roadmap.md) · [Contributing](CONTRIBUTING.md) · [Changelog](CHANGELOG.md) · [v0.4.4 release notes](docs/release-v0.4.4.md)
+[User guide](docs/user-guide.md) · [Benchmarks](docs/benchmarks.md) · [Architecture](docs/architecture.md) · [Roadmap](docs/roadmap.md) · [Contributing](CONTRIBUTING.md) · [Changelog](CHANGELOG.md) · [v0.4.5 release notes](docs/release-v0.4.5.md)
 
 ```powershell
 npm run typecheck

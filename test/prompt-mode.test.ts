@@ -5,7 +5,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { AvAService } from '../src/service.js';
 import { PromptLibrary } from '../src/prompt-library.js';
 import { finalAnswer, matches, promptResult } from '../src/answer-check.js';
-import { PROMPT_STARTERS } from '../src/prompt-starters.js';
+import { HARD_PROMPTS, PROMPT_STARTERS } from '../src/prompt-starters.js';
 import { SEATS, type Pair, type Run } from '../src/types.js';
 import { TestFactory, flush } from './fakes.js';
 import { tempDir } from './temp.js';
@@ -121,6 +121,25 @@ test('an older library gets the challenges and races once; the old Prompt starte
     assert.deepEqual(library.get('prompt-day-of-week').check, { kind: 'race', answers: ['Monday'] });
     assert.deepEqual(JSON.parse(readFileSync(join(prompts, 'prompt-day-of-week', 'check.json'), 'utf8')), { version: 1, kind: 'race', answers: ['Monday'] });
     assert.ok(!readFileSync(join(prompts, 'prompt-day-of-week', 'prompt.md'), 'utf8').includes('Monday'), 'the answer stays out of the prompt');
-    assert.equal(readFileSync(join(prompts, '.initialized'), 'utf8'), '4\n');
+    assert.equal(readFileSync(join(prompts, '.initialized'), 'utf8'), '5\n');
+  } finally { await close(); }
+});
+
+test('P9: five hard challenges, every key accepted by its own answer check; a library from 0.4.4 (set 4) gets them once', async () => {
+  assert.equal(HARD_PROMPTS.length, 5);
+  for (const p of HARD_PROMPTS) {
+    assert.deepEqual([p.mode, p.check.kind], ['benchmark', 'challenge']); assert.match(p.name, /^Hard challenge: /);
+    assert.ok(p.text.startsWith(`# ${p.name.replace('Hard challenge: ', '')}\n\n`), 'the heading drops the prefix');
+    assert.match(p.text, /without tools or the web/); assert.ok(matches(p.check.answers[0]!, p.check.answers[0]!));
+    for (const answer of p.check.answers) assert.ok(!p.text.includes(`ANSWER: ${answer}`), 'the key stays out of the prompt');
+  }
+  const { root, service, close } = fixture();
+  try {
+    const old = join(root, 'set4'), prompts = join(old, 'prompts'); mkdirSync(prompts, { recursive: true });
+    writeFileSync(join(prompts, '.initialized'), '4\n');
+    const ids = new PromptLibrary(old, service.store).list().prompts.map(p => p.id);
+    assert.ok(HARD_PROMPTS.every(p => ids.includes(p.id)));
+    assert.ok(!PROMPT_STARTERS.some(p => ids.includes(p.id)), 'set 4 had the first ten already (a deleted one stays deleted)');
+    assert.equal(readFileSync(join(prompts, '.initialized'), 'utf8'), '5\n');
   } finally { await close(); }
 });

@@ -1,6 +1,6 @@
 # Architecture
 
-How Agent vs Agent v0.4.4 is built. Verified scope is in the [v0.4.4 release notes](release-v0.4.4.md) (and the [v0.3.1 notes](release-v0.3.1.md) for benchmarks), and the v0.2.0 baseline's in its [validation record](validation.md); usage is in the [user guide](user-guide.md).
+How Agent vs Agent v0.4.5 is built. Verified scope is in the [v0.4.5 release notes](release-v0.4.5.md) (and the [v0.3.1 notes](release-v0.3.1.md) for benchmarks), and the v0.2.0 baseline's in its [validation record](validation.md); usage is in the [user guide](user-guide.md).
 
 The executable implementation is in `src/`, the browser interface in `ui/`, and the Codex plugin in `.codex-plugin/`, `hooks/`, and `skills/`. The Claude Code wrapper is in `wrappers/claude/`. The agents are reached through [ACPX](https://www.npmjs.com/package/acpx) and the Agent Client Protocol (ACP).
 
@@ -76,7 +76,31 @@ Benchmark rows and independent artifact copies are intentionally outside convers
 
 ## Build mode
 
-`RunConfig.mode='build'` with `build={kind:'build'|'review',source,folder}`. It runs like Prompt: one paired phase, raw-text answers, and the controller halts with `build_done`. A Build session holds one prompt: `run.start` refuses a second run in a thread whose first run was a build (`ONE_BUILD`), and `run.broadcast` refuses any Prompt or Build run (`ONE_PROMPT`).
+`RunConfig.mode='build'` with `build={kind:'build'|'review',source,folder}`. It runs like Prompt: one paired phase, raw-text answers, and the controller halts with `build_done`. Each build is its own thread (H1): after an earlier run in the thread, `run.start` gives both seats fresh sessions first (`freshThread`, as for Prompt runs and formal debates), then makes the copies in the new sessions' workspaces, so an earlier build keeps its folders and Results. A run of another mode than its thread's also starts a fresh thread, so a thread never mixes modes. A second build while one runs is refused before anything is copied (`RUN_ACTIVE`), and `run.broadcast` refuses any Prompt or Build run (`ONE_PROMPT`).
+
+**Scored bug hunts (H2, `src/bug-hunt.ts`).** A bug hunt (`build.kind='review'`) may carry `build.hunt`: a commit, paths to leave out, and planted bugs (`{file, find, replace, what}`).
+- **The copy:** with a commit, the files come from that commit through a temporary index (`read-tree`, then `checkout-index --stdin --prefix`), so nothing in the repository is written and no history is copied; without one, from the folder as usual. Left-out paths are dropped either way. The bugs are planted in the copy before the baseline commit, and each must match exactly once (`HUNT_PLANT` otherwise). The planted code must also be unique afterwards, so each bug's lines are known; they are saved in the run's config.
+- **No tells (H5):** a planted file keeps the modification time it had when copied. Agents' file search tools list files newest first, and a live hunt went straight to the planted files before this fix.
+- **Codex under Ask:** a bug hunt lets Codex (and the Gateway, which runs on it) read and search with read-only commands in its sandbox. It reads only through commands, and the ban on all of them left it unable to open a repository too large to inline. Other CLIs read with file tools that AvA's gate allows inside the copy.
+- **Reports:** the agents are asked for `BUG: <file>:<line> — <what>` lines. `bugReports` reads them whatever prefix the path carries (the copy's folder, a full path, backslashes, backticks).
+- **Scoring:** when the run ends, `huntResult` lets each BUG line land on at most one planted change, the nearest in its file within three lines. It saves `Run.hunt`: each agent's found bugs, line count and time. The winner found more, or as many sooner.
+- **Decoys and a cap (H6):**
+  - **Decoys:** a planted change may be a decoy (`decoy: true`): correct code made to look wrong, planted like a bug. A BUG line that lands on it is recorded in `seats[s].decoys`.
+  - **The cap:** `hunt.maxReports` counts only each agent's first N BUG lines, so a hunt that gives no bug count can't be won by reporting everything.
+  - **The winner:** the agent that found more bugs, then fell for fewer decoys, then was faster.
+  - **What the prompt says:** `huntRules` adds the scoring to the prompt (the cap, and that a report of correct code counts against the agent), never the word decoy or where anything was planted.
+  - **What the room sees:** counts that leave decoys out (`planted` is bugs only), so nothing points at them.
+- **What the room sees:** the thread view sends the room the number of planted bugs, never the bugs themselves until the result has them.
+- **Repositories on the web (H7, `src/repo-cache.ts`):** a Build project may be an https address (file:// names a local mirror).
+  - **The cache:** AvA keeps one bare cache per address in `<data>/repos/`. Its partial-clone settings name the address as a promisor remote, and `gc.auto=0`.
+  - **Fetching a commit:** AvA fetches the commit with `--depth=1 --filter=blob:none` and records it as `refs/ava/<commit>`, so it's never unreachable. It then lists the copy's files (the slice, less what's left out) and fetches the blobs missing from the cache in one `fetch --stdin` by object ID, as git's own partial-clone fetch does.
+  - **Network safety:** network calls allow only https and file, use no credential helper or askpass, never prompt, and check every object received (`transfer.fsckObjects`).
+  - **Copying:** copies come from the cache through a temporary index, with the copy as the work tree. `GIT_NO_LAZY_FETCH=1` ensures git never fetches behind AvA's back. Line endings stay as stored, links become plain files, and large-file pointers stay pointers, so a copy is the same on every computer.
+  - **Pinning:** a scored hunt on the web needs a full commit hash (a short one can't be fetched). A run without one copies the default branch's commit and records it in `config.build.commit`.
+  - **Concurrency:** fetches for one cache run one at a time.
+  - **Agents never clone:** a clone's history would show planted bugs in a diff, and Ask refuses network commands anyway.
+- **In the library (H3):** a Build prompt's project folder and hunt live beside `prompt.md` in `build.json` (planted bugs only for a bug hunt with its repository). The library editor keeps them when it saves. The room sends a loaded hunt with `run.start` only while the message box still holds that prompt's text, as it does an answer key.
+- **The builder's check:** `project.check {path, commit?, exclude?, bugs?}` reads the repository only (`rev-parse`, `cat-file`, `ls-tree`, `show`). It returns the current commit, whether the chosen one exists, what a copy would hold, and each bug's state: ok, missing, ambiguous, no-file or excluded.
 
 **Independent answers (Prompt and Build).** Each agent's answer stands alone.
 - **Settled failure:** a turn the provider itself ended (stop reason cancelled, or an empty answer) is recorded as that agent's result, with a note in its screen. It doesn't halt the run. Grok Build does this when a permission is refused.

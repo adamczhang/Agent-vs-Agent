@@ -8,7 +8,7 @@ import { AvAService } from '../src/service.js';
 import { buildPermission } from '../src/providers.js';
 import { Previews, appTarget, pageIn } from '../src/preview.js';
 import { checkProject, copyProject, inlineProject, participantWorkspace, projectChanges, startProject } from '../src/workspace.js';
-import type { Pair } from '../src/types.js';
+import { SEATS, type Pair, type Run } from '../src/types.js';
 import type { AgentJobs } from '../src/jobs.js';
 import { TestFactory, flush } from './fakes.js';
 import { tempDir } from './temp.js';
@@ -195,7 +195,7 @@ test('the app an agent names at the end of its report: a page in its workspace o
   assert.deepEqual(appTarget('APP: app-1\nfixed it\nAPP: app-1/index.html', ws), { kind: 'page', path: join('app-1', 'index.html') }, 'the last one counts');
 });
 
-test('a Build session: 1:1 setup with tools, one prompt, an empty folder per agent, the named app, cleanup, changes, previews, Clear Session and Clear history', async () => {
+test('a Build session: 1:1 setup with tools, an empty folder per agent, the named app, cleanup, changes, previews, Clear Session and Clear history', async () => {
   const data = tempDir('ava-build-'), factory = new TestFactory(), stopped: number[][] = [];
   let pairId = '', runId = '', at = 0;
   // cli1's recorded adapter (4242) runs its CLI (4243, from before the run). During the run it started an app server
@@ -259,8 +259,6 @@ test('a Build session: 1:1 setup with tools, one prompt, an empty folder per age
     // Closing the agent leaves its kept app server running.
     assert.deepEqual((await one.options.keep!()).sort(), [5000, 5001]); assert.deepEqual(await two.options.keep!(), []);
 
-    await assert.rejects(service.call('run.start', { pairId, text: 'Now add levels', requestId: 'r2', options: { mode: 'build' }, build: { kind: 'build' } }), /one prompt/, 'one prompt per Build session');
-    await assert.rejects(service.call('run.start', { pairId, text: 'Talk', requestId: 'r3', options: { mode: 'conversation' } }), /one prompt/);
 
     const changes = await service.call('build.changes', { runId: run.id, seat: 'cli1' }) as { files: Array<{ path: string; status: string }> };
     assert.deepEqual(changes.files.map(f => [f.path, f.status]), [['server.js', 'added']]);
@@ -307,4 +305,32 @@ test('a Review prompt inlines a small project without build output, likely secre
   // The size decides before anything is read: a project over the limit inlines nothing.
   writeFileSync(join(dir, 'data.csv'), 'x'.repeat(70_000)); assert.equal(inlineProject(dir), '');
   assert.equal(inlineProject(join(dir, 'missing')), '', 'a folder that cannot be read inlines nothing');
+});
+test('H1: each build is its own thread: the next one gets fresh sessions for the same agents and copies of its own, and the earlier copies stay', async () => {
+  const data = tempDir('ava-build-threads-'), factory = new TestFactory();
+  const service = new AvAService(data, factory, 'simulation', { processes: async () => [], stopProcesses: async () => {} });
+  try {
+    const pair = await service.call('pair.create', { thread: 'builds' }) as Pair;
+    for (const seat of SEATS) { await service.call('slot.configure', { pairId: pair.id, seat, config: { provider: seat === 'cli1' ? 'claude' : 'codex', model: 'model', auth: 'provider-login' } }); await service.call('slot.activate', { pairId: pair.id, seat }); }
+    const live = () => factory.agents.filter(a => !a.closed);
+    const build = async (text: string, requestId: string) => {
+      const run = await service.call('run.start', { pairId: pair.id, text, requestId, options: { mode: 'build' }, build: { kind: 'build' } }) as Run;
+      await flush(); for (const agent of live()) agent.raw(`Done.\nAPP: ${run.config.build!.folder}/index.html`);
+      for (let i = 0; i < 200 && service.store.run(run.id).status !== 'completed'; i++) await new Promise(r => setTimeout(r, 5));
+      return service.store.run(run.id);
+    };
+    const copyOf = (run: Run, seat: 'cli1' | 'cli2') => join(participantWorkspace(data, { pairId: pair.id, seat, generation: run.generations[seat] }), run.config.build!.folder);
+    const first = await build('Build a clock', 'b1');
+    assert.equal(first.reason, 'build_done');
+    const second = await build('Build a timer', 'b2');
+    assert.equal(second.reason, 'build_done', 'no Clear Session needed between builds');
+    assert.ok(SEATS.every(s => second.generations[s] > first.generations[s]), 'fresh sessions');
+    assert.deepEqual(SEATS.map(s => service.store.pair(pair.id).slots[s].config?.provider), ['claude', 'codex'], 'the same agents');
+    assert.ok(SEATS.every(s => existsSync(copyOf(first, s)) && existsSync(join(copyOf(second, s), '.git'))), 'each build has its own copies, and the first keeps its own');
+    const threads = (await service.call('threads.list', { pairId: pair.id }) as { threads: Array<{ runIds: string[] }> }).threads.filter(t => t.runIds.length);
+    assert.deepEqual(threads.map(t => t.runIds.length), [1, 1], 'one build per thread');
+    // A run of another mode in this pair starts its own thread as well, so a thread never mixes modes.
+    const talk = await service.call('run.start', { pairId: pair.id, text: 'Talk', requestId: 'c1', options: { mode: 'conversation', paceMs: 0 } }) as Run;
+    assert.ok(SEATS.every(s => talk.generations[s] > second.generations[s]));
+  } finally { await service.shutdown(); service.store.close(); }
 });

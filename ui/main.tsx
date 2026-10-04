@@ -1,6 +1,6 @@
 import { useEffect,useRef,useState,type CSSProperties,type KeyboardEvent,type PointerEvent as ReactPointerEvent,type ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
-import { DEFAULT_ROUNDS,DEFAULT_SPEECH_MINUTES,type AnswerCheck,type JudgeProvider,type RunConfig,type Seat,type Stance } from '../src/types';
+import { DEFAULT_ROUNDS,DEFAULT_SPEECH_MINUTES,type AnswerCheck,type HuntSetup,type JudgeProvider,type RunConfig,type Seat,type Stance } from '../src/types';
 import type { ThreadStats } from '../src/stats';
 import { describeQuick } from '../src/quick';
 import { activityProjection,type ActivityLine,type Event } from './projection';
@@ -17,6 +17,7 @@ import { PromptManager,type PreparedPrompt } from './prompt-manager';
 import type { DebateSetup,PromptMode } from '../src/prompt-types';
 import { Ballot } from './ballot';
 import { PromptResult } from './prompt-result';
+import { HuntResult } from './hunt-result';
 import { PromptBuilder } from './prompt-builder';
 import { Icon } from './icons';
 import { IMAGE_TYPES,TERMINAL,TEXT_NAME,bytes,clock,dayLabel,delivery,directStates,duration,fullDate,initials,internetEnforcement,names,plural,reasonText,seats,shortTime,statusNames,
@@ -191,6 +192,8 @@ function App(){
   // A loaded Prompt-mode prompt's answer key: sent with that prompt (while the composer still holds its text) and never
   // shown to the agents.
   const [answerKey,setAnswerKey]=useState<{text:string;check:AnswerCheck}|null>(null);
+  // A loaded scored Bug hunt's setup (H3): its planted bugs go with that prompt only, and never to the agents.
+  const [hunt,setHunt]=useState<{text:string;setup:HuntSetup}|null>(null);
   const [resourcesOpen,setResourcesOpen]=useState(false);
   const [benchmarksOpen,setBenchmarksOpen]=useState(false);
   const [settings,setSettings]=useState<PresetData>(DEFAULT_SETTINGS),[presets,setPresets]=useState<Preset[]>([]),[presetId,setPresetId]=useState(''),[presetName,setPresetName]=useState<string|null>(null);
@@ -359,11 +362,11 @@ function App(){
   const uploading=files.some(f=>f.status==='uploading');
   // A running prompt or build takes no further messages: each agent answers the one prompt, then it ends.
   const benchmarkLive=live&&['benchmark','build'].includes(activeRun?.config.mode??thread?.mode??'');
-  // A Build session holds one prompt; the next build starts in a fresh session.
-  const buildDone=isRoomThread&&thread?.mode==='build'&&!!thread.runIds.length&&!live;
   // In a Build session (no prompt yet, or a build), 1:1 lines may use scoped workspace file tools.
   const directTools=building&&(!thread?.mode||thread.mode==='build');
-  const canSend=isRoomThread&&ready&&!!shown&&!mismatch&&!benchmarkLive&&!buildDone&&status!=='stopping'&&status!=='needs_attention'&&!directPending&&(!building||buildKind==='build'||!!project.trim());
+  // sendable: everything but the folder, which a prompt run from the library may bring itself.
+  const sendable=isRoomThread&&ready&&!!shown&&!mismatch&&!benchmarkLive&&status!=='stopping'&&status!=='needs_attention'&&!directPending;
+  const canSend=sendable&&(!building||buildKind==='build'||!!project.trim());
   // Each mode has its own thread and agents in this room (E9): switching shows that mode's current thread, and the
   // one left keeps running (or waiting) until it is closed.
   function switchMode(next:Mode){
@@ -395,8 +398,9 @@ function App(){
   const canClear=!!pair&&seats.every(s=>!!pair.slots[s].config)&&pair.activeRun?.status!=='needs_attention';
   const runById=new Map((shown?.runs??[]).map(r=>[r.id,r]));
 
-  async function send(saved?:{text:string;attachments:string[];buildKind:'build'|'review';debate?:DebateSetup;check?:AnswerCheck}){
-    const text=(saved?.text??draft).trim();if(!pair||!text||!canSend||busy||uploading)return;
+  async function send(saved?:{text:string;attachments:string[];buildKind:'build'|'review';debate?:DebateSetup;check?:AnswerCheck;project?:string;hunt?:HuntSetup}){
+    const text=(saved?.text??draft).trim();if(!pair||!text||!sendable||busy||uploading)return;
+    if(building&&(saved?.buildKind??buildKind)==='review'&&!(saved?.project??project).trim())return;
     const attachments=saved?.attachments??files.filter(f=>f.status==='ready'&&f.ref).map(f=>f.ref!.id);
     const kind=saved?.buildKind??buildKind;
     await action(live?'Sending':'Starting',async()=>{
@@ -404,7 +408,9 @@ function App(){
         await commands.execute(JSON.stringify(['send',pair.id,text,attachments]),'run.broadcast',{runId:pair.activeRunId,text,attachments},rpc);
       }else if(building){
         // Build: each agent gets its own copy of the project (or an empty folder); the time limit is the only option.
-        const path=project.trim(),options:Partial<RunConfig>={mode:'build',...(settings.minutes?{durationMs:Number(settings.minutes)*60000}:{})},build={kind,...(path?{path}:{})};
+        // A Bug hunt loaded from the library brings its planted bugs, while the message box still holds its text.
+        const huntSetup=kind==='review'?saved?.hunt??(hunt&&hunt.text.trim()===text?hunt.setup:undefined):undefined;
+        const path=(saved?.project??project).trim(),options:Partial<RunConfig>={mode:'build',...(settings.minutes?{durationMs:Number(settings.minutes)*60000}:{})},build={kind,...(path?{path}:{}),...(huntSetup?{hunt:huntSetup}:{})};
         await commands.execute(JSON.stringify(['send',pair.id,text,attachments,'build',options,build]),'run.start',{pairId:pair.id,text,options,attachments,build},rpc);
       }else if(benchmark){
         // Prompt: it goes to both agents at once, as written; only a time limit applies. A loaded challenge or race brings
@@ -429,28 +435,31 @@ function App(){
         // The signature holds the options, so a retry with other settings (sides, rounds, judge) is a new start (Q5).
         await commands.execute(JSON.stringify(['send',pair.id,text,attachments,'conversation',options]),'run.start',{pairId:pair.id,text,options,attachments},rpc);
       }
-      setDraft('');setFiles([]);setOptionsOpen(false);setAnswerKey(null);liveRef.current=true;
+      setDraft('');setFiles([]);setOptionsOpen(false);setAnswerKey(null);setHunt(null);liveRef.current=true;
     });
   }
-  function promptRunBlocked(savedMode:PromptMode,kind:'build'|'review'){
+  function promptRunBlocked(savedMode:PromptMode,kind:'build'|'review',folder?:string){
     if(commands.hasPending)return 'Resolve the pending send from the composer before running another prompt.';
     if(busy||uploading)return 'Wait for the current operation to finish.';
     if(!ready)return 'Activate both agents to run a prompt. You can still save or load one.';
     if(live)return 'Wait for the current run to finish, or load this prompt for later.';
     if(savedMode!=='all'&&savedMode!==mode)return `Load this prompt to switch to ${MODE_NAMES[savedMode]} mode first.`;
-    if(building&&kind==='review'&&!project.trim())return 'Enter a project folder in Build mode before running a review.';
-    if(!canSend)return 'Open a ready session in this mode, or load the prompt for later. A finished Build needs a new session.';
+    if(building&&kind==='review'&&!(folder??project).trim())return 'Enter the repository to hunt in before running a bug hunt.';
+    if(!sendable)return 'Open a ready session in this mode, or load the prompt for later.';
     return '';
   }
   async function useSavedPrompt({prompt,attachments}:PreparedPrompt,run:boolean){
     if(commands.hasPending)throw new Error('A send has an unknown outcome. Resolve it from the composer before loading another prompt.');
-    if(run){const blocked=promptRunBlocked(prompt.mode,prompt.buildKind);if(blocked)throw new Error(blocked);}
+    if(run){const blocked=promptRunBlocked(prompt.mode,prompt.buildKind,prompt.build?.project);if(blocked)throw new Error(blocked);}
     // A debate prompt sets up the next debate. With one running, its topic would only join that conversation.
     if(prompt.debate&&mode==='conversation'&&live)throw new Error('A debate is running. Stop it or close the thread, then load this debate prompt.');
     setDraft(prompt.text);setFiles(attachments.map(ref=>({key:ref.id,name:ref.name,size:ref.size,status:'ready',ref})));setBuildKind(prompt.buildKind);
     if(prompt.debate){const setup=prompt.debate;setSettings(s=>debateSettings(setup,s));setPresetId('');}
     setAnswerKey(prompt.check?{text:prompt.text,check:prompt.check}:null);
-    if(run)await send({text:prompt.text,attachments:attachments.map(f=>f.id),buildKind:prompt.buildKind,...(prompt.debate?{debate:prompt.debate}:{}),...(prompt.check?{check:prompt.check}:{})});
+    // A Build prompt fills in its folder (an app's starting point, or the repository to hunt in), and a scored hunt its bugs.
+    if(prompt.mode==='build'&&prompt.build?.project)setProject(prompt.build.project);
+    setHunt(prompt.build?.hunt&&prompt.buildKind==='review'?{text:prompt.text,setup:prompt.build.hunt}:null);
+    if(run)await send({text:prompt.text,attachments:attachments.map(f=>f.id),buildKind:prompt.buildKind,...(prompt.debate?{debate:prompt.debate}:{}),...(prompt.check?{check:prompt.check}:{}),...(prompt.build?.project?{project:prompt.build.project}:{}),...(prompt.build?.hunt?{hunt:prompt.build.hunt}:{})});
     else{if(prompt.mode!=='all')switchMode(prompt.mode);select('');setPanel('chat');setOptionsOpen(false);setTimeout(()=>composerRef.current?.focus(),0);}
   }
   // Direct (1:1) lines. A send waits while the agent is busy in the shared conversation (the service enforces it too).
@@ -524,7 +533,7 @@ function App(){
   }
   function control(which:'pause'|'resume'|'step'|'stop'){const runId=pair?.activeRunId;if(runId)void action(which,async()=>{await controlCommands.execute(JSON.stringify(['control',runId,which]),'run.control',{runId,action:which},rpc);});}
   // A judged debate's result in the thread list (C).
-  const verdictText=(v?:ThreadSummary['verdict'])=>!v?'':v.kind==='challenge'||v.kind==='race'?(v.winner?` · Agent ${v.winner==='cli1'?1:2} won the ${v.kind}`:` · no right answer`)
+  const verdictText=(v?:ThreadSummary['verdict'])=>!v?'':v.kind==='hunt'?(v.winner?` · Agent ${v.winner==='cli1'?1:2} found ${v.found![v.winner]} of ${v.planted}`:` · no planted bug found`):v.kind==='challenge'||v.kind==='race'?(v.winner?` · Agent ${v.winner==='cli1'?1:2} won the ${v.kind}`:` · no right answer`)
     :v.status==='judging'?' · judging':v.status==='failed'?' · not judged':` · Agent ${v.winner==='cli1'?1:2} won ${v.totals![v.winner!]}–${v.totals![v.winner==='cli1'?'cli2':'cli1']}`;
   // Delete one thread from history (D): its prompts, replies, 1:1 messages and ballot. A thread whose agents are still
   // active must be closed first.
@@ -731,6 +740,7 @@ function App(){
     let prev:ThreadMessage|undefined,lastDay='';
     const endNote=(runId:string)=>{const run=runById.get(runId);if(run&&TERMINAL.has(run.status)&&replayDone){feed.push(<div className="run-end" key={'end'+run.id}><span>{reasonText(run.reason)||statusNames[run.status]}</span><span>{duration(run.elapsedMs)}</span></div>);
       if(run.config.check)feed.push(<PromptResult key={'result'+run.id} run={run}/>);
+      if(run.config.build?.planted)feed.push(<HuntResult key={'hunt'+run.id} run={run}/>);
       if(run.config.stances)feed.push(<Ballot key={'ballot'+run.id} run={run} canJudge={isRoomThread} busy={!!busy} onJudge={()=>void action('Asking the judge',async()=>{await rpc('debate.judge',{runId:run.id});})}/>);}};
     for(const m of messages){
       const day=m.time?new Date(m.time).toDateString():lastDay;
@@ -741,7 +751,7 @@ function App(){
       // In a prompt or build, each answer shows how long it took from the moment both agents got the prompt.
       const took=(run?.config.mode==='benchmark'||run?.config.mode==='build')&&m.sender!=='user'&&m.time&&run.createdAt?Date.parse(m.time)-Date.parse(run.createdAt):null;
       // A build run's prompt says where each agent works.
-      const b=run?.config.build,copyNote=m.sender==='user'&&b&&shown?.messages.find(x=>x.runId===run.id)?.id===m.id?(b.source?`Each agent ${b.kind==='review'?'reviews':'works on'} its own copy of ${b.source}`:'Each agent builds in its own folder'):'';
+      const b=run?.config.build,copyNote=m.sender==='user'&&b&&shown?.messages.find(x=>x.runId===run.id)?.id===m.id?(b.source?`Each agent ${b.kind==='review'?'hunts in':'works on'} its own copy of ${b.source}`:'Each agent builds in its own folder'):'';
       // A build report ends with the agent's app link; the room shows it as a button rather than the raw line.
       const report=m.sender!=='user'&&b?.kind==='build'?m.sender:null,link=report?apps[`${m.runId}:${report}`]:undefined;
       const text=report?m.text.replace(APP_LINE,'').trim():m.text;
@@ -770,15 +780,14 @@ function App(){
   const answered=activeRun?shown?.messages.filter(m=>m.runId===activeRun.id&&m.sender!=='user').length??0:0;
   // A debate's current round (G1): the round the agent who has spoken least is on.
   const round=(runId:string,rounds:number)=>Math.min(rounds,Math.min(...seats.map(s=>shown?.messages.filter(m=>m.runId===runId&&m.sender===s).length??0))+1);
-  const subtitle=!thread?'':thread.empty?(ready?`Fresh session · both agents are ready${benchmark?' for a prompt':building?(buildKind==='review'?' to review a project':' to build'):''}`:'Waiting for both agents')
-    :live&&activeRun?(activeRun.config.mode==='build'?[status==='running'?(activeRun.config.build?.kind==='review'?'Reviewing':'Building'):statusNames[status??'']??status,`${duration(activeRun.elapsedMs)} of ${duration(activeRun.config.durationMs)}`,`${answered} of 2 reports`]
+  const subtitle=!thread?'':thread.empty?(ready?`Fresh session · both agents are ready${benchmark?' for a prompt':building?(buildKind==='review'?' for a bug hunt':' to build'):''}`:'Waiting for both agents')
+    :live&&activeRun?(activeRun.config.mode==='build'?[status==='running'?(activeRun.config.build?.kind==='review'?'Hunting':'Building'):statusNames[status??'']??status,`${duration(activeRun.elapsedMs)} of ${duration(activeRun.config.durationMs)}`,`${answered} of 2 reports`]
       :activeRun.config.mode==='benchmark'?[status==='running'?'Answering':statusNames[status??'']??status,duration(activeRun.elapsedMs),`${answered} of 2 answers`]
       :[statusNames[status??'']??status,`${duration(activeRun.elapsedMs)}${activeRun.config.completion==='duration'?` of ${duration(activeRun.config.durationMs)}`:''}`,activeRun.config.completion==='rounds'&&activeRun.config.rounds?`Round ${round(activeRun.id,activeRun.config.rounds)} of ${activeRun.config.rounds}`:`${activeRun.requests} of ${activeRun.config.maxRequests} requests`]).join(' · ')
-    :buildDone?'Build finished · one prompt per Build session'
     :isRoomThread?`${plural(thread.prompts,'prompt')} · ready for the next one`
     :`${plural(thread.prompts,'prompt')} · ${shortTime(thread.updatedAt)} · read-only`;
   const placeholder=!ready?'Activate both agents to start':directPending?'Waiting for a private reply…':benchmarkLive?'Both agents are answering…':live?(paused?'Message both agents. Each replies once, then they pause again':'Message both agents')
-    :building?(buildKind==='review'?(project.trim()?'What should both agents look for? For example: find bugs and risky code':'Enter the project folder first'):'What should both agents build? For example: a Snake game playable with the arrow keys')
+    :building?(buildKind==='review'?(project.trim()?'What should both agents hunt for? For example: bugs in the command parser':'Enter the repository to hunt in first'):'What should both agents build? For example: a Snake game playable with the arrow keys')
     :benchmark?'Prompt for both agents. They get it at the same moment':thread?.empty?'Give both agents a topic':'Send the next prompt. Both agents remember this thread';
   // Each mode lists its own threads; a fresh, unused session shows in both.
   // One history for every mode (E9), each thread labeled with its mode. Another mode's fresh session isn't a thread yet.
@@ -893,9 +902,9 @@ function App(){
             :!ready&&roomView||!thread?<><h2>Activate both agents</h2><p>{canActivateBoth?'Both agents keep the settings they had. Activate them together, or change either one with Activate above its screen. Each activation sends one short request to check access.':<><strong>Quick activate</strong> uses each agent’s last settings, or the strongest model at high effort with Ask permissions and internet off. Or use <strong>Activate</strong> above each agent’s screen to choose its CLI, model, effort and permissions. Each activation sends one short request to check access.</>}</p>
               {(canActivateBoth||canQuickBoth)&&<div className="empty-actions">{canQuickBoth&&<button className="button primary" disabled={!!busy} title={seats.map((s,i)=>`Agent ${i+1}: ${quickText(s)}`).join('\n')} onClick={()=>void quickActivate(seats.filter(s=>!['ready','verifying'].includes(pair!.slots[s].state)))}><Icon.bolt/> Quick activate both</button>}{canActivateBoth&&<button className="button" disabled={!!busy} onClick={()=>void activateBoth()}>Activate both</button>}</div>}
               {canQuickBoth&&<p className="quick-note">{seats.map((s,i)=><span key={s}>Agent {i+1}: {quickText(s)}</span>)}</p>}</>
-            :building&&buildKind==='review'?<><h2>Review a project with {agentName('cli1')} and {agentName('cli2')}</h2><p>{isRoomThread?'Each agent gets its own copy of the folder below and may read, edit and run commands there; your original is never touched. Both start at the same moment and report what they find. Watch them work above.':'No reports in this thread.'}</p>
-              {isRoomThread&&<button className="suggestion" onClick={()=>{setDraft('Find bugs and risky code. Run the tests if there are any, and rank what you find by severity.');composerRef.current?.focus();}}>Find bugs, run the tests, rank by severity</button>}</>
-            :building?<><h2>Build with {agentName('cli1')} and {agentName('cli2')}</h2><p>{isRoomThread?'Both build the same thing at the same moment, each in its own folder, then post a link to their app here. Open the two side by side with Results. Use a 1:1 line to prepare files first. Ask mode permits scoped file tools and refuses command execution. One prompt per session.':'No builds in this thread.'}</p>
+            :building&&buildKind==='review'?<><h2>Bug hunt with {agentName('cli1')} and {agentName('cli2')}</h2><p>{isRoomThread?'Each agent gets its own copy of the repository below (its files, without the git history) and hunts in it; your original is never touched. Both start at the same moment and report each bug they find. Each hunt is its own thread, with the same agents.':'No reports in this thread.'}</p>
+              {isRoomThread&&<button className="suggestion" onClick={()=>{setDraft('Find the bugs in this repository: read the code, run the tests if there are any, and rank what you find by severity.');composerRef.current?.focus();}}>Find bugs, run the tests, rank by severity</button>}</>
+            :building?<><h2>Build with {agentName('cli1')} and {agentName('cli2')}</h2><p>{isRoomThread?'Both build the same thing at the same moment, each in its own folder, then post a link to their app here. Open the two side by side with Results. Use a 1:1 line to prepare files first. Ask mode permits scoped file tools and refuses command execution. Each build is its own thread, with the same agents.':'No builds in this thread.'}</p>
               {isRoomThread&&<button className="suggestion" onClick={()=>{setDraft('Build a polished Snake game that runs in the browser: arrow keys to steer, a score, increasing speed, and a restart button.');composerRef.current?.focus();}}>A Snake game for the browser</button>}</>
             :benchmark?<><h2>Prompt {agentName('cli1')} and {agentName('cli2')}</h2><p>{isRoomThread?'Both get your prompt at the same moment. Watch them work above, compare their final answers here, then open Stats for speed and timing. Attach files or images with the paperclip.':'No answers in this thread.'}</p>
               {isRoomThread&&<button className="suggestion" onClick={()=>{setDraft('Write a function that merges overlapping intervals, explain its complexity, and include three test cases.');composerRef.current?.focus();}}>Merge overlapping intervals, with tests</button>}</>
@@ -923,19 +932,19 @@ function App(){
           <div className="segmented" role="group" aria-label="Replay speed">{[1,4,16].map(speed=><button key={speed} aria-pressed={activeReplay.speed===speed} onClick={()=>setReplay(r=>r&&{...advance(r),speed})}>{speed}×</button>)}</div>
           <button className="button" onClick={()=>setReplay(null)}>Done</button>
         </div>
-        :buildDone&&!mismatch?<div className="readonly-bar"><span>This build is done. Each Build session takes one prompt; 1:1 lines still work.</span><button className="button primary" disabled={!!busy||!canClear} onClick={clearSession}>New build session</button></div>
         :isRoomThread||!thread?<form className={`composer${canSend?'':' disabled'}`} onSubmit={e=>{e.preventDefault();void send();}}>
           {files.length>0&&<div className="composer-files" aria-label="Attached files">{files.map(f=><span key={f.key} className={`file-chip ${f.status}`} title={f.error??f.name}>
             {f.preview?<img src={f.preview} alt=""/>:<Icon.file/>}<span className="file-name">{f.name}</span><small>{f.status==='uploading'?'Uploading…':f.error??bytes(f.size)}</small>
             <button type="button" aria-label={`Remove ${f.name}`} onClick={()=>setFiles(list=>list.filter(p=>p.key!==f.key))}><Icon.close/></button></span>)}</div>}
           {building&&isRoomThread&&<div className="project-row">
-            <div className="segmented" role="radiogroup" aria-label="Build or review">{([['build','Build'],['review','Review']] as const).map(([value,label])=><button key={value} type="button" role="radio" aria-checked={buildKind===value} aria-pressed={buildKind===value} disabled={mismatch||benchmarkLive} onClick={()=>setBuildKind(value)}>{label}</button>)}</div>
-            <label><Icon.folder/><input aria-label="Project folder" placeholder={buildKind==='review'?'Project folder to review, for example D:\\Projects\\my-app':'Optional: a project folder to start from (empty starts from scratch)'} value={project} maxLength={1000} spellCheck={false} disabled={mismatch||benchmarkLive} onChange={e=>setProject(e.target.value)}/></label>
+            <div className="segmented" role="radiogroup" aria-label="App build or bug hunt">{([['build','App build'],['review','Bug hunt']] as const).map(([value,label])=><button key={value} type="button" role="radio" aria-checked={buildKind===value} aria-pressed={buildKind===value} disabled={mismatch||benchmarkLive} onClick={()=>setBuildKind(value)}>{label}</button>)}</div>
+            <label><Icon.folder/><input aria-label="Project folder" placeholder={buildKind==='review'?'Repository to hunt in: a folder, or https://github.com/owner/repo':'Optional: a folder or git repository to start from (empty starts from scratch)'} value={project} maxLength={1000} spellCheck={false} disabled={mismatch||benchmarkLive} onChange={e=>setProject(e.target.value)}/></label>
           </div>}
           <div className="composer-row">
             <button ref={optionsButton} type="button" className={`icon-btn${optionsOpen?' pressed':''}`} aria-label="Options for the next prompt" title="Options for the next prompt" aria-expanded={optionsOpen} disabled={mismatch} onClick={()=>{setOptionsOpen(o=>!o);void loadPresets();}}><Icon.sliders/>{customized||opening!=='cli1'&&!benchmark?<span className="badge"/>:null}</button>
             <button type="button" className="icon-btn" aria-label="Attach files or images" title={seats.some(s=>pair?.images?.[s]===false)?`Attach text files (${seats.filter(s=>pair?.images?.[s]===false).map(agentName).join(' and ')} can’t read images)`:'Attach images or text files (or paste or drop them here)'} disabled={!canSend||files.length>=8} onClick={()=>fileInput.current?.click()}><Icon.attach/></button>
             <button type="button" className="icon-btn" aria-label="Save draft to prompt library" title="Save this prompt and its files" disabled={!draft.trim()||!!busy||uploading||files.some(f=>f.status==='error')} onClick={()=>setLibrary('draft')}><Icon.folder/></button>
+            {building&&buildKind==='review'&&isRoomThread&&hunt&&hunt.text.trim()===draft.trim()&&<span className="key-chip" title="AvA plants these bugs in both copies before the hunt starts, then checks each agent's BUG lines against them. The agents never see them.">Planted bugs · {hunt.setup.bugs.filter(b=>!b.decoy).length}{hunt.setup.bugs.some(b=>b.decoy)?` + ${hunt.setup.bugs.filter(b=>b.decoy).length} decoy${hunt.setup.bugs.filter(b=>b.decoy).length===1?'':'s'}`:''}</span>}
             {benchmark&&isRoomThread&&answerKey&&answerKey.text.trim()===draft.trim()&&<span className="key-chip" title="AvA checks each agent’s final ANSWER line against this key when both have answered. The agents never see it.">Answer key · {answerKey.check.kind==='race'?'Race':'Challenge'}</span>}
             {/* The debate's length at a glance (rounds, or the time or agents' choice that ends it instead), changed here or in Options. */}
             {!benchmark&&!building&&isRoomThread&&!live&&<div className="rounds-chip" ref={roundsRef}>

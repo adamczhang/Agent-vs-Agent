@@ -6,7 +6,8 @@ import { execFile, spawnSync } from 'node:child_process';
 import { rm } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
-import { AvAError } from './types.js';
+import { AvAError, type PlantedBug } from './types.js';
+import { count, plantBugs } from './bug-hunt.js';
 
 export const COPY_LIMITS = { files: 20_000, bytes: 500 * 1024 * 1024 };
 // Folders that are rebuilt rather than reviewed, skipped when the project isn't a git repository.
@@ -64,8 +65,8 @@ export function checkProject(path: string, dataRoot: string) {
 }
 // AvA's own git calls ignore anything that would run a program (a file-system monitor, hooks) and anything from the
 // user's global setup that would stop or prompt (commit signing), and give up after two minutes.
-const GIT_FLAGS = ['-c', 'core.quotepath=off', '-c', 'core.fsmonitor=false', '-c', `core.hooksPath=${process.platform === 'win32' ? 'NUL' : '/dev/null'}`, '-c', 'commit.gpgsign=false'];
-const GIT_OPTIONS = { encoding: 'buffer' as const, windowsHide: true, timeout: 120_000, maxBuffer: 64 * 1024 * 1024 };
+export const GIT_FLAGS = ['-c', 'core.quotepath=off', '-c', 'core.fsmonitor=false', '-c', `core.hooksPath=${process.platform === 'win32' ? 'NUL' : '/dev/null'}`, '-c', 'commit.gpgsign=false'];
+export const GIT_OPTIONS = { encoding: 'buffer' as const, windowsHide: true, timeout: 120_000, maxBuffer: 64 * 1024 * 1024 };
 const git = (cwd: string, args: string[], env?: NodeJS.ProcessEnv) => spawnSync('git', [...GIT_FLAGS, ...args], { cwd, ...GIT_OPTIONS, ...(env ? { env } : {}) });
 // The same, without blocking the service while git hashes a large copy (the Changes view, Q6).
 const gitAsync = (cwd: string, args: string[], env?: NodeJS.ProcessEnv) => new Promise<{ status: number; stdout: Buffer }>(done => {
@@ -92,7 +93,7 @@ function copyHead(dotGit: string) {
   return OBJECT_ID.test(value) ? value : undefined;
 }
 // Git's own variables (GIT_DIR and the like) from the service's environment never reach these calls.
-const gitEnv = (extra: Record<string, string>) => ({ ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !/^GIT_/i.test(name))), ...extra });
+export const gitEnv = (extra: Record<string, string>) => ({ ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !/^GIT_/i.test(name))), ...extra });
 
 // The files to copy: in a git repository, tracked and untracked-but-not-ignored files (so uncommitted work is
 // included and build output isn't); otherwise everything except the usual generated folders.
@@ -119,14 +120,79 @@ function projectFiles(source: string) {
 // The copy is made in a temporary folder beside the target and renamed into place, so a copy that fails part-way leaves
 // nothing behind (and a retry starts clean). Entries that aren't plain files (a nested repository or a submodule the
 // git listing names as a folder, a link) are skipped.
-export function copyProject(source: string, target: string, history?: string) {
+// A bug hunt's copy (H2): one commit of the repository instead of its folder as it is, files and folders left out, and
+// bugs planted before the baseline.
+// A hunt may also take only some folders (a slice, H7), and its repository may be AvA's cache of one on the web (bare).
+export interface CopyOptions { commit?: string; exclude?: string[]; include?: string[]; plant?: PlantedBug[]; bare?: boolean }
+// Whether a file is one of these paths or inside one of them.
+export const within = (file: string, paths: string[]) => {
+  const path = file.replace(/\\/g, '/').toLowerCase();
+  return paths.some(e => { const part = e.replace(/\\/g, '/').replace(/^\.?\/+|\/+$/g, '').toLowerCase(); return !!part && (path === part || path.startsWith(`${part}/`)); });
+};
+// The files a copy takes: none of those left out and, with a slice, only those in it.
+export const taken = (file: string, exclude: string[] = [], include: string[] = []) => !within(file, exclude) && (!include.length || within(file, include));
+// AvA's cache of a repository on the web holds only the files its copies take, and git never fetches another one
+// behind AvA's back. Its copies are the same on every computer: line endings as stored, links as plain files, and
+// large-file pointers left as they are.
+export const CACHE_ENV = { GIT_NO_LAZY_FETCH: '1' };
+const CACHE_FLAGS = ['-c', 'core.autocrlf=false', '-c', 'core.symlinks=false', '-c', 'filter.lfs.smudge=', '-c', 'filter.lfs.process=', '-c', 'filter.lfs.required=false'];
+// One commit's files, written into folder through a temporary index: nothing in the repository is written, and the
+// copy holds no history. The commit is a hash, so it can't be read as an option. A bare repository (AvA's cache) is
+// read with folder as its work tree.
+function commitFiles(source: string, commit: string, folder: string, exclude: string[], include: string[] = [], bare = false) {
+  if (!/^[0-9a-f]{7,64}$/i.test(commit)) throw new AvAError('HUNT_COMMIT', 'A commit is its hash (7 to 64 hexadecimal characters).');
+  const index = join(tmpdir(), `ava-commit-index-${randomUUID()}`), env = gitEnv({ GIT_INDEX_FILE: index, ...(bare ? CACHE_ENV : {}) });
+  const at = bare ? [`--git-dir=${source}`, `--work-tree=${folder}`] : [], cwd = bare ? folder : source;
+  try {
+    if (git(cwd, [...at, 'read-tree', commit], env).status !== 0) throw new AvAError('HUNT_COMMIT', `${source} has no commit ${commit}. Choose the repository it belongs to, or another commit.`);
+    const files = git(cwd, [...at, 'ls-files', '-z'], env).stdout.toString('utf8').split('\0').filter(Boolean).filter(f => taken(f, exclude, include));
+    if (files.length > COPY_LIMITS.files) throw new AvAError('PROJECT_TOO_LARGE', `More than ${COPY_LIMITS.files} files. Choose a smaller folder.`);
+    const checkout = bare ? [...CACHE_FLAGS, ...at, 'checkout-index', '-z', '--stdin', '-f'] : ['checkout-index', '-z', '--stdin', '-f', `--prefix=${folder.replace(/\\/g, '/')}/`];
+    const written = spawnSync('git', [...GIT_FLAGS, ...checkout], { cwd, ...GIT_OPTIONS, env, input: Buffer.from(files.join('\0')) });
+    if (written.status !== 0) throw new AvAError('COPY_FAILED', `Could not copy commit ${commit} of ${source}.`);
+    return files.filter(f => existsSync(join(folder, f)));
+  } finally { rmSync(index, { force: true }); rmSync(`${index}.lock`, { force: true }); }
+}
+// A Bug hunt's repository, checked before the hunt is saved (H3): its current commit, whether the chosen commit is there,
+// what a copy would hold, and whether each planted bug's original code appears exactly once where the copy takes it
+// from. It only reads the repository.
+export type BugCheck = 'ok' | 'missing' | 'ambiguous' | 'no-file' | 'excluded';
+// A bare repository is AvA's cache of one on the web (H7), whose own HEAD means nothing; it holds the copies' files.
+export function checkHunt(source: string, options: { commit?: string; exclude?: string[]; include?: string[]; bugs?: Array<{ file: string; find: string }>; bare?: boolean } = {}) {
+  const exclude = options.exclude ?? [], include = options.include ?? [], env = options.bare ? gitEnv(CACHE_ENV) : undefined;
+  const current = options.bare ? undefined : git(source, ['rev-parse', 'HEAD']), head = current?.status === 0 ? current.stdout.toString('utf8').trim() : null;
+  let commitFound: boolean | null = null, files = 0, bytes = 0;
+  if (options.commit) {
+    if (!/^[0-9a-f]{7,64}$/i.test(options.commit)) throw new AvAError('HUNT_COMMIT', 'A commit is its hash (7 to 64 hexadecimal characters).');
+    commitFound = git(source, ['cat-file', '-e', `${options.commit}^{commit}`], env).status === 0;
+    if (commitFound) for (const row of git(source, ['ls-tree', '-r', '-l', '-z', options.commit], env).stdout.toString('utf8').split('\0')) {
+      const m = row.match(/^\S+ blob \S+\s+(\d+|BAD)\t([\s\S]*)$/); if (m && taken(m[2]!, exclude, include)) { files++; bytes += Number(m[1]) || 0; }
+    }
+  } else for (const file of projectFiles(source).files.filter(f => taken(f, exclude, include))) { files++; try { bytes += lstatSync(join(source, file)).size; } catch { /* gone */ } }
+  const bugs = (options.bugs ?? []).map((bug): BugCheck => {
+    if (!taken(bug.file, exclude, include)) return 'excluded';
+    let text: string | null = null;
+    if (options.commit) { if (commitFound) { const shown = git(source, ['show', `${options.commit}:${bug.file.replace(/\\/g, '/').replace(/^\.\//, '')}`], env); text = shown.status === 0 ? shown.stdout.toString('utf8') : null; } }
+    else { const full = resolve(source, bug.file); if (inside(full, resolve(source))) try { text = readFileSync(full, 'utf8'); } catch { /* not there */ } }
+    if (text === null) return 'no-file';
+    const n = count(text, text.includes('\r\n') ? bug.find.replace(/\r?\n/g, '\r\n') : bug.find);
+    return n === 1 ? 'ok' : n ? 'ambiguous' : 'missing';
+  });
+  return { head, commitFound, files, bytes, bugs };
+}
+export function copyProject(source: string, target: string, history?: string, options: CopyOptions = {}) {
   if (existsSync(target)) throw new AvAError('COPY_EXISTS', `${target} already exists.`);
-  const { git: isRepo, files } = projectFiles(source);
+  const exclude = options.exclude ?? [], include = options.include ?? [];
+  const listed = options.commit ? undefined : projectFiles(source), files = listed ? listed.files.filter(f => taken(f, exclude, include)) : [];
   if (files.length > COPY_LIMITS.files) throw new AvAError('PROJECT_TOO_LARGE', `More than ${COPY_LIMITS.files} files. Choose a smaller folder.`);
-  const partial = `${target}.partial-${randomUUID().slice(0, 8)}`;
-  let bytes = 0, copied = 0;
+  const isRepo = listed ? listed.git : true, partial = `${target}.partial-${randomUUID().slice(0, 8)}`;
+  let bytes = 0, copied = 0, planted: PlantedBug[] | undefined;
   try {
     mkdirSync(partial, { recursive: true });
+    if (options.commit) for (const file of commitFiles(source, options.commit, partial, exclude, include, options.bare)) {
+      bytes += lstatSync(join(partial, file)).size; copied++;
+      if (bytes > COPY_LIMITS.bytes) throw new AvAError('PROJECT_TOO_LARGE', `More than ${Math.round(COPY_LIMITS.bytes / 1048576)} MB. Choose a smaller folder.`);
+    }
     for (const file of files) {
       const from = join(source, file), info = lstatSync(from);
       if (!info.isFile()) continue;
@@ -135,9 +201,11 @@ export function copyProject(source: string, target: string, history?: string) {
       const to = join(partial, file); if (!inside(resolve(to), resolve(partial))) continue;
       mkdirSync(dirname(to), { recursive: true }); copyFileSync(from, to); copied++;
     }
+    // Planted before the baseline, so the seeded code is where both agents start.
+    if (options.plant?.length) planted = plantBugs(partial, options.plant);
     renameSync(partial, target);
   } catch (error) { rmSync(partial, { recursive: true, force: true }); throw error; }
-  return { files: copied, bytes, gitSource: isRepo, baseline: baselineCommit(target, 'Baseline copy', history), name: basename(source) };
+  return { files: copied, bytes, gitSource: isRepo, baseline: baselineCommit(target, 'Baseline copy', history), name: basename(source), ...(planted ? { planted } : {}) };
 }
 // Building from scratch: an empty folder, with an empty baseline commit so its changes show the same way.
 export function startProject(target: string, history?: string) {

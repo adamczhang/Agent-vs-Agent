@@ -1,6 +1,6 @@
 // Shared by the library service and room. Provider settings and permissions never belong to a prompt; a debate
 // prompt's internet choice (G2) is applied through each agent's own internet switch when the debate starts.
-import { DEFAULT_ROUNDS, MAX_ROUNDS, type AnswerCheck, type Stance } from './types.js';
+import { DEFAULT_ROUNDS, MAX_ROUNDS, type AnswerCheck, type HuntSetup, type Stance } from './types.js';
 export { DEFAULT_SPEECH_MINUTES } from './types.js';
 export type PromptMode = 'all' | 'benchmark' | 'conversation' | 'build';
 export interface PromptFile { id: string; name: string; mediaType: string; kind: 'text' | 'image'; size: number }
@@ -45,10 +45,14 @@ export interface SavedPrompt {
   debate?: DebateSetup;
   // Prompt-mode prompts with an answer key (a challenge or a race), kept beside prompt.md in check.json.
   check?: AnswerCheck;
+  // Build prompts (H3), kept beside prompt.md in build.json: the project folder (an app build's starting point, or the
+  // repository a bug hunt hunts in) and a scored hunt's setup.
+  build?: BuildSetup;
 }
+export interface BuildSetup { project?: string; hunt?: HuntSetup }
 export interface PromptSummary extends Omit<SavedPrompt, 'revision'> { excerpt: string }
 export interface PromptFileInput { id: string; name: string; attachmentId?: string }
 export interface PromptSave {
   id: string; revision: string | null; name: string; text: string; mode: PromptMode;
-  buildKind: 'build' | 'review'; files: PromptFileInput[]; debate?: DebateInput; check?: AnswerCheck;
+  buildKind: 'build' | 'review'; files: PromptFileInput[]; debate?: DebateInput; check?: AnswerCheck; build?: BuildSetup;
 }

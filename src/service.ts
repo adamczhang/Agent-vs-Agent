@@ -15,11 +15,13 @@ import { LABELS,Menus } from './menus.js';
 import { QuickMemory,highEffort,strongestModel } from './quick.js';
 import { debateBrief,judgePrompt,maxEffort,parseBallot,total } from './debate.js';
 import { promptResult } from './answer-check.js';
+import { huntResult } from './bug-hunt.js';
 import { START_SLACK_MS,listProcesses,notRunning,sessionStart,survivors,systemCensus,type Census,type ProcessLedger,type SystemProcess } from './census.js';
 import { JobHost,type AgentJobs } from './jobs.js';
 import { combineStats,computeStats } from './stats.js';
-import { checkProject,copyFolder,copyProject,inlineProject,participantBaseline,participantWorkspace,projectChanges } from './workspace.js';
+import { type CopyOptions,checkHunt,checkProject,copyFolder,copyProject,inlineProject,participantBaseline,participantWorkspace,projectChanges } from './workspace.js';
 import { prepareProject } from './prepare-project.js';
+import { checkRemoteHunt,checkRepoUrl,fetchRepo,remoteHead,repoName } from './repo-cache.js';
 import { Resources } from './resources.js';
 import { BenchmarkRunner } from './bench-runner.js';
 import { suiteReport } from './bench-report.js';
@@ -28,7 +30,7 @@ import { protectPrivatePath } from './private-files.js';
 import type { DoctorReport } from './doctor.js';
 import { Previews,appTarget,pageIn } from './preview.js';
 import { createGatewayKey,forgetGatewayKey,gatewayCredit,gatewayKeyStatus,gatewayModels,type GatewayModel,type RunVercel } from './gateway.js';
-import { AvAError,PROVIDERS,SEATS,conversationConfig,type AgentUsage,type JudgeProvider,type Judgment,type RoomMode,type Pair,type Provider,type ProviderConfig,type Run,type RunConfig,type Seat } from './types.js';
+import { AvAError,FULL_COMMIT,PROVIDERS,SEATS,conversationConfig,isRepoUrl,type AgentUsage,type JudgeProvider,type Judgment,type RoomMode,type Pair,type Provider,type ProviderConfig,type Run,type RunConfig,type Seat } from './types.js';
 
 const id=z.string().min(1).max(200),seat=z.enum(SEATS),provider=z.enum(PROVIDERS);
 const resultDate=z.string().datetime({offset:true}).transform(value=>new Date(value).toISOString());
@@ -37,6 +39,11 @@ const choice=z.object({key:z.string().min(1).max(100),value:z.string().max(200)}
 const providerConfig=z.object({provider,model:z.string().min(1).max(300),modelName:z.string().max(200).optional(),effort:choice.optional(),speed:choice.optional(),auth:z.enum(['provider-login','api'])}).strict();
 // Preset data mirrors the room's settings form; .strict() keeps provider/model choices out (they belong to Codex activation).
 const presetData=z.object({instructions:z.object({cli1:z.string().max(8000),cli2:z.string().max(8000)}).strict(),stopWhen:z.object({cli1:z.string().max(4000),cli2:z.string().max(4000)}).strict(),completion:z.enum(['auto','duration','either','both','rounds']),rounds:z.string().max(20).optional(),internet:z.object({cli1:z.boolean(),cli2:z.boolean()}).partial().strict().optional(),stances:z.object({cli1:z.enum(['for','against']),cli2:z.enum(['for','against'])}).strict().optional(),judge:z.enum(['claude','codex','off']).optional(),speech:z.string().max(20).optional(),minutes:z.string().max(20),requests:z.string().max(20),pace:z.string().max(20),opening:z.enum(['both','cli1','cli2']).optional()}).strict();
+// A scored bug hunt (H2): the commit to copy, paths left out (or the only ones taken, H7), and the planted bugs (each an
+// exact piece of code and what it becomes).
+const huntSetup=z.object({commit:z.string().regex(/^[0-9a-f]{7,64}$/i).optional(),exclude:z.array(z.string().min(1).max(300)).max(50).optional(),include:z.array(z.string().min(1).max(300)).max(50).optional(),
+  bugs:z.array(z.object({file:z.string().min(1).max(400),find:z.string().min(1).max(8000),replace:z.string().min(1).max(8000),what:z.string().min(1).max(1000),decoy:z.boolean().optional()}).strict()).min(1).max(30),maxReports:z.number().int().min(1).max(100).optional()}).strict()
+  .refine(h=>h.bugs.some(b=>!b.decoy),'A scored hunt needs at least one planted bug that isn’t a decoy.');
 const runOptions=z.object({instructions:z.object({cli1:z.string().max(8000),cli2:z.string().max(8000)}).optional(),stopWhen:z.object({cli1:z.string().max(4000),cli2:z.string().max(4000)}).optional(),completion:z.enum(['duration','either','both','rounds']).optional(),rounds:z.number().int().min(1).max(100).optional(),stances:z.object({cli1:z.enum(['for','against']),cli2:z.enum(['for','against'])}).strict().optional(),judge:z.object({provider:z.enum(['claude','codex'])}).strict().optional(),speechMs:z.number().min(30_000).max(1_800_000).optional(),check:z.object({kind:z.enum(['challenge','race']),answers:z.array(z.string().trim().min(1).max(500)).min(1).max(10)}).strict().optional(),durationMs:z.number().positive().max(86400000).optional(),maxRequests:z.number().int().min(2).max(10000).optional(),perTurnMs:z.number().positive().max(3600000).optional(),paceMs:z.number().min(0).max(60000).optional(),lead:seat.optional(),mode:z.enum(['conversation','benchmark','build']).optional(),opening:z.enum(['both','cli1','cli2']).optional()}).strict();
 
 // A direct reply is plain text; if the agent answers in the room's JSON envelope out of habit, show just its message.
@@ -152,6 +159,8 @@ export class AvAService {
       if(run.config.stances&&run.config.judge&&run.status==='completed')try{this.startJudging(run.id,run.config.judge.provider);}catch{/* nothing to judge */}
       // A Prompt run with an answer key: each agent's answer checked, and its time.
       if(run.config.check&&run.config.mode==='benchmark')try{this.scorePrompt(run.id);}catch{/* the run stays as it is */}
+      // A scored bug hunt: which planted bugs each agent's BUG lines found (H2).
+      if(run.config.mode==='build'&&run.config.build?.hunt?.bugs.length)try{this.scoreHunt(run.id);}catch{/* the run stays as it is */}
     };
     this.activation.keptProcesses=(pairId,seat)=>this.keptServerProcesses(pairId,seat);
     this.engine.reviewFiles=(run,seat)=>run.config.build?inlineProject(join(participantWorkspace(this.dataRoot,{pairId:run.pairId,seat,generation:run.generations[seat]}),run.config.build.folder)):'';
@@ -300,7 +309,7 @@ export class AvAService {
       case 'room.get':{const p=z.object({roomId:id,mode:z.enum(['conversation','benchmark','build']).optional()}).parse(input);const pairId=this.roomPair(p.roomId,p.mode);return {mode:this.mode,pair:this.pairView(pairId),pairIds:this.roomPairs(p.roomId).map(r=>r.id)};}
       case 'run.start':{
         const p=z.object({pairId:id,text:z.string().min(1).max(16000),requestId:id,options:runOptions.optional(),attachments:z.array(id).max(8).optional(),
-          build:z.object({kind:z.enum(['review','build']),path:z.string().max(1000).optional()}).strict().optional()}).parse(input);
+          build:z.object({kind:z.enum(['review','build']),path:z.string().max(1000).optional(),hunt:huntSetup.optional()}).strict().optional()}).parse(input);
         const startInput=JSON.stringify(p),pending=this.pendingStarts.get(p.requestId);
         if(pending){
           if(pending.input!==startInput)throw new AvAError('IDEMPOTENCY_CONFLICT','This request ID was already used with different input.');
@@ -308,21 +317,25 @@ export class AvAService {
         }
         const config=conversationConfig(p.text,p.options);
         // Build: the copy's folder name comes from the request ID, so a retried start finds the same run. Building may
-        // start from an empty folder; a review needs a project.
+        // start from an empty folder; a review needs a project. A project on the web (H7) is fetched when the run starts;
+        // a scored hunt there names its full commit, so its bugs always land in the same code.
         if(config.mode==='build'){
           const path=p.build?.path?.trim()??'';
           if(!p.build||!path&&p.build.kind==='review')throw new AvAError('INVALID_PROJECT','Choose the project folder for the agents to review.');
-          const source=path?checkProject(path,this.dataRoot):'';config.build={kind:p.build.kind,source,folder:copyFolder(source||'app',p.requestId)};
+          if(p.build.hunt&&p.build.kind!=='review')throw new AvAError('INVALID_CONFIG','Planted bugs belong to a bug hunt.');
+          const web=!!path&&isRepoUrl(path),source=!path?'':web?checkRepoUrl(path):checkProject(path,this.dataRoot);
+          if(web&&p.build.hunt&&!FULL_COMMIT.test(p.build.hunt.commit??''))throw new AvAError('HUNT_COMMIT','A bug hunt in a repository on the web needs the commit’s full hash, so its bugs land in the same code every time.');
+          config.build={kind:p.build.kind,source,folder:copyFolder(web?repoName(source):source||'app',p.requestId),...(p.build.hunt?{hunt:p.build.hunt}:{})};
         }
         const previous=this.store.previousStart(p.pairId,config,p.requestId);
         if(previous)return previous;
         if(this.preparing.has(p.pairId))throw new AvAError('BUILD_PREPARING','The next prompt is being prepared (a Build project, or a debate’s briefs). Wait for it to finish, then try again.');
         this.assertNotRestarting(p.pairId);
-        // A Build session holds one prompt: its agents' folders and apps belong to that build.
         const openThread=this.openThreadId(this.store.pair(p.pairId)),earlier=openThread?this.store.threads().find(t=>t.id===openThread)?.runs??[]:[];
-        if(earlier.length&&(config.mode==='build'||earlier[0]!.config.mode==='build'))throw new AvAError('ONE_BUILD','A Build session takes one prompt. Clear Session to start the next one.');
-        // A new prompt after a run ends continues the same thread: the agents keep their sessions and remember it.
-        // Clear Session (pair.clear) is how the user gives both agents fresh ones.
+        // A build runs alone: its copies are made before it starts, so one isn't made while another build is running.
+        if(config.mode==='build'&&this.store.pair(p.pairId).activeRunId)throw new AvAError('RUN_ACTIVE','A build is running. Let it finish, or stop it, before starting the next one.');
+        // A new prompt after a run ends continues the same thread for a plain conversation: the agents keep their sessions
+        // and remember it. Prompt runs, formal debates and builds each get a thread of their own (below).
         this.assertNoDirect(p.pairId);
         const participants=this.activation.participants(p.pairId),attachments=this.attachable(p.pairId,p.attachments);
         let copied:ReturnType<typeof copyProject>|undefined;const made:string[]=[];
@@ -332,26 +345,36 @@ export class AvAService {
         // Register before yielding to copy/setup work, so retries from another connection share its outcome.
         const task=Promise.resolve().then(async()=>{
           try{
-            if(config.build){
-              // Each agent gets its own copy (or empty folder), inside its own workspace; then Codex may edit and run commands there.
-              const pair=this.store.pair(p.pairId);
-              for(const seat of SEATS){
-                const scope={pairId:p.pairId,seat,generation:pair.slots[seat].generation},target=join(participantWorkspace(this.dataRoot,scope),config.build.folder),history=participantBaseline(this.dataRoot,scope,config.build.folder);
-                copied=await prepareProject(config.build.source,target,history);made.push(target,history);
-              }
-            }
-            // (Codex's sandbox is set again before each request; this spares its first one the switch.)
-            for(const seat of SEATS)await participants[seat].setBuildAccess?.(!!config.build);
             let debaters=participants;
             // (While a prompt is still running, none of this happens: the start is refused below, as before.)
             const mode=config.mode??'conversation',idle=!this.store.pair(p.pairId).activeRunId,formal=!!config.stances&&mode==='conversation';
-            // Each Prompt run and each formal debate is its own thread (owner, 2026-10-03/04): after an earlier prompt in
+            // Each Prompt run, formal debate and build is its own thread (owner, 2026-10-03/04): after an earlier prompt in
             // this thread, both agents get fresh sessions first (clean context, same agents, never shown as closed).
             // A seat whose fresh session didn't take last time (or whose brief failed) still holds the earlier context, even
             // though the thread looks new: it gets its fresh session now (Q3).
             const stale=[...(this.stale.get(p.pairId)??[])];
-            if(idle&&earlier.length&&(mode==='benchmark'||formal)){await this.freshThread(p.pairId);debaters=this.activation.participants(p.pairId);}
+            // A run of another mode than the thread's starts its own thread too, so a thread never mixes modes.
+            const otherMode=!!earlier.length&&(earlier[0]!.config.mode??'conversation')!==mode;
+            if(idle&&earlier.length&&(mode==='benchmark'||mode==='build'||formal||otherMode)){await this.freshThread(p.pairId);debaters=this.activation.participants(p.pairId);}
             else if(idle&&stale.length){await this.freshThread(p.pairId,stale);debaters=this.activation.participants(p.pairId);}
+            if(config.build){
+              // Each agent gets its own copy (or empty folder), inside the workspace of the session that runs it (a fresh one,
+              // after an earlier build: the earlier copy stays with its thread); then Codex may edit and run commands there.
+              const pair=this.store.pair(p.pairId),hunt=config.build.hunt;
+              // A project on the web: its commit (the default branch's, unless the hunt names one) fetched into AvA's cache,
+              // which the copies are made from.
+              let from=config.build.source,commit=hunt?.commit;
+              if(isRepoUrl(from)){commit??=await remoteHead(from);from=(await fetchRepo(this.dataRoot,from,commit,{...(hunt?.include?{include:hunt.include}:{}),...(hunt?.exclude?{exclude:hunt.exclude}:{})})).gitDir;config.build.commit=commit;}
+              const options:CopyOptions={...(commit?{commit}:{}),...(hunt?.exclude?{exclude:hunt.exclude}:{}),...(hunt?.include?{include:hunt.include}:{}),...(hunt?{plant:hunt.bugs}:{}),...(from!==config.build.source?{bare:true}:{})};
+              for(const seat of SEATS){
+                const scope={pairId:p.pairId,seat,generation:pair.slots[seat].generation},target=join(participantWorkspace(this.dataRoot,scope),config.build.folder),history=participantBaseline(this.dataRoot,scope,config.build.folder);
+                copied=await prepareProject(from,target,history,options);made.push(target,history);
+                // Where each planted bug ended up (the same in both copies), for scoring once both have reported.
+                if(hunt&&copied.planted)config.build.hunt={...hunt,bugs:copied.planted};
+              }
+            }
+            // (Codex's sandbox is set again before each request; this spares its first one the switch.)
+            for(const seat of SEATS)await debaters[seat].setBuildAccess?.(!!config.build);
             // G6: each debater is briefed through its 1:1 line, and the debate starts once both are ready. A failed brief
             // leaves both sessions to be renewed, so a retry (perhaps with the sides swapped) starts clean.
             if(idle&&formal)try{await this.briefDebaters(p.pairId,config);}catch(error){this.markStale(p.pairId,SEATS);throw error;}
@@ -367,6 +390,15 @@ export class AvAService {
       }
       // Build results: what each agent changed in its copy, and a preview of it served on its own origin.
       // One reading per copy at a time: the room asks every few seconds, and a large copy takes git a while (Q6).
+      // The Bug hunt builder's check (H3): the folder, its commit, what a copy would hold, and each planted bug. Reads only.
+      case 'project.check':{
+        const p=z.object({path:z.string().min(1).max(1000),commit:z.string().max(64).optional(),exclude:z.array(z.string().min(1).max(300)).max(50).optional(),include:z.array(z.string().min(1).max(300)).max(50).optional(),bugs:z.array(z.object({file:z.string().min(1).max(400),find:z.string().min(1).max(8000)}).strip()).max(30).optional()}).strict().parse(input);
+        const slice={...(p.commit?{commit:p.commit}:{}),...(p.exclude?{exclude:p.exclude}:{}),...(p.include?{include:p.include}:{}),...(p.bugs?{bugs:p.bugs}:{})};
+        // A repository on the web is fetched into AvA's cache (H7), so the hunt's first run starts at once.
+        if(isRepoUrl(p.path))return checkRemoteHunt(this.dataRoot,checkRepoUrl(p.path),slice);
+        const folder=checkProject(p.path,this.dataRoot);
+        return {folder,...checkHunt(folder,slice)};
+      }
       case 'build.changes':{
         const p=z.object({runId:id,seat}).parse(input),{copy,history}=this.buildCopy(p.runId,p.seat),pending=this.changes.get(copy);if(pending)return pending;
         const reading=projectChanges(copy,history).finally(()=>this.changes.delete(copy));this.changes.set(copy,reading);return reading;
@@ -539,7 +571,8 @@ export class AvAService {
       status:(shown?.status??(current?'ready':'cleared')) as string,reason:shown?.reason??null,live:!!live,current,participants:last?.participants??slots,empty:!first,
       // A judged debate's result, for the thread list (C): who won, and each side's total out of 15.
       verdict:(()=>{
-        const last=[...thread.runs].reverse().find(r=>r.judgment||r.result);if(!last)return null;
+        const last=[...thread.runs].reverse().find(r=>r.judgment||r.result||r.hunt);if(!last)return null;
+        if(last.hunt)return {status:'done' as const,kind:'hunt' as const,...(last.hunt.winner?{winner:last.hunt.winner}:{}),planted:last.hunt.bugs.filter(b=>!b.decoy).length,found:Object.fromEntries(SEATS.map(s=>[s,last.hunt!.seats[s].found.length]))};
         if(last.result)return {status:'done' as const,kind:last.result.kind,...(last.result.winner?{winner:last.result.winner}:{}),correct:Object.fromEntries(SEATS.map(s=>[s,last.result!.seats[s].correct]))};
         const j=last.judgment!;return j.status!=='done'?{status:j.status,kind:'debate' as const}:{status:j.status,kind:'debate' as const,winner:j.winner,totals:Object.fromEntries(SEATS.map(s=>[s,total(j.scores![s])]))};
       })()};
@@ -597,7 +630,7 @@ export class AvAService {
     this.titles=this.store.threadTitles();
     const summary=this.summarize(thread,this.store.runActivity(thread.runs.map(r=>r.id)),pair,this.store.directThreads().find(d=>d.threadId===thread.id));
     const runs=thread.runs.map(r=>{const run=this.engine.snapshot(r.id);return {id:run.id,status:run.status,reason:run.reason,createdAt:run.createdAt??null,elapsedMs:run.elapsedMs,requests:run.requests,
-      config:{topic:run.config.topic,completion:run.config.completion,...(run.config.rounds?{rounds:run.config.rounds}:{}),...(run.config.stances?{stances:run.config.stances}:{}),...(run.config.judge?{judge:run.config.judge}:{}),...(run.config.check?{check:run.config.check}:{}),durationMs:run.config.durationMs,maxRequests:run.config.maxRequests,mode:run.config.mode??'conversation',build:run.config.build??null},participants:run.participants??null,judgment:run.judgment??null,result:run.result??null};});
+      config:{topic:run.config.topic,completion:run.config.completion,...(run.config.rounds?{rounds:run.config.rounds}:{}),...(run.config.stances?{stances:run.config.stances}:{}),...(run.config.judge?{judge:run.config.judge}:{}),...(run.config.check?{check:run.config.check}:{}),durationMs:run.config.durationMs,maxRequests:run.config.maxRequests,mode:run.config.mode??'conversation',build:run.config.build?{kind:run.config.build.kind,source:run.config.build.source,folder:run.config.build.folder,...(run.config.build.hunt?{planted:run.config.build.hunt.bugs.filter(b=>!b.decoy).length,decoys:run.config.build.hunt.bugs.filter(b=>b.decoy).length}:{})}:null},participants:run.participants??null,judgment:run.judgment??null,result:run.result??null,hunt:run.hunt??null};});
     const messages=thread.runs.flatMap(r=>{const times=this.store.messageTimes(r.id);return this.store.messages(r.id).map((m,i)=>({...m,time:times.get(m.id)??(i===0?r.createdAt??null:null)}));});
     const pending:Partial<Record<Seat,{partial:string;steps:string[]}>>={};
     for(const seat of SEATS){const entry=this.direct.get(`${thread.pairId}:${seat}`);if(entry&&entry.threadId===thread.id)pending[seat]={partial:entry.partial.slice(-4000),steps:entry.steps.slice(-4)};}
@@ -863,11 +896,20 @@ export class AvAService {
   }
   // A Prompt run's answers against its answer key, with each agent's time from its request to its answer.
   private scorePrompt(runId:string){
-    const run=this.store.run(runId),times=this.store.messageTimes(runId),started=new Map<string,number>();
+    const run=this.store.run(runId),replies=this.timedReplies(runId);
+    this.store.updateRun(runId,r=>{r.result=promptResult(run.config.check!,replies);});
+  }
+  private scoreHunt(runId:string){
+    const run=this.store.run(runId),b=run.config.build!,replies=this.timedReplies(runId);
+    this.store.updateRun(runId,r=>{r.hunt=huntResult(b.hunt!.bugs,b.folder,replies,b.hunt!.maxReports);});
+  }
+  // Each agent's reply and how long it took, from its request's start to its committed reply.
+  private timedReplies(runId:string){
+    const times=this.store.messageTimes(runId),started=new Map<string,number>();
     for(const row of this.store.db.prepare("SELECT data,time FROM events WHERE run_id=? AND type='prompt_started' ORDER BY seq").all(runId)){const seat=(JSON.parse(String(row.data)) as {seat:Seat}).seat;if(!started.has(seat))started.set(seat,Date.parse(String(row.time)));}
     const replies:Partial<Record<Seat,{text:string;ms:number|null}>>={};
     for(const m of this.store.messages(runId))if(m.sender!=='user'&&!replies[m.sender]){const at=Date.parse(times.get(m.id)??''),from=started.get(m.sender);replies[m.sender]={text:m.text,ms:Number.isFinite(at)&&from!==undefined?Math.max(0,at-from):null};}
-    this.store.updateRun(runId,r=>{r.result=promptResult(run.config.check!,replies);});
+    return replies;
   }
   // A new thread with the same agents: each gets a fresh session (ActivationManager.renew) without being closed first,
   // once any 1:1 reply has settled; app servers a Build left running stop, as at Clear Session.

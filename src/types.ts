@@ -39,9 +39,10 @@ export interface RunConfig {
   // moment, each answers once in plain text, and the run ends. build: like a benchmark, but each agent works in its own
   // copy of a project and may read, edit and run commands there (absent on older runs: conversation).
   mode?: 'conversation' | 'benchmark' | 'build';
-  // Build runs: the task kind, the project it started from, and the folder (inside each agent's workspace) that holds
-  // that agent's own copy.
-  build?: { kind: 'review' | 'build'; source: string; folder: string };
+  // Build runs: the task kind (review is shown as Bug hunt), the project it started from, and the folder (inside each
+  // agent's workspace) that holds that agent's own copy. hunt: a scored bug hunt's setup (H2). A project on the web (H7)
+  // is its address, and commit the one its copies were made from.
+  build?: { kind: 'review' | 'build'; source: string; folder: string; hunt?: HuntSetup; commit?: string };
   // Who answers the opening prompt: agent 1 by default, or agent 2 or independent simultaneous openings.
   opening?: 'both' | Seat;
   topic: string;
@@ -79,7 +80,27 @@ export interface Run {
   judgment?: Judgment;
   // A Prompt run's checked answers, when it had an answer key.
   result?: PromptResult;
+  // A scored bug hunt's result (H2).
+  hunt?: HuntResult;
 }
+// A bug planted in every copy of a scored bug hunt (H2): an exact piece of the original code (find), what it becomes
+// (replace), and what's wrong with it. line and endLine: where it ended up, worked out when the copies are made.
+// A decoy (H6) is planted the same way but keeps the code correct while making it look wrong: a BUG line on it counts
+// against the agent that wrote it.
+export interface PlantedBug { file: string; find: string; replace: string; what: string; line?: number; endLine?: number; decoy?: boolean }
+// A scored bug hunt: the commit to copy (else the folder as it is), folders and files left out of the copies (the
+// project's tests that would point at the bugs, say), the only ones taken (a slice, H7), and the planted bugs. The
+// agents never see it.
+// A Build project on the web (H7) is its https:// address (file:// names a local mirror the same way), and a hunt
+// there names its commit by the full hash, the only form a repository can be fetched by.
+// Any address (scheme://) is taken as one, so an unsupported one is refused as an address rather than as a folder.
+export const isRepoUrl = (value: string) => /^[a-z][a-z0-9+.-]+:\/\//i.test(value.trim());
+export const FULL_COMMIT = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
+// maxReports (H6): only each agent's first N BUG lines count, so a hunt that doesn't say how many bugs it has can't be
+// won by guessing everywhere.
+export interface HuntSetup { commit?: string; exclude?: string[]; include?: string[]; bugs: PlantedBug[]; maxReports?: number }
+// Which planted bugs each agent found (by index), which decoys it reported (H6), how many BUG lines it gave, and its time.
+export interface HuntResult { bugs: Array<{ file: string; line: number | null; endLine: number | null; what: string; decoy?: boolean }>; seats: Record<Seat, { found: number[]; decoys?: number[]; reports: number; ms: number | null }>; winner?: Seat; maxReports?: number }
 // Prompt mode's answer key: a challenge (a hard question with one exact answer) or a race (the same, judged on speed),
 // with the accepted answers. The agents never see it.
 export interface AnswerCheck { kind: 'challenge' | 'race'; answers: string[] }

@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { JSDOM } from 'jsdom';
 import { AvAService } from '../src/service.js';
+import { STARTERS } from '../src/prompt-library.js';
 import { TestFactory } from './fakes.js';
 import { tempDir } from './temp.js';
 import type { AttachmentRef } from '../src/types.js';
@@ -83,7 +84,7 @@ test('Markdown import stays unsaved until Save and preserves the file contents',
   const file = new dom.window.File(['# Imported\n\nKeep this text.'], 'my-import.md', { type: 'text/markdown' }); Object.defineProperty(file, 'text', { value: async () => '# Imported\n\nKeep this text.' });
   Object.defineProperty(input, 'files', { configurable: true, value: [file] });
   await act(async () => input.dispatchEvent(new dom.window.Event('change', { bubbles: true }))); await tick();
-  assert.equal(service.prompts.list().prompts.length, 22);
+  assert.equal(service.prompts.list().prompts.length, STARTERS.length);
   await click('Save prompt'); const saved = service.prompts.list().prompts.find(p => p.name === 'my-import')!;
   assert.equal(service.prompts.get(saved.id).text, '# Imported\n\nKeep this text.');
 });

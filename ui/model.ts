@@ -1,5 +1,5 @@
 import type { QuickPlan } from '../src/quick.js';
-import type { AgentUsage, AnswerCheck, JudgeProvider, Judgment, Pair, PromptResult as PromptResultData, ProviderConfig, RoomMessage, Seat, Stance } from '../src/types.js';
+import type { AgentUsage, AnswerCheck, HuntResult as HuntResultData, JudgeProvider, Judgment, Pair, PromptResult as PromptResultData, ProviderConfig, RoomMessage, Seat, Stance } from '../src/types.js';
 
 // Shapes returned by the service's thread calls (src/service.ts threads.list / thread.get).
 export type Mode = 'conversation' | 'benchmark' | 'build';
@@ -14,8 +14,8 @@ export interface DirectMessage { id: string; seat: Seat; sender: 'user' | 'agent
 export const directStates: Record<string, string> = { pending: 'Waiting for a reply', cancelled: 'Cancelled', failed: 'Not answered', interrupted: 'Interrupted by a restart; not resent' };
 // A judged debate's result in the thread list.
 // kind: a judged debate, or a Prompt run checked against its answer key (challenge or race).
-export interface Verdict { status: 'judging' | 'done' | 'failed'; kind?: 'debate' | 'challenge' | 'race'; winner?: Seat; totals?: Record<Seat, number>; correct?: Record<Seat, boolean> }
-export interface ThreadRun { id: string; status: string; reason: string | null; createdAt: string | null; elapsedMs: number; requests: number; config: { topic: string; completion: string; rounds?: number; stances?: Record<Seat, Stance>; judge?: { provider: JudgeProvider }; speechMs?: number; check?: AnswerCheck; durationMs: number; maxRequests: number; mode?: Mode; build?: { kind: 'review' | 'build'; source: string; folder: string } | null }; participants: Record<Seat, ProviderConfig> | null; judgment?: Judgment | null; result?: PromptResultData | null }
+export interface Verdict { status: 'judging' | 'done' | 'failed'; kind?: 'debate' | 'challenge' | 'race' | 'hunt'; winner?: Seat; totals?: Record<Seat, number>; correct?: Record<Seat, boolean>; planted?: number; found?: Record<Seat, number> }
+export interface ThreadRun { id: string; status: string; reason: string | null; createdAt: string | null; elapsedMs: number; requests: number; config: { topic: string; completion: string; rounds?: number; stances?: Record<Seat, Stance>; judge?: { provider: JudgeProvider }; speechMs?: number; check?: AnswerCheck; durationMs: number; maxRequests: number; mode?: Mode; build?: { kind: 'review' | 'build'; source: string; folder: string; planted?: number; decoys?: number } | null }; participants: Record<Seat, ProviderConfig> | null; judgment?: Judgment | null; result?: PromptResultData | null; hunt?: HuntResultData | null }
 export type ThreadMessage = RoomMessage & { time: string | null };
 export interface ThreadView { thread: ThreadSummary | null; runs: ThreadRun[]; messages: ThreadMessage[]; direct: { messages: DirectMessage[]; pending: Partial<Record<Seat, { partial: string; steps?: string[] }>> } }
 export interface SearchHit { runId: string; threadId: string; messageId: string; sender: string; snippet: string; runTopic: string; runCreatedAt: string | null; participants: Record<Seat, ProviderConfig> | null; judgment?: Judgment | null; result?: PromptResultData | null }

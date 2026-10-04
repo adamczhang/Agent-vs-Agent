@@ -16,6 +16,10 @@ The database, transcripts, attachments and generated projects live in the config
 
 AvA reads a Build copy's changes through its own record of the copy's starting point, kept outside the agent's folder, and never opens the copy's repository. Nothing an agent writes in its copy's `.git` (settings, filters, hooks) makes AvA's git run a program.
 
+In a bug hunt under Ask, Codex (and the Gateway, which runs on it) may run read-only commands such as `rg` or `cat` inside its copy, because it reads files only through commands. It is told to run nothing else. Its own sandbox, workspace-write as in every Build run, keeps anything it does write inside its workspace. Other agents read with file tools that the gate allows inside the copy.
+
+A hunt from a repository on the web is fetched by AvA, never by the agents. AvA speaks only https (or file, for a local mirror) for this, never uses a credential helper or prompts for a password, so it can fetch only public repositories, and checks every object it receives. It fetches one commit without history into `repos/` in the data folder, and makes copies from there with links written as plain files and large-file pointers left as they are.
+
 This closes the automatic approval defect that allowed `Get-Process node | Stop-Process -Force` during a live Build. Regression tests pass that command and variants as inert strings to the gate; they never execute them. Command-dependent builds need real execution isolation before Ask can safely approve them. The gate controls only permission requests that providers send to AvA; provider-side permissions remain a separate boundary.
 
 **Bypass** approves every tool request in every mode and gives Codex full access. It trusts the provider, prompt, project and any instructions the agent encounters with the user's account permissions. Claude Code's own allow rules or default permission mode can approve tools before AvA's gate is asked; AvA displays a notice about this limitation. Do not use untrusted projects or benchmark verifiers as if the Build copy were a sandbox.

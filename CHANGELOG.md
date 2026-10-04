@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.4.5](https://github.com/adamczhang/Agent-vs-Agent/releases/tag/v0.4.5) - 2026-10-04
+
+### Changed
+
+- **Each build is its own thread.** The next build no longer needs Clear Session: both agents get fresh sessions (the same agents, clean context) and folders of their own, and the earlier build keeps its folders and Results. Build's two kinds are now **App build** and **Bug hunt** (formerly Review).
+
+### Added
+
+- **Scored bug hunts.** A bug hunt can plant bugs in each agent's copy before it starts, pinned to one commit of the repository and leaving out folders such as its tests. The agents report each bug on a `BUG:` line, and a result card shows which planted bugs each found, its time and the winner. The thread list shows the result too. Every bug hunt now asks for `BUG:` lines.
+- **The Build builder.** One form for app builds (what to build, requirements, how it's judged, a starting project) and one for bug hunts (the repository with a **Check**, what to hunt for, and the planted bugs for a scored hunt, each checked against the repository before you save). A saved Build prompt keeps its folder and hunt, and loading it fills them in.
+- **Bug hunts in repositories on the web.** A Build project, and a hunt's repository, can be a public git repository's https address instead of a folder.
+  - **Fetching:** AvA fetches the one commit it needs into a cache in its data folder: no history, and only the files the copies take. Later runs download nothing.
+  - **A slice of a large repository:** a hunt can take only some folders.
+  - **Pinned:** a scored hunt there names its commit's full hash, which **Check** in the Build builder gives you.
+  - **The agents never clone it.** A clone's history would show the planted bugs in a diff, so AvA fetches the code itself.
+- **Expert bug hunts.** A scored hunt can plant decoys (correct code made to look wrong, which counts against an agent that reports it) and count only each agent's first BUG lines. Two new built-in hunts in CLI-MODE use them: one in its state and queue code, one anywhere in the plugin. Neither says how many bugs it has, and none of their bugs contradicts a nearby comment.
+- **Codex can hunt for bugs under Ask.** It reads code only through commands, which Ask forbade, so it couldn't open a repository too large to include in the prompt. A bug hunt now lets it read and search with read-only commands.
+- **Planted bugs leave no trace.** Planted files keep the time they were copied, so a file listing sorted by time doesn't point at them.
+- **Eight built-in Build prompts.** Five app builds (a Pomodoro timer, a Kanban board, a trip expense splitter, Sudoku with a solver, a pixel art editor), and three scored bug hunts of increasing difficulty, with 1, 3 and 5 planted bugs. The hunts fetch CLI-MODE from GitHub at a pinned commit, so they work on any computer.
+- **Three hard app builds:** chess with every rule, a spreadsheet with formulas, and a regex engine written from scratch. Each must get one behavior exactly right and exposes it as a function you can check in the browser's console, with cases beyond those the prompt gives.
+- **Five hard challenges** in Prompt mode: the same kinds of problem as the first ten (a simulation, a count, a trace, exact arithmetic), at a scale that takes the strongest models minutes instead of seconds. Every answer was computed by program.
+- **Five hard debates:** technical motions (ranked-choice voting, the replication crisis, nominal GDP targeting, the strategic bombing of Germany, living standards in the Industrial Revolution), where winning takes exact evidence. Two are closed book: both sides argue with the internet off, from what they know.
+
 ## [0.4.4](https://github.com/adamczhang/Agent-vs-Agent/releases/tag/v0.4.4) - 2026-10-04
 
 ### Added
