@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import { COLUMNS } from '../src/games/go.js';
+import { CROSSCURRENT_COLUMNS, CROSSCURRENT_STAR, crosscurrentConnection, crosscurrentMoveText, crosscurrentPoint, crosscurrentRestingLine, crosscurrentShift, type CrosscurrentMove, type CrosscurrentState } from '../src/games/crosscurrent.js';
 
 // Gamer mode's boards (J3), drawn as SVG to match the room: quiet slate squares for chess and checkers, warm wood for Go,
 // the last move picked out in the room's blue. The chess pieces are flat silhouettes drawn for AvA on a 45-unit grid, so
@@ -53,5 +54,30 @@ export function GoBoard({ size, board, last }: { size: number; board: number[]; 
       <text x={step * .45} y={at(k) + font * .35} textAnchor="middle">{size - k}</text><text x={400 - step * .45} y={at(k) + font * .35} textAnchor="middle">{size - k}</text></g>)}
     {board.map((v, i) => v ? <g key={`st${i}`} className={`stone ${v === 1 ? 'black' : 'white'}`}><circle cx={at(i % size) + step * .03} cy={at(Math.floor(i / size)) + step * .05} r={step * .47} className="shadow" /><circle cx={at(i % size)} cy={at(Math.floor(i / size))} r={step * .47} />
       {last === i && <circle cx={at(i % size)} cy={at(Math.floor(i / size))} r={step * .2} className="last-ring" />}</g> : null)}
+  </svg>;
+}
+
+// Crosscurrent uses square cells, circles and diamonds. The moved line is shaded, the new stone is ringed, and
+// winning paths are drawn through the stones. Its coordinates deliberately count rows from the top.
+export function CrosscurrentBoard({ state, move }: { state: CrosscurrentState; move?: CrosscurrentMove | undefined }) {
+  const { size, board } = state, step = 336 / size, pad = 32;
+  const center = (i: number) => [pad + (i % size + .5) * step, pad + (Math.floor(i / size) + .5) * step] as const;
+  const motion = move ? crosscurrentShift(size, move) : undefined;
+  const resting = crosscurrentRestingLine(state);
+  const description = board.map((v, i) => v ? `${crosscurrentPoint(size, i)} ${v === 1 ? 'Circle' : v === 2 ? 'Diamond' : 'neutral star'}` : '').filter(Boolean).join(', ');
+  return <svg className="board crosscurrent-board" viewBox="0 0 400 400" role="img" aria-label={`Crosscurrent board, ${size} by ${size}`}>
+    <title>{`Crosscurrent: ${size} by ${size}`}</title><desc>{description}. Rows start at 1 at the top. Shaded squares show the shifted line; a ring marks the new stone.{resting && ` Resting line: ${resting.name}. The dashed outline marks the line unavailable for shifting this turn.`}</desc>
+    <rect width="400" height="400" className="surface" />
+    {board.map((_, i) => <rect key={`cell${i}`} x={pad + i % size * step} y={pad + Math.floor(i / size) * step} width={step} height={step} className={`cell${motion?.line.includes(i) ? ' shifted' : ''}${resting?.cells.includes(i) ? ' resting' : ''}`} />)}
+    {resting && <rect className="cooldown-outline" x={pad + (resting.horizontal ? 0 : resting.index * step) + 2} y={pad + (resting.horizontal ? resting.index * step : 0) + 2} width={(resting.horizontal ? size * step : step) - 4} height={(resting.horizontal ? step : size * step) - 4} rx="3" />}
+    {Array.from({ length: size }, (_, k) => <g key={`coord${k}`} className="crosscurrent-coord"><text x={pad + (k + .5) * step} y="21" textAnchor="middle">{CROSSCURRENT_COLUMNS[k]}</text><text x="16" y={pad + (k + .5) * step + 4} textAnchor="middle">{k + 1}</text></g>)}
+    {([1, 2] as const).map(color => { const path = crosscurrentConnection(state, color); return path && <polyline key={`path${color}`} points={path.map(i => center(i).join(',')).join(' ')} className={`connection ${color === 1 ? 'circle' : 'diamond'}`} />; })}
+    {board.map((v, i) => { if (!v) return null; const [x, y] = center(i), radius = step * .27;
+      if (v === CROSSCURRENT_STAR) return <polygon key={`star${i}`} className="crosscurrent-star" points={Array.from({ length: 10 }, (_, k) => { const angle = -Math.PI / 2 + k * Math.PI / 5, r = radius * (k % 2 ? .45 : 1.15); return `${x + Math.cos(angle) * r},${y + Math.sin(angle) * r}`; }).join(' ')} />;
+      return <g key={`stone${i}`} className={`crosscurrent-stone ${v === 1 ? 'circle' : 'diamond'}`}>
+      {v === 1 ? <circle cx={x} cy={y} r={radius} /> : <polygon points={`${x},${y - radius} ${x + radius},${y} ${x},${y + radius} ${x - radius},${y}`} />}
+      {motion?.destination === i && <circle cx={x} cy={y} r={radius + 5} className="new-stone" />}
+    </g>; })}
+    {move && <text x="200" y="390" textAnchor="middle" className="crosscurrent-coord">{crosscurrentMoveText(size, move)} {({ LEFT: '←', RIGHT: '→', UP: '↑', DOWN: '↓' })[move.direction]}</text>}
   </svg>;
 }

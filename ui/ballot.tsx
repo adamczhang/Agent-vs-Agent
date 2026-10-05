@@ -6,7 +6,7 @@ import { names, seats, type ThreadRun } from './model.js';
 // factual claims it found wrong or unsupported. While it works, who is judging; if it failed, why, and Judge again.
 const SIDE = { for: 'Proposition', against: 'Opposition' } as const;
 const judgeName = (j: Judgment) => [names[j.judge.provider] ?? j.judge.provider, j.judge.modelName ?? j.judge.model, j.judge.effort ? `${j.judge.effort.value} effort` : ''].filter(Boolean).join(' · ');
-export function Ballot({ run, canJudge, busy, onJudge }: { run: ThreadRun; canJudge: boolean; busy: boolean; onJudge: () => void }) {
+export function Ballot({ run, canJudge, busy, onJudge, onCheckOrder, onCancelOrder }: { run: ThreadRun; canJudge: boolean; busy: boolean; onJudge: () => void; onCheckOrder?: () => void; onCancelOrder?: () => void }) {
   const stances = run.config.stances, judgment = run.judgment;
   if (!stances) return null;
   const who = (seat: Seat) => { const p = run.participants?.[seat]; return `Agent ${seat === 'cli1' ? 1 : 2}${p ? ` · ${names[p.provider] ?? p.provider}` : ''}`; };
@@ -17,20 +17,26 @@ export function Ballot({ run, canJudge, busy, onJudge }: { run: ThreadRun; canJu
   // Three ballots (G16): each debater's own beside the judge's; the side most of them name wins, the judge breaking a tie.
   const panel = judgment.panel, result = panelResult(judgment), sum = (s: Record<Seat, Record<JudgeCategory, number>>, seat: Seat) => JUDGE_CATEGORIES.reduce((n, c) => n + s[seat][c.key], 0);
   const sideOf = (seat: Seat) => SIDE[stances[seat]], forSeat = seats.find(s => stances[s] === 'for')!, againstSeat = seats.find(s => stances[s] === 'against')!;
+  const check = judgment.orderChecks?.at(-1), checking = check?.status === 'running';
+  const voters = [judgment.winner, ...seats.map(s => panel?.[s]?.status === 'done' ? panel[s]!.winner : undefined)].filter(Boolean);
   return <section className="ballot" aria-label="Judge’s ballot">
     <header><h3>{panel ? 'Ballots' : 'Judge’s ballot'}</h3><span>{panel ? `Judge: ${judgeName(judgment)}` : judgeName(judgment)}</span></header>
     {panel && (result ? <p className="ballot-winner">Result: <strong>{who(result.winner)}</strong>, {sideOf(result.winner)}: {result.votes[result.winner]} of {result.ballots} ballot{result.ballots === 1 ? '' : 's'}{result.tie ? ', the judge breaking the tie' : ''}</p>
       : <p className="ballot-winner">Waiting for the debaters’ own ballots.</p>)}
+    {panel && <p className="ballot-agreement">{new Set(voters).size > 1 ? 'Ballot disagreement: the available ballots chose different winners.' : `${voters.length} available ballot${voters.length === 1 ? '' : 's'} agree on the winner.`}{result && result.winner !== judgment.winner ? ' The panel result differs from the independent judge’s pick.' : ''}</p>}
     {panel && <table className="ballot-panel" aria-label="The three ballots">
       <thead><tr><th scope="col">Ballot</th><th scope="col">{SIDE.for}</th><th scope="col">{SIDE.against}</th><th scope="col">Winner</th></tr></thead>
       <tbody>
-        <tr><th scope="row">The judge</th><td>{totals[forSeat]}<small>/15</small></td><td>{totals[againstSeat]}<small>/15</small></td><td>{sideOf(judgment.winner!)}</td></tr>
+        <tr><th scope="row">Independent judge</th><td>{totals[forSeat]}<small>/15</small></td><td>{totals[againstSeat]}<small>/15</small></td><td>{sideOf(judgment.winner!)}</td></tr>
         {seats.map(s => { const b = panel[s]; return <tr key={s}><th scope="row">{who(s)}’s own <small>argued {sideOf(s)}</small></th>
           {b?.status === 'done' ? <><td>{sum(b.scores!, forSeat)}<small>/15</small></td><td>{sum(b.scores!, againstSeat)}<small>/15</small></td><td>{sideOf(b.winner!)}</td></>
             : <td colSpan={3} className="ballot-missing">{b?.status === 'reviewing' ? 'Scoring…' : `No ballot${b?.error ? `: ${b.error}` : ''}`}</td>}</tr>; })}
       </tbody>
     </table>}
-    {panel && <h4 className="ballot-sub">The judge’s scores</h4>}
+    {panel && <section className="participant-reviews" aria-label="Participant reviews"><h4>Participant reviews</h4><p>These reviews come from the agents who argued the debate.</p>{seats.map(s => {
+      const b = panel[s]; return <details key={s}><summary>{who(s)} · {b?.status === 'done' ? b.winner === s ? 'voted for its own side' : 'voted for the opposing side' : b?.status ?? 'no ballot'}</summary><p>{b?.reason ?? b?.error ?? 'No explanation available.'}</p></details>;
+    })}</section>}
+    {panel && <h4 className="ballot-sub">Independent judge’s assessment</h4>}
     <p className="ballot-winner">{panel ? 'Judge’s pick' : 'Winner'}: <strong>{who(judgment.winner!)}</strong>, {SIDE[stances[judgment.winner!]]}</p>
     <table>
       <thead><tr><th scope="col">Category</th>{seats.map(s => <th key={s} scope="col" className={judgment.winner === s ? 'won' : ''}><span className={`seat-dot ${s}`}/>{who(s)}<small>{SIDE[stances[s]]}</small></th>)}</tr></thead>
@@ -40,10 +46,18 @@ export function Ballot({ run, canJudge, busy, onJudge }: { run: ThreadRun; canJu
       </tbody>
     </table>
     {judgment.reason && <p className="ballot-reason">{judgment.reason}</p>}
-    {judgment.blind && <p className="ballot-blind">Judged blind: the judge didn’t know which agent argued which side, and read every speech in one typography{judgment.blind.redacted ? `, with ${judgment.blind.redacted} identifying name${judgment.blind.redacted === 1 ? '' : 's'} removed` : ''}.</p>}
+    {judgment.blind && <p className="ballot-blind">Judged with identities withheld and typography normalized{judgment.blind.redacted ? `; ${judgment.blind.redacted} identifying name${judgment.blind.redacted === 1 ? '' : 's'} removed` : ''}. This does not guarantee that authorship cannot be inferred.</p>}
     {seats.some(s => judgment.notes?.[s]) && <ul className="ballot-notes">{seats.filter(s => judgment.notes?.[s]).map(s => <li key={s}><strong>{who(s)}:</strong> {judgment.notes![s]}</li>)}</ul>}
     {!!judgment.issues?.length && <details className="ballot-issues"><summary>{judgment.issues.length} factual claim{judgment.issues.length === 1 ? '' : 's'} the judge questioned</summary>
       <ul>{judgment.issues.map((issue, i) => <li key={i}><strong>{who(issue.seat)}:</strong> “{issue.claim}” {issue.problem}</li>)}</ul></details>}
-    {canJudge && <button className="link" disabled={busy} onClick={onJudge}>Judge again</button>}
+    <section className="order-check" aria-label="Judging presentation order">
+      <h4>Presentation-order check</h4><p>Two fresh sessions of the same judge read identical speeches grouped by debater, in opposite presentation orders. Original round and speaking-order labels are preserved. The diagnostic is separate from the match result.</p>
+      {checking ? <><p role="status">Checking both orders · {check.requestsAdmitted}/{check.requestCeiling} requests</p><button className="button" disabled={busy} onClick={onCancelOrder}>Cancel order check</button></>
+        : onCheckOrder && <button className="button" disabled={busy || seats.some(s => panel?.[s]?.status === 'reviewing')} onClick={onCheckOrder}>{check ? 'Check presentation order again' : 'Check presentation order'} · 4 requests</button>}
+      {check && !checking && <p role="status">{check.status === 'done' ? check.consistent ? 'Both presentation orders chose the same winner. This single check does not establish unbiased judging.' : 'The presentation orders produced different winners. This single check also includes model sampling variation.' : `${check.status}: ${check.error ?? 'The check did not finish.'}`}</p>}
+      {check?.ballots.map(b => <details key={b.first}><summary>{sideOf(b.first)} presented first · {sideOf(b.winner)} wins</summary><p>{b.reason}</p><p>Proposition {sum(b.scores, forSeat)}/15 · Opposition {sum(b.scores, againstSeat)}/15</p></details>)}
+      {judgment.orderChecks && judgment.orderChecks.length > 1 && <details><summary>{judgment.orderChecks.length - 1} earlier checks</summary>{judgment.orderChecks.slice(0, -1).map(c => <p key={c.id}>{c.startedAt} · {c.judge.provider} {c.judge.model} · {c.status}{c.status === 'done' ? c.consistent ? ' · agreed' : ' · disagreed' : ''}</p>)}</details>}
+    </section>
+    {canJudge && <button className="link" disabled={busy || checking} onClick={onJudge}>Judge again</button>}
   </section>;
 }

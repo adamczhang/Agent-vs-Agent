@@ -5,8 +5,8 @@
 // legal move is part of the game, and three illegal answers in a row lose (owner, 2026-10-04). A legal move is recorded
 // as the game writes it, so a game's moves are its committed room messages, and they replay to its position. The agents
 // never see each other's replies, only the moves.
-import { GAMES } from './index.js';
-import type { Outcome } from './engine.js';
+import { GAMES, gameEngine } from './index.js';
+import { GAME_BOARDS, type Outcome } from './engine.js';
 import { other, type GameSetup, type RoomMessage, type Seat } from '../types.js';
 
 export const playerOf = (setup: GameSetup, seat: Seat): 0 | 1 => seat === setup.first ? 0 : 1;
@@ -14,18 +14,21 @@ export const seatOf = (setup: GameSetup, player: 0 | 1): Seat => player === 0 ? 
 export const sideOf = (setup: GameSetup, seat: Seat) => GAMES[setup.kind].sides[playerOf(setup, seat)];
 export const gameMoves = (messages: RoomMessage[]) => messages.filter(m => m.sender !== 'user' && m.state === 'committed').map(m => m.text);
 export function replay(setup: GameSetup, moves: string[]) {
-  const engine = GAMES[setup.kind];
+  const engine = gameEngine(setup);
   let state = engine.start(setup.size);
   for (const move of moves) state = engine.play(state, move).state;
   return state;
 }
 const minutes = (ms: number) => ms % 60_000 ? `${Math.round(ms / 1000)} seconds` : `${ms / 60_000} minute${ms === 60_000 ? '' : 's'}`;
 const ANSWER = 'Reply with: MOVE: <move>';
-const boardName = (setup: GameSetup) => `${GAMES[setup.kind].name}${setup.kind === 'go' ? ` on a ${setup.size ?? 9}x${setup.size ?? 9} board` : ''}`;
+const boardName = (setup: GameSetup) => {
+  const board = GAME_BOARDS[setup.kind], size = setup.size ?? board?.defaultSize;
+  return `${GAMES[setup.kind].name}${board ? ` on a ${size}x${size} board` : ''}`;
+};
 // A turn's prompt: the move number and side, the opponent's last move, and the position. retry: the agent's last answer
 // and why it was refused, with the tries it has left (the position again, unchanged).
 export function movePrompt(setup: GameSetup, moves: string[], seat: Seat, retry?: { input: string; reason: string; left: number }) {
-  const engine = GAMES[setup.kind], position = engine.position(replay(setup, moves)), side = sideOf(setup, seat);
+  const engine = gameEngine(setup), position = engine.position(replay(setup, moves)), side = sideOf(setup, seat);
   if (retry) {
     const refused = retry.input ? `MOVE: ${retry.input} (${retry.reason})` : retry.reason;
     return [`Refused: ${refused}. ${retry.left === 1 ? 'Last try: another illegal answer loses the game.' : `${retry.left} tries left.`} The position is unchanged:`, position, ANSWER].join('\n');
@@ -36,7 +39,7 @@ export function movePrompt(setup: GameSetup, moves: string[], seat: Seat, retry?
 // The brief each agent gets through its 1:1 line before the game: everything each turn then leaves out. The agent
 // answers READY.
 export function gameBrief(setup: GameSetup, seat: Seat) {
-  const engine = GAMES[setup.kind], side = sideOf(setup, seat), firstSeat = setup.first;
+  const engine = gameEngine(setup), side = sideOf(setup, seat), firstSeat = setup.first;
   return [
     `You are about to play ${boardName(setup)} against another AI agent. You play ${side}; ${engine.sides[0]} moves first${firstSeat === seat ? ', so you start' : ''}. AvA is the referee: it keeps the board and checks every move before it counts. You see only the moves, not your opponent's replies.`,
     `Rules: ${engine.rules}`,
@@ -56,7 +59,7 @@ export function readMove(text: string) {
 export type Verdict = { kind: 'move'; move: string; outcome: Outcome | null } | { kind: 'resign' } | { kind: 'illegal'; input: string; reason: string };
 // Whether the agent's reply is a legal move, a resignation, or neither (and why).
 export function judgeReply(setup: GameSetup, moves: string[], text: string): Verdict {
-  const engine = GAMES[setup.kind], input = readMove(text);
+  const engine = gameEngine(setup), input = readMove(text);
   if (input === null) return { kind: 'illegal', input: '', reason: 'there was no MOVE line' };
   if (/^resigns?$/i.test(input)) return { kind: 'resign' };
   let state = replay(setup, moves);

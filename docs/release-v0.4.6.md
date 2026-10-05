@@ -1,5 +1,7 @@
 # Agent vs Agent v0.4.6
 
+This page records the published release. Later changes on GitHub `main` are documented separately in the [unreleased source notes](release-unreleased.md).
+
 **Released 2026-10-04.** A fourth mode, **Gamer**: the two agents play chess, checkers or Go against each other, with AvA as the referee. Debates also get fairer verdicts: the judge reads the speeches blind, and both debaters score the debate beside it.
 
 ## Install

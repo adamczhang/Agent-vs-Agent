@@ -124,7 +124,7 @@ export class BenchmarkRunner {
     // Container tasks need Docker now, before any agent starts: checked fresh, never assumed from the catalog.
     const containerTasks=tasks.filter(t=>needsContainer(t)&&t.spec.checks.some(c=>'run'in c));
     if(containerTasks.length){const status=await this.containerStatus(0);if(!status.available)throw new AvAError('BENCH_CONTAINER_UNAVAILABLE',`${containerTasks[0]!.spec.id}: needs container isolation. ${status.reason}`);}
-    if(this.busy)throw new AvAError('BENCH_BUSY','A benchmark job is already running in this pool.');
+    if(this.busy||this.service.puzzles?.busy||this.service.series?.busy)throw new AvAError('BENCH_BUSY','A benchmark job is already running in this pool.');
     const needed=input.judge?3:2;
     if(this.service.resources.limit&&this.service.resources.active().length+needed>this.service.resources.limit)throw new AvAError('BENCH_CAPACITY',`Benchmarks need ${needed===3?'three':'two'} free agent slots. Stop agents or raise the limit in Resources.`);
     // A trusted verifier imports untrusted candidate code: it runs only under the verifier guard.

@@ -15,6 +15,7 @@ import { LABELS,Menus } from './menus.js';
 import { QuickMemory,highEffort,strongestModel } from './quick.js';
 import { blindDebate,debateBrief,judgePrompt,maxEffort,panelResult,parseBallot,reviewPrompt,total } from './debate.js';
 import { gameBrief } from './games/referee.js';
+import { CROSSCURRENT_RULESETS, GAME_KINDS } from './games/engine.js';
 import { promptResult } from './answer-check.js';
 import { huntResult } from './bug-hunt.js';
 import { START_SLACK_MS,listProcesses,notRunning,sessionStart,survivors,systemCensus,type Census,type ProcessLedger,type SystemProcess } from './census.js';
@@ -25,6 +26,12 @@ import { prepareProject } from './prepare-project.js';
 import { checkRemoteHunt,checkRepoUrl,fetchRepo,remoteHead,repoName } from './repo-cache.js';
 import { Resources } from './resources.js';
 import { BenchmarkRunner } from './bench-runner.js';
+import { PuzzleRunner, puzzleScores } from './puzzle-runner.js';
+import { SeriesRunner } from './series-runner.js';
+import { JudgingChecks } from './judging-checks.js';
+import { seriesReport, seriesSummary } from './series.js';
+import { planProfile, RUN_PROFILES, type RunProfile } from './run-profiles.js';
+import { puzzleCatalog, puzzle, gradePuzzle } from './games/crosscurrent-puzzles.js';
 import { suiteReport } from './bench-report.js';
 import { BenchmarkResults } from './bench-results.js';
 import { protectPrivatePath } from './private-files.js';
@@ -39,15 +46,15 @@ const resultFilters=z.object({jobId:id.optional(),suite:z.string().min(1).max(10
 const choice=z.object({key:z.string().min(1).max(100),value:z.string().max(200)});
 const providerConfig=z.object({provider,model:z.string().min(1).max(300),modelName:z.string().max(200).optional(),effort:choice.optional(),speed:choice.optional(),auth:z.enum(['provider-login','api'])}).strict();
 // Preset data mirrors the room's settings form; .strict() keeps provider/model choices out (they belong to Codex activation).
-const presetData=z.object({instructions:z.object({cli1:z.string().max(8000),cli2:z.string().max(8000)}).strict(),stopWhen:z.object({cli1:z.string().max(4000),cli2:z.string().max(4000)}).strict(),completion:z.enum(['auto','duration','either','both','rounds']),rounds:z.string().max(20).optional(),internet:z.object({cli1:z.boolean(),cli2:z.boolean()}).partial().strict().optional(),stances:z.object({cli1:z.enum(['for','against']),cli2:z.enum(['for','against'])}).strict().optional(),judge:z.enum(['claude','codex','off']).optional(),speech:z.string().max(20).optional(),minutes:z.string().max(20),requests:z.string().max(20),pace:z.string().max(20),opening:z.enum(['both','cli1','cli2']).optional()}).strict();
+const presetData=z.object({profile:z.enum(['quick','standard','deep']).optional(),instructions:z.object({cli1:z.string().max(8000),cli2:z.string().max(8000)}).strict(),stopWhen:z.object({cli1:z.string().max(4000),cli2:z.string().max(4000)}).strict(),completion:z.enum(['auto','duration','either','both','rounds']),rounds:z.string().max(20).optional(),internet:z.object({cli1:z.boolean(),cli2:z.boolean()}).partial().strict().optional(),stances:z.object({cli1:z.enum(['for','against']),cli2:z.enum(['for','against'])}).strict().optional(),judge:z.enum(['claude','codex','off']).optional(),speech:z.string().max(20).optional(),minutes:z.string().max(20),requests:z.string().max(20),pace:z.string().max(20),opening:z.enum(['both','cli1','cli2']).optional()}).strict();
 // A scored bug hunt (H2): the commit to copy, paths left out (or the only ones taken, H7), and the planted bugs (each an
 // exact piece of code and what it becomes).
 const huntSetup=z.object({commit:z.string().regex(/^[0-9a-f]{7,64}$/i).optional(),exclude:z.array(z.string().min(1).max(300)).max(50).optional(),include:z.array(z.string().min(1).max(300)).max(50).optional(),
   bugs:z.array(z.object({file:z.string().min(1).max(400),find:z.string().min(1).max(8000),replace:z.string().min(1).max(8000),what:z.string().min(1).max(1000),decoy:z.boolean().optional()}).strict()).min(1).max(30),maxReports:z.number().int().min(1).max(100).optional()}).strict()
   .refine(h=>h.bugs.some(b=>!b.decoy),'A scored hunt needs at least one planted bug that isn’t a decoy.');
-// A Gamer run's game (J2): which game, Go's board size, who moves first, the time per move and the illegal answers allowed.
-const gameSetup=z.object({kind:z.enum(['chess','checkers','go']),size:z.number().int().optional(),first:seat,moveMs:z.number().min(30_000).max(1_800_000),maxIllegal:z.number().int().min(1).max(10)}).strict();
-const runOptions=z.object({instructions:z.object({cli1:z.string().max(8000),cli2:z.string().max(8000)}).optional(),stopWhen:z.object({cli1:z.string().max(4000),cli2:z.string().max(4000)}).optional(),completion:z.enum(['duration','either','both','rounds']).optional(),rounds:z.number().int().min(1).max(100).optional(),stances:z.object({cli1:z.enum(['for','against']),cli2:z.enum(['for','against'])}).strict().optional(),judge:z.object({provider:z.enum(['claude','codex'])}).strict().optional(),speechMs:z.number().min(30_000).max(1_800_000).optional(),check:z.object({kind:z.enum(['challenge','race']),answers:z.array(z.string().trim().min(1).max(500)).min(1).max(10)}).strict().optional(),durationMs:z.number().positive().max(86400000).optional(),maxRequests:z.number().int().min(2).max(10000).optional(),perTurnMs:z.number().positive().max(3600000).optional(),paceMs:z.number().min(0).max(60000).optional(),lead:seat.optional(),mode:z.enum(['conversation','benchmark','build','game']).optional(),opening:z.enum(['both','cli1','cli2']).optional(),game:gameSetup.optional()}).strict();
+// A Gamer run's game (J2): which game, its board size, who moves first, the time per move and the illegal answers allowed.
+const gameSetup=z.object({kind:z.enum(GAME_KINDS),size:z.number().int().optional(),ruleset:z.enum(CROSSCURRENT_RULESETS).optional(),first:seat,moveMs:z.number().min(30_000).max(1_800_000),maxIllegal:z.number().int().min(1).max(10)}).strict();
+const runOptions=z.object({profile:z.enum(['quick','standard','deep']).optional(),instructions:z.object({cli1:z.string().max(8000),cli2:z.string().max(8000)}).optional(),stopWhen:z.object({cli1:z.string().max(4000),cli2:z.string().max(4000)}).optional(),completion:z.enum(['duration','either','both','rounds']).optional(),rounds:z.number().int().min(1).max(100).optional(),stances:z.object({cli1:z.enum(['for','against']),cli2:z.enum(['for','against'])}).strict().optional(),judge:z.object({provider:z.enum(['claude','codex'])}).strict().optional(),speechMs:z.number().min(30_000).max(1_800_000).optional(),check:z.object({kind:z.enum(['challenge','race']),answers:z.array(z.string().trim().min(1).max(500)).min(1).max(10)}).strict().optional(),durationMs:z.number().positive().max(86400000).optional(),maxRequests:z.number().int().min(2).max(10000).optional(),perTurnMs:z.number().positive().max(3600000).optional(),paceMs:z.number().min(0).max(60000).optional(),lead:seat.optional(),mode:z.enum(['conversation','benchmark','build','game']).optional(),opening:z.enum(['both','cli1','cli2']).optional(),game:gameSetup.optional()}).strict();
 
 // A direct reply is plain text; if the agent answers in the room's JSON envelope out of habit, show just its message.
 function plainReply(text:string){
@@ -63,7 +70,7 @@ const AGENT_HELPER=/^(codex|claude|grok|agy|antigravity)([-_.][\w.-]*)?\.exe$/i;
 const topicTitle=(topic:string)=>{const first=topic.trim().split('\n')[0]!;return /^#{1,6}\s/.test(first)?first.replace(/^#{1,6}\s+/,'').replace(/^Motion:\s*/i,''):topic;};
 // The judge's own sessions (G7): kept out of the agent limit and of Quick activate's memory.
 const JUDGE_PAIR='debate-judge-';
-const CHANGING=new Set(['thread.delete','debate.judge','run.start','run.broadcast','run.control','run.reconcile','direct.send','pair.clear','pair.close','pair.reset','slot.configure','slot.activate','slot.quick','slot.cancel','slot.internet','slot.permissions','menu.choose','room.new','history.clear','prompt.save','prompt.delete','prompt.prepare','attachment.add','resources.configure','resources.stop','bench.validate','bench.start','bench.cancel']);
+const CHANGING=new Set(['thread.delete','debate.judge','run.start','run.broadcast','run.control','run.reconcile','direct.send','pair.clear','pair.close','pair.reset','slot.configure','slot.activate','slot.quick','slot.cancel','slot.internet','slot.permissions','menu.choose','room.new','history.clear','prompt.save','prompt.delete','prompt.prepare','attachment.add','resources.configure','resources.stop','bench.validate','bench.start','bench.cancel','puzzles.start','puzzles.cancel','series.start','series.cancel','debate.checkOrder','debate.cancelOrderCheck']);
 // Stops each process with its whole tree (Windows: taskkill /T; it fails for any that already exited, which is fine).
 function stopTrees(pids:number[]){
   if(!pids.length)return Promise.resolve();
@@ -96,6 +103,9 @@ export class AvAService {
   readonly engine:ConversationController;
   readonly resources:Resources;
   readonly benchmarks:BenchmarkRunner;
+  readonly puzzles:PuzzleRunner;
+  readonly series:SeriesRunner;
+  readonly judgingChecks:JudgingChecks;
   readonly benchmarkResults:BenchmarkResults;
   readonly menus:Menus;
   readonly quick:QuickMemory;
@@ -179,7 +189,15 @@ export class AvAService {
       createKey:budget=>createGatewayKey(this.dataRoot,budget,this.factory.runVercel),forgetKey:()=>forgetGatewayKey(this.dataRoot)},()=>this.factory.cliWarnings?.()??Promise.resolve({}),
       {plan:(seat,provider)=>this.quick.plan(seat,provider),activate:(pairId,seat)=>this.quickActivate(pairId,seat)});
     this.benchmarks=new BenchmarkRunner(this);
+    this.puzzles=new PuzzleRunner(this);
+    this.series=new SeriesRunner(this);
+    this.judgingChecks=new JudgingChecks(this);
     this.benchmarkResults=new BenchmarkResults(this.store);
+  }
+  private profilePlan(pairId:string,profile:RunProfile){
+    const pair=this.store.pair(pairId),agents={cli1:pair.slots.cli1.config,cli2:pair.slots.cli2.config};
+    if(!agents.cli1||!agents.cli2)throw new AvAError('NOT_READY','Choose both agent models first.');
+    return planProfile(agents as Record<Seat,ProviderConfig>,profile,c=>this.catalog(c.provider,c.model,c.auth));
   }
   async catalog(provider:Provider,model='',auth:ProviderConfig['auth']='provider-login'){
     const key=JSON.stringify([provider,model,auth]),cached=this.catalogs.get(key);
@@ -195,14 +213,15 @@ export class AvAService {
     const pairs=this.resources.pairs(),live=(runId:string)=>{try{const status=this.store.run(runId).status;return status==='needs_attention'?(this.engine.ownership(runId)?.active??0)>0:!['stopped','completed'].includes(status);}catch{return false;}};
     return pairs.some(p=>p.activeRunId&&live(p.activeRunId))?'a conversation is running'
       :this.direct.size?'an agent is answering a 1:1 message':this.preparing.size||this.ending.size?'a project or thread is being prepared'
-      :this.benchmarks.busy?'a benchmark is running':this.judging.size?'a judge is scoring a debate'
+      :this.judgingChecks.busy?'a presentation-order check is running':this.series.busy?'a match series is running':this.puzzles.busy?'a puzzle comparison is running':this.benchmarks.busy?'a benchmark is running':this.judging.size?'a judge is scoring a debate'
       :this.operations.size?'a command is still running':this.restarting.size?'an agent is restarting':this.clearing?'history is being cleared'
       :this.discovering.size?'a model list is being read':pairs.some(p=>SEATS.some(s=>p.slots[s].state==='verifying'))?'an agent is activating':'';
   }
   async call(method:string,input:unknown):Promise<unknown>{
     if(this.shuttingDown&&CHANGING.has(method))throw new AvAError('SHUTTING_DOWN','The service is shutting down.');
     if(this.stoppingAgents&&CHANGING.has(method)&&method!=='resources.stop')throw new AvAError('STOPPING_AGENTS','AvA is stopping its agents. Wait for cleanup to finish.');
-    if(method==='history.clear'&&this.benchmarks.busy)throw new AvAError('BENCH_BUSY','Stop the benchmark job before clearing conversation history.');
+    const activeExperiment=this.benchmarks.busy?'the benchmark job':this.puzzles.busy?'the puzzle comparison':this.series.busy?'the match series':this.judgingChecks.busy?'the presentation-order check':'';
+    if(method==='history.clear'&&activeExperiment)throw new AvAError('BENCH_BUSY',`Stop ${activeExperiment} before clearing conversation history.`);
     const changingPair=input&&typeof input==='object'?(input as {pairId?:string}).pairId:undefined;
     if(method!=='run.start'&&CHANGING.has(method)&&(method==='history.clear'?this.preparing.size>0:changingPair&&this.preparing.has(changingPair)))throw new AvAError('BUILD_PREPARING','The next prompt is being prepared (a Build project, or a debate’s briefs). Wait for it to finish, then try again.');
     // While history is being cleared nothing may start or change: the clear deletes runs and agents' folders.
@@ -218,6 +237,25 @@ export class AvAService {
         const busy=this.busyReason();
         if(busy)return {retiring:false,reason:busy};
         this.shuttingDown=true;setTimeout(()=>this.retire?.(),50);return {retiring:true,version:packageVersion};
+      }
+      case 'profile.plan': {const p=z.object({pairId:id,profile:z.enum(['quick','standard','deep'])}).strict().parse(input);return this.profilePlan(p.pairId,p.profile);}
+      case 'series.jobs': return {jobs:this.series.jobs()};
+      case 'series.get': {const p=z.object({jobId:id}).strict().parse(input);const job=this.series.get(p.jobId);return {job,summary:seriesSummary(job)};}
+      case 'series.report': {const p=z.object({jobId:id}).strict().parse(input);const job=this.series.get(p.jobId);return {job,summary:seriesSummary(job),markdown:seriesReport(job)};}
+      case 'series.cancel': {const p=z.object({jobId:id,requestId:id}).strict().parse(input);return this.once('series-cancel',p.requestId,{jobId:p.jobId},async()=>this.series.cancel(p.jobId));}
+      case 'series.start': {
+        const p=z.object({pairId:id,kind:z.enum(['game','debate']),profile:z.enum(['quick','standard','deep']).optional(),pairs:z.number().int().min(1).max(10),game:gameSetup.optional(),motion:z.string().trim().min(1).max(16000).optional(),rounds:z.number().int().min(1).max(10).optional(),speechMs:z.number().int().min(30000).max(1800000).optional(),judge:z.enum(['claude','codex']).optional(),internet:z.boolean().default(false),requestId:id}).strict().refine(p=>p.kind==='game'?!!p.game:!!p.motion&&!!p.rounds&&!!p.speechMs,'Choose a game or enter the motion, rounds and speech limit.').parse(input);
+        return this.once('series-start',p.requestId,{...p,requestId:undefined},async()=>{const pair=this.store.pair(p.pairId),agents={cli1:pair.slots.cli1.config,cli2:pair.slots.cli2.config};if(!agents.cli1||!agents.cli2)throw new AvAError('NOT_READY','Choose both agent models first.');const {pairId,requestId,...settings}=p;const plan=p.profile?await this.profilePlan(p.pairId,p.profile):undefined;return this.series.start({...settings,...(plan?{agents:{cli1:plan.agents.cli1.config,cli2:plan.agents.cli2.config},...(p.kind==='game'?{game:{...p.game!,moveMs:plan.timeMs}}:{speechMs:plan.timeMs})}:{agents:agents as Record<Seat,ProviderConfig>})});});
+      }
+      case 'puzzles.catalog': return {puzzles:puzzleCatalog()};
+      case 'puzzles.grade': {const p=z.object({id,answer:z.string().max(32000)}).strict().parse(input);return gradePuzzle(puzzle(p.id),p.answer);}
+      case 'puzzles.solution': {const p=z.object({id}).strict().parse(input);return {move:puzzle(p.id).solution};}
+      case 'puzzles.jobs': return {jobs:this.puzzles.jobs()};
+      case 'puzzles.get': {const p=z.object({jobId:id}).strict().parse(input);const job=this.puzzles.get(p.jobId);return {job,scores:puzzleScores(job)};}
+      case 'puzzles.cancel': {const p=z.object({jobId:id,requestId:id}).strict().parse(input);return this.once('puzzles-cancel',p.requestId,{jobId:p.jobId},async()=>this.puzzles.cancel(p.jobId));}
+      case 'puzzles.start': {
+        const p=z.object({pairId:id,ids:z.array(id).min(1).max(20),profile:z.enum(['quick','standard','deep']).optional(),timeMs:z.number().int().min(30000).max(1800000),requestId:id}).strict().parse(input);
+        return this.once('puzzles-start',p.requestId,{...p,requestId:undefined},async()=>{const pair=this.store.pair(p.pairId);const agents={cli1:pair.slots.cli1.config,cli2:pair.slots.cli2.config};if(!agents.cli1||!agents.cli2)throw new AvAError('NOT_READY','Choose both agent models first.');const plan=p.profile?await this.profilePlan(p.pairId,p.profile):undefined;return this.puzzles.start({ids:p.ids,timeMs:plan?.timeMs??p.timeMs,...(p.profile?{profile:p.profile}:{}),agents:plan?{cli1:plan.agents.cli1.config,cli2:plan.agents.cli2.config}:agents as Record<Seat,ProviderConfig>});});
       }
       case 'bench.catalog':{const p=z.object({suite:z.string().max(1000).optional()}).parse(input);return {tasks:this.benchmarks.catalog(p.suite)};}
       case 'bench.validate':{const p=z.object({taskIds:z.array(id).min(1).max(20),suite:z.string().max(1000).optional()}).parse(input);return {validations:await this.benchmarks.validate(p.taskIds,p.suite)};}
@@ -251,6 +289,8 @@ export class AvAService {
       case 'thread.delete':{const p=z.object({threadId:z.string().min(1).max(300),requestId:id}).parse(input);return this.once('thread-delete',p.requestId,{threadId:p.threadId},async()=>this.deleteThread(p.threadId));}
       // A formal debate's judge (G7), on demand: judges again, or judges a debate that was stopped. It works in the background;
       // the ballot appears with the run.
+      case 'debate.checkOrder': {const p=z.object({runId:id,requestId:id}).strict().parse(input);return this.once('judge-order-check',p.requestId,{runId:p.runId},async()=>this.judgingChecks.start(p.runId));}
+      case 'debate.cancelOrderCheck': {const p=z.object({runId:id,requestId:id}).strict().parse(input);return this.once('judge-order-cancel',p.requestId,{runId:p.runId},async()=>this.judgingChecks.cancel(p.runId));}
       case 'debate.judge':{const p=z.object({runId:id,provider:z.enum(['claude','codex']).optional()}).parse(input);return this.startJudging(p.runId,p.provider);}
       // Quick activate: the agent's last settings (or the strongest model at high effort, Ask, internet off), activated.
       case 'slot.quick':{const p=z.object({pairId:id,seat}).parse(input);return this.quickActivate(p.pairId,p.seat);}
@@ -322,7 +362,9 @@ export class AvAService {
           if(pending.input!==startInput)throw new AvAError('IDEMPOTENCY_CONFLICT','This request ID was already used with different input.');
           return pending.task;
         }
-        const config=conversationConfig(p.text,p.options);
+        const options={...p.options};
+        if(options.profile){const timeMs=RUN_PROFILES[options.profile].timeMs;if(options.mode==='game'&&options.game)options.game={...options.game,moveMs:timeMs};else if(options.mode==='benchmark'||options.mode==='build'){options.durationMs=timeMs;options.perTurnMs=timeMs;}else options.speechMs=timeMs;}
+        const config=conversationConfig(p.text,options);
         // Build: the copy's folder name comes from the request ID, so a retried start finds the same run. Building may
         // start from an empty folder; a review needs a project. A project on the web (H7) is fetched when the run starts;
         // a scored hunt there names its full commit, so its bugs always land in the same code.
@@ -362,7 +404,12 @@ export class AvAService {
             const stale=[...(this.stale.get(p.pairId)??[])];
             // A run of another mode than the thread's starts its own thread too, so a thread never mixes modes.
             const otherMode=!!earlier.length&&(earlier[0]!.config.mode??'conversation')!==mode;
-            if(idle&&earlier.length&&(mode==='benchmark'||mode==='build'||mode==='game'||formal||otherMode)){await this.freshThread(p.pairId);debaters=this.activation.participants(p.pairId);}
+            if(config.profile){
+              if(!idle)throw new AvAError('RUN_ACTIVE','Apply a performance preset when the current run has ended.');
+              const plan=await this.profilePlan(p.pairId,config.profile);
+              const configured=await Promise.allSettled(SEATS.map(async seat=>{await this.activation.configure(p.pairId,seat,plan.agents[seat].config);await this.activation.activate(p.pairId,seat,plan.agents[seat].config);}));
+              const failure=configured.find(r=>r.status==='rejected');if(failure)throw failure.reason;debaters=this.activation.participants(p.pairId);
+            }else if(idle&&earlier.length&&(mode==='benchmark'||mode==='build'||mode==='game'||formal||otherMode)){await this.freshThread(p.pairId);debaters=this.activation.participants(p.pairId);}
             else if(idle&&stale.length){await this.freshThread(p.pairId,stale);debaters=this.activation.participants(p.pairId);}
             if(config.build){
               // Each agent gets its own copy (or empty folder), inside the workspace of the session that runs it (a fresh one,
@@ -512,7 +559,7 @@ export class AvAService {
         // Portable record: identities, settings, timing, and text. Session IDs and generations stay internal.
         const json={format:'ava-transcript',version:1,exportedAt:new Date().toISOString(),
           run:{id:run.id,createdAt:run.createdAt??null,status:run.status,reason:run.reason,elapsedMs:run.elapsedMs,requests:run.requests,participants:run.participants??null,
-            settings:{topic:run.config.topic,completion:run.config.completion,...(run.config.rounds?{rounds:run.config.rounds}:{}),...(run.config.stances?{stances:run.config.stances}:{}),durationMs:run.config.durationMs,maxRequests:run.config.maxRequests,paceMs:run.config.paceMs,lead:run.config.lead,instructions:run.config.instructions,stopWhen:run.config.stopWhen},...(run.judgment?{judgment:run.judgment}:{})},
+            settings:{topic:run.config.topic,...(run.config.profile?{profile:run.config.profile}:{}),...(run.config.game?{game:run.config.game}:{}),...(run.config.speechMs?{speechMs:run.config.speechMs}:{}),completion:run.config.completion,...(run.config.rounds?{rounds:run.config.rounds}:{}),...(run.config.stances?{stances:run.config.stances}:{}),durationMs:run.config.durationMs,maxRequests:run.config.maxRequests,paceMs:run.config.paceMs,lead:run.config.lead,instructions:run.config.instructions,stopWhen:run.config.stopWhen},...(run.judgment?{judgment:run.judgment}:{})},
           messages:messages.map(m=>({id:m.id,seq:m.seq,sender:m.sender,label:m.sender==='user'?'user':label(m.sender),state:m.state,deliveredTo:m.deliveredTo??[],time:times.get(m.id)??null,text:m.text}))};
         return {run:{id:run.id,status:run.status,reason:run.reason,elapsedMs:run.elapsedMs,createdAt:run.createdAt??null,participants:run.participants??null},messages,markdown:messages.map(m=>`## ${label(m.sender)}\n\n${m.text}`).join('\n\n'),json};
       }
@@ -612,6 +659,7 @@ export class AvAService {
   // Delete one thread from history (D): its prompts and replies, 1:1 messages, name and ballot, the attachments only it
   // used, and its agents' folders. A thread whose agents are still active (or whose judge is still scoring) is refused.
   private async deleteThread(threadId:string){
+    if(this.findThread(threadId).runs.some(r=>this.judgingChecks.has(r.id)))throw new AvAError('CHECK_BUSY','Cancel the presentation-order check before deleting its thread.');
     const thread=this.findThread(threadId),pair=this.pairOrUndefined(thread.pairId);
     const current=!!pair&&this.openThreadId(pair)===threadId;
     if(current&&pair&&(pair.activeRunId||SEATS.some(s=>this.activation.get(pair.id,s)||this.direct.has(`${pair.id}:${s}`))||this.preparing.has(pair.id)))
@@ -646,7 +694,7 @@ export class AvAService {
     this.titles=this.store.threadTitles();
     const summary=this.summarize(thread,this.store.runActivity(thread.runs.map(r=>r.id)),pair,this.store.directThreads().find(d=>d.threadId===thread.id));
     const runs=thread.runs.map(r=>{const run=this.engine.snapshot(r.id);return {id:run.id,status:run.status,reason:run.reason,createdAt:run.createdAt??null,elapsedMs:run.elapsedMs,requests:run.requests,
-      config:{topic:run.config.topic,completion:run.config.completion,...(run.config.rounds?{rounds:run.config.rounds}:{}),...(run.config.stances?{stances:run.config.stances}:{}),...(run.config.judge?{judge:run.config.judge}:{}),...(run.config.check?{check:run.config.check}:{}),...(run.config.game?{game:run.config.game}:{}),durationMs:run.config.durationMs,maxRequests:run.config.maxRequests,mode:run.config.mode??'conversation',build:run.config.build?{kind:run.config.build.kind,source:run.config.build.source,folder:run.config.build.folder,...(run.config.build.hunt?{planted:run.config.build.hunt.bugs.filter(b=>!b.decoy).length,decoys:run.config.build.hunt.bugs.filter(b=>b.decoy).length}:{})}:null},participants:run.participants??null,judgment:run.judgment??null,result:run.result??null,hunt:run.hunt??null,game:run.game??null};});
+      config:{topic:run.config.topic,...(run.config.profile?{profile:run.config.profile}:{}),...(run.config.speechMs?{speechMs:run.config.speechMs}:{}),completion:run.config.completion,...(run.config.rounds?{rounds:run.config.rounds}:{}),...(run.config.stances?{stances:run.config.stances}:{}),...(run.config.judge?{judge:run.config.judge}:{}),...(run.config.check?{check:run.config.check}:{}),...(run.config.game?{game:run.config.game}:{}),durationMs:run.config.durationMs,maxRequests:run.config.maxRequests,mode:run.config.mode??'conversation',build:run.config.build?{kind:run.config.build.kind,source:run.config.build.source,folder:run.config.build.folder,...(run.config.build.hunt?{planted:run.config.build.hunt.bugs.filter(b=>!b.decoy).length,decoys:run.config.build.hunt.bugs.filter(b=>b.decoy).length}:{})}:null},participants:run.participants??null,judgment:run.judgment??null,result:run.result??null,hunt:run.hunt??null,game:run.game??null};});
     const messages=thread.runs.flatMap(r=>{const times=this.store.messageTimes(r.id);return this.store.messages(r.id).map((m,i)=>({...m,time:times.get(m.id)??(i===0?r.createdAt??null:null)}));});
     const pending:Partial<Record<Seat,{partial:string;steps:string[]}>>={};
     for(const seat of SEATS){const entry=this.direct.get(`${thread.pairId}:${seat}`);if(entry&&entry.threadId===thread.id)pending[seat]={partial:entry.partial.slice(-4000),steps:entry.steps.slice(-4)};}
@@ -972,6 +1020,7 @@ export class AvAService {
   // Each judging has its token, so a judge that has finished clears only its own entry, never a newer Judge again.
   private judging=new Map<string,symbol>();
   private startJudging(runId:string,provider?:JudgeProvider){
+    if(this.judgingChecks.has(runId))throw new AvAError('CHECK_BUSY','Wait for or cancel the presentation-order check before judging again.');
     const run=this.store.run(runId);
     if(!run.config.stances)throw new AvAError('NOT_DEBATE','Only a formal debate has a judge.');
     if(['running','pausing','paused','stopping'].includes(run.status))throw new AvAError('DEBATE_RUNNING','Judge the debate once it has ended.');
@@ -979,13 +1028,13 @@ export class AvAService {
     if(!SEATS.every(s=>this.store.messages(runId).some(m=>m.sender===s)))throw new AvAError('NOTHING_TO_JUDGE','Each debater needs at least one speech to judge.');
     const chosen=provider??run.config.judge?.provider??'claude',startedAt=new Date().toISOString();
     const token=Symbol(runId);this.judging.set(runId,token);
-    this.store.updateRun(runId,r=>{r.judgment={status:'judging',judge:{provider:chosen,model:'',auth:'provider-login'},startedAt};});
+    this.store.updateRun(runId,r=>{r.judgment={status:'judging',judge:{provider:chosen,model:'',auth:'provider-login'},startedAt,...(r.judgment?.orderChecks?{orderChecks:r.judgment.orderChecks}:{})};});
     void this.judgeDebate(runId,chosen,startedAt,token);
     return this.store.run(runId).judgment;
   }
   private async judgeDebate(runId:string,provider:JudgeProvider,startedAt:string,token:symbol){
     // The debaters' own ballots (G16) are saved beside the judge's, and kept whatever the judge saves.
-    const save=(judgment:Judgment)=>{try{this.store.updateRun(runId,r=>{r.judgment={...judgment,...(r.judgment?.panel?{panel:r.judgment.panel}:{})};});}catch{/* the run was deleted meanwhile */}};
+    const save=(judgment:Judgment)=>{try{this.store.updateRun(runId,r=>{r.judgment={...judgment,...(r.judgment?.panel?{panel:r.judgment.panel}:{}),...(r.judgment?.orderChecks?{orderChecks:r.judgment.orderChecks}:{})};});}catch{/* the run was deleted meanwhile */}};
     let judge:ProviderConfig={provider,model:'',auth:'provider-login'},pairId:string|undefined;
     try{
       const listed=await this.catalog(provider),model=strongestModel(provider,listed.models);
@@ -1070,7 +1119,7 @@ export class AvAService {
   }
   private async stopAllAgents(){
     this.stoppingAgents=true;
-    this.benchmarks.cancelAll();
+    this.benchmarks.cancelAll();this.puzzles.cancelAll();this.series.cancelAll();this.judgingChecks.cancelAll();
     const errors:string[]=[],before=this.resources.active().length;
     try{
       for(const pair of this.resources.pairs())if(pair.activeRunId)this.engine.stop(pair.activeRunId);
@@ -1129,7 +1178,7 @@ export class AvAService {
     return report||credit?{...report,...(credit?{credit}:{}),at:report?.at??Date.now()}:null;
   }
   async shutdown(){
-    this.shuttingDown=true;this.lifetime.abort(new AvAError('SHUTDOWN','The service is shutting down.'));await this.benchmarks.shutdown();
+    this.shuttingDown=true;this.lifetime.abort(new AvAError('SHUTDOWN','The service is shutting down.'));await this.benchmarks.shutdown();await this.puzzles.shutdown();await this.series.shutdown();await this.judgingChecks.shutdown();
     // A debate's briefs are 1:1 replies its start waits for: cancel them first, so that start ends.
     for(const entry of this.direct.values())entry.abort.abort(new AvAError('CANCELLED','The service is shutting down.'));
     await Promise.allSettled(this.preparationDone);

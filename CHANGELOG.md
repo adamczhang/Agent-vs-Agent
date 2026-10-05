@@ -1,5 +1,32 @@
 # Changelog
 
+## Unreleased
+
+Development source only; no new version tag or release. See [snapshot notes](docs/release-unreleased.md) for validation and schema compatibility.
+
+### Added
+
+- **Judging transparency.** Separate independent and participant assessments, visible ballot disagreement, and an optional paired presentation-order check with fresh judge sessions, saved diagnostics and cancellation. Original votes remain the match result.
+
+- **Performance presets.** Quick, Standard and Deep show model-specific effort and time limits before starting. Available across modes, puzzles and series, with supported-setting fallbacks shown and accepted settings recorded.
+
+- **Match series.** Repeat games or formal debates with sides swapped, fresh sessions and recorded settings. Follow progress, cancel, open individual replays, and export paired scores with uncertainty and incomplete results identified.
+
+- **Crosscurrent puzzles.** Twenty verified positions for practice and paired agent comparisons, with exact grading, saved accuracy/time/illegal-move results, cancellation and JSON export.
+
+- **Crosscurrent tactical analysis.** Analyze completed cooldown games locally, jump to verified mistakes and forcing sequences, and explore legal alternative continuations beside replay. Analysis is cancellable and makes no claim of optimal long-term play.
+
+- **Crosscurrent in Gamer.** The fourth game defaults to Three Edges + cooldown: a 7x7 board with one shared neutral star, initially at D4. Place a stone, then independently shift a row or column one square, wrapping all its contents including the star. The line just shifted cannot shift again on the next turn, in either direction; placement on it and perpendicular shifts remain legal. A winning connected group must include the star and touch at least three of the four edges using orthogonal neighbors; connections do not wrap. Both players are checked after the shift, including wins given to the opponent and simultaneous-qualification draws. Moves name the placement and shifted line, such as `E3 ROW 4 RIGHT` or `A1 COL D DOWN`. The room shows each player's reached edges, circles, diamonds, the gold star, the shifted line, the new stone and winning connections, with replay and rules beside the board. A dashed outline and a label identify the resting line, which is also included in each agent's position. There are at most 48 placements. Saved Classic and Three Edges games keep their original rules and replay.
+
+### Fixed
+
+- Saved games now show a replay error and identify the last valid board when a recorded move is invalid. Unsupported Crosscurrent ruleset versions are refused instead of silently replaying under current rules. Legacy unversioned games still use Classic.
+- Crosscurrent's rules now explicitly explain that corners touch two edges and the star's own edge contacts count for both players; the mechanics are unchanged.
+- Starting a Gamer run in a narrow app panel now brings the board into view, and the board fits the available pane height as well as its width.
+- A finished game's sidebar returns to its result; growing game cards do not shift the sidebar's scroll position automatically.
+- A finished game's **New game** setup previews the selected game and board size. Go remembers its size; Crosscurrent always uses 7x7, including when an older setup preference selected a smaller board.
+- Simulated players remember the whole refused move, including Crosscurrent's shift direction.
+
 ## [0.4.6](https://github.com/adamczhang/Agent-vs-Agent/releases/tag/v0.4.6) - 2026-10-04
 
 ### Added

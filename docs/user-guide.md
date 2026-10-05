@@ -182,12 +182,62 @@ Switched at the top of the sidebar. Each mode has its own thread and its own two
     - Codex switches to its own `workspace-write` sandbox for the build, and back after.
     - A command that mentions the working folder is still refused: its effects are not confined by that path. Builds that need execution must wait for execution isolation or use an explicitly chosen Bypass mode.
   - **Limits:** 30 minutes by default, set in Options.
-- **Gamer:** the agents play chess, checkers or Go against each other, with AvA as the referee. The board takes the conversation pane's place. Beside it, set up a game (the game, Go's board size, who moves first, the time per move) and press **Start**.
-  - **The brief:** before the game, each agent gets one message in its 1:1 line and replies READY. It holds its side, the rules, the standard notation (SAN and FEN in chess, PDN in checkers, GTP coordinates and a grid in Go), what each turn looks like, and how to answer.
+- **Gamer:** the agents play chess, checkers, Go or Crosscurrent against each other, with AvA as the referee. The board takes the conversation pane's place. Beside it, set up a game (the game, Go's board size, who moves first, the time per move) and press **Start**. Crosscurrent uses 7x7 only.
+  - **The brief:** before the game, each agent gets one message in its 1:1 line and replies READY. It holds its side, the rules, the notation (SAN and FEN in chess, PDN in checkers, GTP coordinates and a grid in Go, a placement square and independently chosen shift line in Crosscurrent), what each turn looks like, and how to answer.
   - **Each turn** gives the agent to move only its opponent's last move and the position, never the legal moves or the moves so far, so each turn stays short however long the game runs. It answers `MOVE: <move>`.
   - **The referee** checks every move against the one board it keeps. An illegal answer is refused with the reason and asked again; three in a row lose. A move past its time limit loses, and `MOVE: resign` resigns. The agents never see each other's replies, only the moves.
   - **Each game is its own thread,** with fresh sessions. Step through a game with the arrows above its moves; **New game** sets up the next one.
   - **For a fair game,** keep both agents' internet off. The brief asks them not to use the web, but the switch is what turns their web tools off.
+
+### Gamer and Crosscurrent
+
+Choose **Gamer**, activate its two agents, and choose Chess, Checkers, Go or **Crosscurrent**. Select the board size when offered, the player who moves first, and the time per move. Starting briefs both agents on the rules before asking for their first move. AvA validates every answer; three illegal answers in a row, running out of time, or resigning loses the game. Finished games keep their result and move-by-move replay.
+
+Crosscurrent uses **7x7 only**, with **one shared neutral star**:
+
+1. The star starts at D4, with every other square empty. Circle moves first; Diamond moves second.
+2. Place your stone in an empty square, then independently choose any eligible row to shift left or right, or column to shift up or down, by exactly one square. The line need not contain your placement; empty or unchanged lines are legal. All contents move, including the star, opposing stones and empty squares; contents pushed off one end reappear at the other. The star cannot be replaced or captured.
+3. The exact line shifted on the preceding turn is **resting** and cannot shift this turn in either direction. You can still place on it or shift a perpendicular line. Your chosen line becomes the resting line for the next turn, even if it was empty. The board marks it with a dashed outline.
+4. After the shift, check both players. A winning connected group must contain the star and touch **at least three of the four edges**. The star connects to either player's orthogonally adjacent stones and contributes its own edge contacts to both players. Corners touch two edges. Groups may branch or bend; diagonals and wrapping do not connect. A group without the star cannot win.
+5. If exactly one player qualifies, that player wins, even if the opponent made the move. Both players qualifying is a draw. A full board without a qualifying group is also a draw. There is no passing or capturing.
+
+Moves look like `MOVE: E3 ROW 4 RIGHT`: place at E3, then shift row 4 right. `MOVE: A1 COL D DOWN` places at A1 and shifts column D down. Columns count from A on the left; **row 1 is at the top**. In the agents' text board, `O` is Circle, `X` is Diamond, `*` is the shared star, and `.` is empty. The visual board shows the star, shifted line, resting line, new stone, reached edges and winning connections. Replay follows the selected move. **New game** previews the next selection; **Back to this game** returns to the recorded game. Go keeps its size preference; Crosscurrent always uses 7x7.
+
+Older saved games keep their own rules: unversioned/Classic games use placement-linked shifts and an opposite-edge goal; Three Edges v2 permits independent shifts without cooldown. Malformed saved moves and unsupported ruleset versions show a replay error instead of silently displaying an incomplete board as the result.
+
+The star occupies one square, leaving at most **48 placements** per game. Crosscurrent's opening balance has not yet been established.
+
+### Tactical analysis and puzzles
+
+On a completed Crosscurrent cooldown game, select **Analyze game**. Analysis runs locally in a cancellable browser worker. Findings identify immediate wins, avoidable losses, already-forced losses and short forcing sequences. Select a finding to jump to that move, or **Explore** an alternative and enter further legal replies. **Return to recorded game** closes the variation; the saved moves are unchanged. A safe alternative avoids the stated immediate loss, not necessarily defeat later in the game. Longer-term positional strength is unassessed.
+
+**Puzzles** in the Gamer toolbar contains twenty verified positions, five each for immediate wins, defense, cooldown defense and forcing sequences. Enter a move to practice, or reveal one solution. Grading accepts every move that satisfies the stated goal, not just the reference answer.
+
+**Compare agents on puzzles** uses the room's configured models in fresh, separate sessions, with Ask permissions and internet off. Select one puzzle or all twenty and a time limit or performance preset. The ceiling is four model requests per position: two activation checks and two answers. Two free agent slots are required. Saved results separate accuracy, time, illegal moves and provider failures and can be exported as JSON. Cancel from the panel or Settings > Stop all; a provider failure or timeout stops the batch, and restart never resends uncertain work.
+
+### Match series
+
+Select **Series** from Gamer or Debate. Choose a game or a debate motion, the clock, and 1–10 pairs of matches. Each match uses fresh sessions. The two matches in each pair swap game colors, or debate stances and opening order; models keep their identities. Games start from the same initial board. Debate series keep the motion fixed and save the participant reviews and independent ballot.
+
+The panel shows the request ceiling and agent settings before starting. Requested and accepted settings, code fingerprints, transcripts and results are retained. Only complete pairs contribute to the score; partial matches and failures remain visible. The conservative 95% range assumes independent trial pairs and can be wide for small samples. Use **Open match replay**, **Export JSON** or **Export Markdown** from the saved results. Cancel a running series from the panel or Settings > Stop all. A restart marks unfinished work interrupted, with no automatic retry.
+
+### Performance presets
+
+The **Performance** selector is available in game setup, Prompt/Build/Debate Options, puzzles and series:
+
+| Preset | Requested effort | Time limit |
+| --- | --- | --- |
+| Quick | Low | 60 seconds |
+| Standard | Medium | 120 seconds |
+| Deep | High | 300 seconds |
+
+The clock applies per game move, debate speech or puzzle answer; in Prompt and Build it covers the whole answer. The preview shows each selected model's actual supported effort and any fallback. Starting applies the settings in fresh sessions and records the accepted configuration. Model, speed option, internet and permissions are retained for ordinary runs; puzzle/series isolation follows their stated settings. **Custom** retains current effort; editing the clock switches back to Custom. New Gamer preferences start with Quick; earlier custom choices remain available. Presets describe settings, not a guaranteed speed or quality improvement.
+
+### Understanding debate judgments
+
+The ballot separates the independent judge's assessment, each participant's self-review and the panel result. Disagreements are flagged and participant explanations can be expanded. Identities are withheld and typography normalized, but a model may still infer authorship.
+
+**Check presentation order** is an optional diagnostic with a ceiling of four model requests: two fresh sessions of the recorded judge, each with an activation check and one ballot. Both see the same blinded speeches, grouped in opposite presentation orders, with original round and speaking-order labels preserved. Results and earlier checks are saved separately and never replace the match's votes. A changed verdict may include sampling variation; matching verdicts do not establish unbiased judging. Cancel the check from its panel or Settings > Stop all. Rejudging and deleting the thread wait for the check to settle.
 
 ### Threads
 

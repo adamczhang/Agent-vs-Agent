@@ -105,7 +105,8 @@ test('a formal debate: each agent is briefed in its 1:1 line, then the judge\'s 
   await expect(ballot).toContainText(/Result: .* of 3 ballots/,{timeout:30_000});await expect(ballot).toContainText('/15');
   await expect(ballot.getByRole('table',{name:'The three ballots'}).getByRole('row')).toHaveCount(4);await expect(ballot).toContainText('Judge’s pick:');
   await expect(ballot.getByRole('row',{name:/Factual accuracy & evidence/})).toBeVisible();
-  await expect(ballot).toContainText('Judged blind: the judge didn’t know which agent argued which side');
+  await expect(ballot).toContainText('Judged with identities withheld and typography normalized');
+  await expect(ballot).toContainText('This does not guarantee that authorship cannot be inferred.');
   const run=room.service.store.run(room.service.store.pair(room.pairId).lastRunId??'');
   expect(run.judgment?.status).toBe('done');expect(run.judgment?.blind).toEqual({redacted:0});
   expect(room.service.store.db.prepare("SELECT count(*) n FROM direct_messages WHERE sender='user' AND text LIKE '%formal debate%'").get()).toEqual({n:2});

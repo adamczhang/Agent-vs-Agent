@@ -3,13 +3,13 @@ import assert from 'node:assert/strict';
 import { AvAService } from '../src/service.js';
 import { conversationConfig, SEATS, type GameSetup, type Pair, type ProviderConfig, type Run, type Seat } from '../src/types.js';
 import { gameBrief, judgeReply, movePrompt, readMove, replay } from '../src/games/referee.js';
-import { GAMES } from '../src/games/index.js';
+import { GAMES, type GameKind } from '../src/games/index.js';
 import { SimulatedParticipant, SimulationFactory } from '../src/simulation.js';
 import { TestFactory, flush } from './fakes.js';
 import { tempDir } from './temp.js';
 
 const until = async (check: () => boolean, ms = 3000) => { for (let i = 0; i < ms / 5 && !check(); i++) await new Promise(r => setTimeout(r, 5)); assert.ok(check(), 'timed out'); };
-const setup = (kind: 'chess' | 'checkers' | 'go', first: Seat = 'cli1'): GameSetup => ({ kind, first, moveMs: 300_000, maxIllegal: 3, ...(kind === 'go' ? { size: 9 } : {}) });
+const setup = (kind: GameKind, first: Seat = 'cli1'): GameSetup => ({ kind, first, moveMs: 300_000, maxIllegal: 3, ...(kind === 'go' ? { size: 9 } : {}) });
 
 test('J2 referee: each turn is short (the move, the opponent\'s last move, the position in standard notation), with no legal moves', () => {
   const chess = setup('chess');
@@ -171,5 +171,134 @@ test('J2: three illegal answers in a row lose the game; so does resigning; Go en
     await play(service, factory, pair, 'cli2', 'MOVE: E5'); await play(service, factory, pair, 'cli1', 'MOVE: pass'); await play(service, factory, pair, 'cli2', 'MOVE: pass');
     await until(() => service.store.run(goRun.id).status === 'completed');
     assert.deepEqual(service.store.run(goRun.id).game?.result, { winner: 'cli2', reason: 'both players passed', score: 'B+73.5 (Black 81, White 7.5)' });
+  } finally { await close(); }
+});
+
+test('J8: 7x7 Crosscurrent briefs, repairs, records, finishes and replays a star connection', async () => {
+  const factory = new TestFactory(), { service, pair, close } = await room(factory);
+  try {
+    const config: GameSetup = { ...setup('crosscurrent', 'cli2'), size: 7, ruleset: 'classic-v1' };
+    assert.equal(conversationConfig('Crosscurrent', { mode: 'game', game: setup('crosscurrent') }).game?.size, 7);
+    for (const size of [3, 4, 5, 9, 7.5]) await assert.rejects(service.call('run.start', { pairId: pair.id, text: 'Bad board', requestId: `crosscurrent-bad-${size}`, options: { mode: 'game', game: { ...config, size } } }));
+    const { run, briefs } = await start(service, factory, pair, 'crosscurrent', config);
+    assert.match(briefs.cli2, /Crosscurrent on a 7x7 board.*You play Circle; Circle moves first, so you start/);
+    for (const rule of [/both steps are mandatory/i, /connections do NOT wrap/, /even if the other player made the move/, /If both qualify, it is a draw/, /rows 1 to 7 start at the TOP/, /MOVE: A1 RIGHT/, /one neutral star at D4/, /group must contain the star/, /at most 48 turns/]) assert.match(briefs.cli1, rule);
+    const first = await play(service, factory, pair, 'cli2', 'MOVE: a4 right');
+    assert.match(first, /Crosscurrent 7x7\n {3}ABCDEFG\n 1 \.{7}\n[\s\S]* 4 \.{3}\*\.{3}\n[\s\S]*Circle to play\./);
+    assert.doesNotMatch(first, /legal|Rules/);
+    await play(service, factory, pair, 'cli1', 'MOVE: A1 RIGHT');
+    await play(service, factory, pair, 'cli2', 'MOVE: B4 RIGHT');
+    const retry = await play(service, factory, pair, 'cli2', 'MOVE: A4 RIGHT');
+    assert.match(retry, /^Refused: MOVE: B4 RIGHT \(it isn't empty\)/);
+    for (const move of ['A4 RIGHT', 'A4 RIGHT', 'F4 RIGHT', 'A4 RIGHT']) {
+      await play(service, factory, pair, 'cli1', 'MOVE: A1 RIGHT');
+      await play(service, factory, pair, 'cli2', `MOVE: ${move}`);
+    }
+    await until(() => service.store.run(run.id).status === 'completed');
+    const done = service.store.run(run.id), moves = service.store.messages(run.id).filter(m => m.sender !== 'user').map(m => m.text);
+    assert.deepEqual(moves, ['A4 RIGHT', 'A1 RIGHT', 'A4 RIGHT', 'A1 RIGHT', 'A4 RIGHT', 'A1 RIGHT', 'A4 RIGHT', 'A1 RIGHT', 'F4 RIGHT', 'A1 RIGHT', 'A4 RIGHT']);
+    assert.deepEqual(done.game, { illegal: { cli1: 0, cli2: 1 }, result: { winner: 'cli2', reason: 'Circle connected left to right with the star' } });
+    assert.equal(done.reason, 'game_over');
+    assert.deepEqual(GAMES.crosscurrent.outcome(replay(config, moves)), { winner: 0, reason: 'Circle connected left to right with the star' });
+    const threads = await service.call('threads.list', { pairId: pair.id }) as { threads: Array<{ runIds: string[]; verdict?: unknown }> };
+    assert.deepEqual(threads.threads.find(t => t.runIds.includes(run.id))?.verdict, { status: 'done', kind: 'game', winner: 'cli2', reason: 'Circle connected left to right with the star' });
+  } finally { await close(); }
+});
+
+test('J8: simulated Crosscurrent players finish 7x7 games without illegal moves', async () => {
+  const service = new AvAService(tempDir('ava-crosscurrent-sim-'), new SimulationFactory(1), 'simulation', { processes: async () => [], stopProcesses: async () => {} });
+  try {
+    const pair = await service.call('pair.create', { thread: 'crosscurrent-sim' }) as Pair;
+    for (const seat of SEATS) { await service.call('slot.configure', { pairId: pair.id, seat, config: { provider: 'codex', model: 'sim-model', auth: 'provider-login' } }); await service.call('slot.activate', { pairId: pair.id, seat }); }
+    for (let game = 0; game < 3; game++) {
+      const config = setup('crosscurrent');
+      const run = await service.call('run.start', { pairId: pair.id, text: 'Crosscurrent', requestId: `crosscurrent-sim-${game}`, options: { mode: 'game', paceMs: 0, game: config } }) as Run;
+      await until(() => service.store.run(run.id).status === 'completed', 10_000);
+      const done = service.store.run(run.id), moves = service.store.messages(run.id).filter(m => m.sender !== 'user').map(m => m.text);
+      assert.deepEqual(done.game?.illegal, { cli1: 0, cli2: 0 });
+      assert.equal(done.config.game?.size, 7);
+      assert.equal(done.config.game?.ruleset, 'three-edges-cooldown-v3');
+      assert.ok(moves.length > 0 && moves.length <= 48);
+      assert.ok(GAMES.crosscurrent.outcome(replay(done.config.game!, moves)));
+    }
+  } finally { await service.shutdown(); service.store.close(); }
+});
+
+test('J8 simulator: a refused Crosscurrent move keeps both its square and direction', async () => {
+  const player = new SimulatedParticipant({ provider: 'codex', model: 'sim-model', auth: 'provider-login' }, 'cli1', 1);
+  const ask = async (text: string) => (await player.request({ id: 'move', text, signal: new AbortController().signal, onStarted() {}, onEvent() {} })).text;
+  const position = 'Crosscurrent 7x7\n   ABCDEFG\n 1 .OXOXOO\n 2 XOXOXOX\n 3 OXOXOXO\n 4 XOX*XOX\n 5 OXOXOXO\n 6 XOXOXOX\n 7 OXOXOXO\nDiamond to play.\nReply with: MOVE: <move>';
+  for (const move of ['A1 LEFT', 'A1 UP', 'A1 DOWN']) await ask(`Refused: MOVE: ${move} (test refusal). 2 tries left. The position is unchanged:\n${position}`);
+  assert.equal(await ask(`Move 24, Diamond to play.\n${position}`), 'MOVE: A1 RIGHT', 'each refused direction was remembered');
+});
+
+test('J12: Three Edges v2 still briefs, repairs, permits repeated shifts, finishes and persists its ruleset', async () => {
+  const factory = new TestFactory(), { service, pair, close } = await room(factory);
+  try {
+    const { run, briefs } = await start(service, factory, pair, 'three-edges', { ...setup('crosscurrent', 'cli2'), ruleset: 'three-edges-v2' });
+    assert.equal(run.config.game?.ruleset, 'three-edges-v2');
+    for (const brief of Object.values(briefs)) for (const rule of [/independently choose ANY row/, /AT LEAST THREE/, /Two opposite edges alone do not win/, /MOVE: E3 ROW 4 RIGHT/]) assert.match(brief, rule);
+    await play(service, factory, pair, 'cli2', 'MOVE: A1 RIGHT');
+    const notationRepair = await play(service, factory, pair, 'cli2', 'MOVE: D4 ROW 1 LEFT');
+    assert.match(notationRepair, /ROW 1-7 LEFT\/RIGHT or COL A-G UP\/DOWN/);
+    const starRepair = await play(service, factory, pair, 'cli2', 'MOVE: A1 COL D DOWN');
+    assert.match(starRepair, /it isn't empty/);
+    const moves = ['A1 COL D DOWN', 'G1 COL D UP'];
+    const circle = ['D1', 'D2', 'D3', 'D5', 'D6', 'D7', 'C4', 'B4', 'A4'], diamond = ['B1', 'B2', 'B3', 'C1', 'C2', 'C3', 'F1', 'F2'];
+    for (let i = 0; i < circle.length; i++) { moves.push(`${circle[i]} COL G DOWN`); if (diamond[i]) moves.push(`${diamond[i]} COL G DOWN`); }
+    for (let i = 1; i < moves.length; i++) {
+      const prompt = await play(service, factory, pair, i % 2 ? 'cli1' : 'cli2', `MOVE: ${moves[i]}`);
+      assert.match(prompt, /Crosscurrent 7x7 Three Edges \(v2\)/);
+      if (i === 1) assert.match(prompt, / 5 \.\.\.\*\.\.\./, 'the remote first shift moved the star to D5');
+    }
+    await until(() => service.store.run(run.id).status === 'completed');
+    const done = service.store.run(run.id), recorded = service.store.messages(run.id).filter(m => m.sender !== 'user').map(m => m.text);
+    assert.deepEqual(recorded, moves);
+    assert.deepEqual(done.game, { illegal: { cli1: 0, cli2: 2 }, result: { winner: 'cli2', reason: 'Circle connected at least three edges with the star' } });
+    assert.equal(done.reason, 'game_over');
+    assert.deepEqual(GAMES.crosscurrent.outcome(replay(done.config.game!, moves)), { winner: 0, reason: 'Circle connected at least three edges with the star' });
+    const threads = await service.call('threads.list', { pairId: pair.id }) as { threads: Array<{ runIds: string[]; verdict?: unknown }> };
+    assert.deepEqual(threads.threads.find(t => t.runIds.includes(run.id))?.verdict, { status: 'done', kind: 'game', winner: 'cli2', reason: 'Circle connected at least three edges with the star' });
+  } finally { await close(); }
+});
+
+test('J12 simulator: a refused independent shift is remembered with its placement, axis and line', async () => {
+  const player = new SimulatedParticipant({ provider: 'codex', model: 'sim-model', auth: 'provider-login' }, 'cli1', 1);
+  const ask = async (text: string) => (await player.request({ id: 'move', text, signal: new AbortController().signal, onStarted() {}, onEvent() {} })).text;
+  const position = 'Crosscurrent 7x7 Three Edges (v2)\n   ABCDEFG\n 1 .OXOXOO\n 2 XOXOXOX\n 3 OXOXOXO\n 4 XOX*XOX\n 5 OXOXOXO\n 6 XOXOXOX\n 7 OXOXOXO\nDiamond to play.\nReply with: MOVE: <move>';
+  const legal = GAMES.crosscurrent.legal(GAMES.crosscurrent.fromPosition(position));
+  const allowed = 'A1 COL D DOWN';
+  for (const move of legal.filter(m => m !== allowed)) await ask(`Refused: MOVE: ${move} (test refusal). 2 tries left. The position is unchanged:\n${position}`);
+  assert.equal(await ask(`Move 24, Diamond to play.\n${position}`), `MOVE: ${allowed}`);
+});
+
+test('J14: the cooldown default briefs, repairs a resting-line violation in either direction, releases it and completes', async () => {
+  const factory = new TestFactory(), { service, pair, close } = await room(factory);
+  try {
+    const { run, briefs } = await start(service, factory, pair, 'cooldown', setup('crosscurrent', 'cli2'));
+    assert.equal(run.config.game?.ruleset, 'three-edges-cooldown-v3');
+    for (const brief of Object.values(briefs)) {
+      assert.match(brief, /Cooldown:.*cannot be shifted this turn, in either direction/);
+      assert.match(brief, /Resting line: none\./);
+    }
+    const moves = ['A1 COL D DOWN', 'G1 COL G DOWN', 'D1 COL D UP', 'B1 COL F DOWN', 'D1 COL G DOWN', 'B2 COL F DOWN', 'D2 COL G DOWN', 'B3 COL F DOWN', 'D3 COL G DOWN', 'C1 COL F DOWN', 'D5 COL G DOWN', 'C2 COL F DOWN', 'D6 COL G DOWN', 'C3 COL F DOWN', 'C4 COL G DOWN', 'F1 COL F DOWN', 'B4 COL G DOWN', 'F1 COL F DOWN', 'A4 COL G DOWN'];
+    await play(service, factory, pair, 'cli2', `MOVE: ${moves[0]}`);
+    const prompt = await play(service, factory, pair, 'cli1', 'MOVE: G1 COL D UP');
+    assert.match(prompt, /Three Edges \+ Cooldown \(v3\)/); assert.match(prompt, /Resting line: COL D\./);
+    const firstRepair = await play(service, factory, pair, 'cli1', 'MOVE: G1 COL D DOWN');
+    const secondRepair = await play(service, factory, pair, 'cli1', `MOVE: ${moves[1]}`);
+    for (const repair of [firstRepair, secondRepair]) {
+      assert.match(repair, /COL D is resting/); assert.match(repair, /Resting line: COL D\./);
+      assert.match(repair, / 5 \.\.\.\*\.\.\./, 'failed shifts did not move the star');
+    }
+    for (let i = 2; i < moves.length; i++) {
+      const prompt = await play(service, factory, pair, i % 2 ? 'cli1' : 'cli2', `MOVE: ${moves[i]}`);
+      if (i === 2) assert.match(prompt, /Resting line: COL G\./, 'column D becomes available again');
+    }
+    await until(() => service.store.run(run.id).status === 'completed');
+    const done = service.store.run(run.id), recorded = service.store.messages(run.id).filter(m => m.sender !== 'user').map(m => m.text);
+    assert.deepEqual(recorded, moves);
+    assert.deepEqual(done.game, { illegal: { cli1: 2, cli2: 0 }, result: { winner: 'cli2', reason: 'Circle connected at least three edges with the star' } });
+    assert.match(GAMES.crosscurrent.position(replay(done.config.game!, recorded)), /Resting line: COL G\./);
   } finally { await close(); }
 });

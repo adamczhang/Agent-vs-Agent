@@ -83,7 +83,7 @@ export class SimulatedParticipant implements ConfiguredParticipant {
       }
       // A game's turn (J2): a random legal move in the position the turn gives, as a player who knows the rules would.
       if (/Reply with: MOVE: <move>$/.test(request.text)) {
-        const position = request.text.split('\n').slice(1).join('\n'), last = request.text.match(/^Refused: MOVE: (\S+)/)?.[1];
+        const position = request.text.split('\n').slice(1).join('\n'), last = request.text.match(/^Refused: MOVE: (.+?) \(/)?.[1];
         if (last) { const set = this.refused.get(position) ?? new Set<string>(); set.add(last); this.refused.set(position, set); }
         const move = simulatedMove(request.text, this.refused.get(position));
         at(this.delayMs * 0.3, () => request.onEvent({ type: 'thought', text: 'Reading the position and choosing a move (simulated).' }));

@@ -1,0 +1,28 @@
+{
+  "description": "Portable board-only regression fixtures: a replay with an avoidable loss, a forced-loss position, and a forcing move. No provider or session data.",
+  "moves": [
+    "D3 COL D UP",
+    "D4 ROW 7 RIGHT",
+    "C1 COL D UP",
+    "C2 ROW 2 RIGHT",
+    "F1 COL E UP",
+    "G1 ROW 7 RIGHT",
+    "B1 COL G DOWN",
+    "F2 COL E DOWN",
+    "E1 ROW 2 LEFT",
+    "A1 ROW 7 RIGHT",
+    "G1 COL A DOWN",
+    "A1 ROW 7 RIGHT",
+    "A7 COL A DOWN"
+  ],
+  "cases": {
+    "cooldownForcingCase": {
+      "position": "Crosscurrent 7x7 Three Edges + Cooldown (v3)\n   ABCDEFG\n 1 OOOOXXX\n 2 OOXOOXX\n 3 XO.OOX*\n 4 X...OXX\n 5 XX...XX\n 6 OO.O.X.\n 7 .O.....\nResting line: ROW 3.\nCircle to play."
+    },
+    "earliestCertifiedFork": {
+      "ply": 24,
+      "before": "Crosscurrent 7x7 Three Edges + Cooldown (v3)\n   ABCDEFG\n 1 X.O.X..\n 2 XX..X..\n 3 XO.....\n 4 .O.O...\n 5 OO.O...\n 6 .OOOO.X\n 7 XX*OXXX\nResting line: COL C.\nCircle to play.",
+      "setup": "C5 COL B UP"
+    }
+  }
+}

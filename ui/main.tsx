@@ -4,6 +4,10 @@ import { DEFAULT_ROUNDS,DEFAULT_SPEECH_MINUTES,type AnswerCheck,type GameSetup,t
 import type { ThreadStats } from '../src/stats';
 import { describeQuick } from '../src/quick';
 import { GameView, gameTitle } from './game-view';
+import { PuzzlesPanel } from './puzzles-panel';
+import { SeriesPanel } from './series-panel';
+import { ProfileSelector } from './profile-selector';
+import type { RunProfile } from '../src/run-profiles';
 import { activityProjection,type ActivityLine,type Event } from './projection';
 import { RpcError,initialMode,roomId,roomLink,rpc } from './api';
 import { CommandClient } from './commands';
@@ -42,7 +46,7 @@ const SPEECH_TIMES:Array<[string,string]>=[['1','1 minute'],['2','2 minutes'],['
 const JUDGES:Array<[JudgeProvider|'off',string]>=[['claude','Claude Code (strongest model, max effort)'],['codex','Codex (strongest model, max effort)'],['off','No judge']];
 function debateSettings(setup:DebateSetup,base:PresetData):PresetData{
   const {cli1,cli2}=setup.agents;
-  return {...base,instructions:{cli1:cli1.context,cli2:cli2.context},internet:{cli1:cli1.internet,cli2:cli2.internet},stances:{cli1:cli1.stance,cli2:cli2.stance},speech:String(setup.speechMinutes??DEFAULT_SPEECH_MINUTES),stopWhen:{cli1:'',cli2:''},completion:'rounds',rounds:String(setup.rounds),minutes:'',requests:''};
+  return {...base,profile:undefined,instructions:{cli1:cli1.context,cli2:cli2.context},internet:{cli1:cli1.internet,cli2:cli2.internet},stances:{cli1:cli1.stance,cli2:cli2.stance},speech:String(setup.speechMinutes??DEFAULT_SPEECH_MINUTES),stopWhen:{cli1:'',cli2:''},completion:'rounds',rounds:String(setup.rounds),minutes:'',requests:''};
 }
 const LINE_LABEL:Record<string,string>={thought:'Thinking',tool:'Tool',output:'Writing',status:'Status'};
 // Providers whose web access is set at launch, so the internet switch restarts them (see src/providers.ts LAUNCH_TIME_WEB).
@@ -197,6 +201,8 @@ function App(){
   const [hunt,setHunt]=useState<{text:string;setup:HuntSetup}|null>(null);
   const [resourcesOpen,setResourcesOpen]=useState(false);
   const [benchmarksOpen,setBenchmarksOpen]=useState(false);
+  const [puzzlesOpen,setPuzzlesOpen]=useState(false);
+  const [seriesOpen,setSeriesOpen]=useState(false);
   const [settings,setSettings]=useState<PresetData>(DEFAULT_SETTINGS),[presets,setPresets]=useState<Preset[]>([]),[presetId,setPresetId]=useState(''),[presetName,setPresetName]=useState<string|null>(null);
   const [query,setQuery]=useState(''),[hits,setHits]=useState<{query:string;results:SearchHit[]}|null>(null),[focusedId,setFocusedId]=useState('');
   const [replay,setReplay]=useState<{threadId:string;offsets:Record<string,number>;total:number;speed:number;clock:number;tickAt:number}|null>(null);
@@ -411,13 +417,13 @@ function App(){
         // Build: each agent gets its own copy of the project (or an empty folder); the time limit is the only option.
         // A Bug hunt loaded from the library brings its planted bugs, while the message box still holds its text.
         const huntSetup=kind==='review'?saved?.hunt??(hunt&&hunt.text.trim()===text?hunt.setup:undefined):undefined;
-        const path=(saved?.project??project).trim(),options:Partial<RunConfig>={mode:'build',...(settings.minutes?{durationMs:Number(settings.minutes)*60000}:{})},build={kind,...(path?{path}:{}),...(huntSetup?{hunt:huntSetup}:{})};
+        const path=(saved?.project??project).trim(),options:Partial<RunConfig>={mode:'build',...(settings.profile?{profile:settings.profile}:{}),...(settings.minutes?{durationMs:Number(settings.minutes)*60000}:{})},build={kind,...(path?{path}:{}),...(huntSetup?{hunt:huntSetup}:{})};
         await commands.execute(JSON.stringify(['send',pair.id,text,attachments,'build',options,build]),'run.start',{pairId:pair.id,text,options,attachments,build},rpc);
       }else if(benchmark){
         // Prompt: it goes to both agents at once, as written; only a time limit applies. A loaded challenge or race brings
         // its answer key, which AvA checks the answers against.
         const check=saved?.check??(answerKey&&answerKey.text.trim()===text?answerKey.check:undefined);
-        const options:Partial<RunConfig>={mode:'benchmark',...(settings.minutes?{durationMs:Number(settings.minutes)*60000}:{}),...(check?{check}:{})};
+        const options:Partial<RunConfig>={mode:'benchmark',...(settings.profile?{profile:settings.profile}:{}),...(settings.minutes?{durationMs:Number(settings.minutes)*60000}:{}),...(check?{check}:{})};
         await commands.execute(JSON.stringify(['send',pair.id,text,attachments,'benchmark',options]),'run.start',{pairId:pair.id,text,options,attachments},rpc);
       }else{
         // A debate prompt run from the library brings its own setup; otherwise the Options apply.
@@ -426,7 +432,7 @@ function App(){
         // restart in the same session, keeping their memory).
         for(const seat of seats){const want=s.internet?.[seat];if(want!==undefined&&want!==internetOn(seat))await rpc('slot.internet',{pairId:pair.id,seat,enabled:want,requestId:crypto.randomUUID()});}
         const judge=s.judge??'claude';
-        const options:Partial<RunConfig>={mode:'conversation',opening,instructions:s.instructions,stopWhen:s.stopWhen,paceMs:Number(s.pace||0)*1000,stances:s.stances??DEFAULT_STANCES,...(judge!=='off'?{judge:{provider:judge}}:{})};
+        const options:Partial<RunConfig>={mode:'conversation',...(s.profile?{profile:s.profile}:{}),opening,instructions:s.instructions,stopWhen:s.stopWhen,paceMs:Number(s.pace||0)*1000,stances:s.stances??DEFAULT_STANCES,...(judge!=='off'?{judge:{provider:judge}}:{})};
         const speech=Number(s.speech??DEFAULT_SPEECH_MINUTES);if(speech>0)options.speechMs=speech*60_000;
         if(s.completion!=='auto')options.completion=s.completion;
         if(s.minutes){options.durationMs=Number(s.minutes)*60000;if(s.completion==='auto')options.completion='duration';}
@@ -440,9 +446,9 @@ function App(){
     });
   }
   // Gamer mode (J3): a game starts as its own run (and thread), titled with its game and players.
-  async function startGame(setup:GameSetup){
+  async function startGame(setup:GameSetup,profile?:RunProfile){
     if(!pair||!ready||busy)return;
-    const text=gameTitle(setup,{cli1:agentName('cli1'),cli2:agentName('cli2')}),options:Partial<RunConfig>={mode:'game',game:setup,paceMs:1000};
+    const text=gameTitle(setup,{cli1:agentName('cli1'),cli2:agentName('cli2')}),options:Partial<RunConfig>={mode:'game',game:setup,paceMs:1000,...(profile?{profile}:{})};
     await action('Starting',async()=>{await commands.execute(JSON.stringify(['send',pair.id,text,[],'game',options]),'run.start',{pairId:pair.id,text,options,attachments:[]},rpc);liveRef.current=true;});
   }
   function promptRunBlocked(savedMode:PromptMode,kind:'build'|'review',folder?:string){
@@ -749,7 +755,7 @@ function App(){
     const endNote=(runId:string)=>{const run=runById.get(runId);if(run&&TERMINAL.has(run.status)&&replayDone){feed.push(<div className="run-end" key={'end'+run.id}><span>{reasonText(run.reason)||statusNames[run.status]}</span><span>{duration(run.elapsedMs)}</span></div>);
       if(run.config.check)feed.push(<PromptResult key={'result'+run.id} run={run}/>);
       if(run.config.build?.planted)feed.push(<HuntResult key={'hunt'+run.id} run={run}/>);
-      if(run.config.stances)feed.push(<Ballot key={'ballot'+run.id} run={run} canJudge={isRoomThread} busy={!!busy} onJudge={()=>void action('Asking the judge',async()=>{await rpc('debate.judge',{runId:run.id});})}/>);}};
+      if(run.config.stances)feed.push(<Ballot key={'ballot'+run.id} run={run} canJudge={isRoomThread} busy={!!busy} onJudge={()=>void action('Asking the judge',async()=>{await rpc('debate.judge',{runId:run.id});})} onCheckOrder={()=>void action('Checking presentation order',async()=>{const client=new CommandClient(sessionStorage,'ava-judge-order:'+roomId+':'+run.id);await client.execute(JSON.stringify({runId:run.id}),'debate.checkOrder',{runId:run.id},rpc);})} onCancelOrder={()=>void action('Cancelling order check',async()=>{await rpc('debate.cancelOrderCheck',{runId:run.id,requestId:crypto.randomUUID()});})}/>);}};
     for(const m of messages){
       const day=m.time?new Date(m.time).toDateString():lastDay;
       if(prev&&prev.runId!==m.runId){endNote(prev.runId);prev=undefined;}
@@ -813,7 +819,7 @@ function App(){
       <div className="mode-switch" role="radiogroup" aria-label="Mode">
         {([['benchmark','Prompt',<Icon.prompt key="i"/>,'Both agents get the same prompt at the same moment; compare answers and speed'],['conversation','Debate',<Icon.chat key="i"/>,'The agents debate each other: prime each with its 1:1 line, then give them a topic'],
           ['build','Build',<Icon.build key="i"/>,'Both agents build the same app, each in its own folder, then compare them side by side. Or have both review a project'],
-          ['game','Gamer',<Icon.game key="i"/>,'The agents play a board game against each other: chess, checkers or Go, with AvA as the referee']] as const).map(([value,label,icon,tip])=>
+          ['game','Gamer',<Icon.game key="i"/>,'The agents play a board game against each other: chess, checkers, Go or Crosscurrent, with AvA as the referee']] as const).map(([value,label,icon,tip])=>
           <button key={value} role="radio" aria-checked={mode===value} title={tip} onClick={()=>switchMode(value)}>{icon}<span>{label}</span></button>)}
       </div>
       <div className={`sidebar-tools${mode==='game'?' two':''}`} role="group" aria-label="Room tools">
@@ -846,6 +852,8 @@ function App(){
     {/* Results use the same resizable upper/lower split; their prompt row stays below the apps. */}
     {resourcesOpen&&<ResourcesPanel onClose={()=>setResourcesOpen(false)}/>}
     {benchmarksOpen&&<BenchmarksPanel pair={pair} onClose={()=>setBenchmarksOpen(false)}/>}
+    {puzzlesOpen&&<PuzzlesPanel pair={pair} onClose={()=>setPuzzlesOpen(false)}/>}
+    {seriesOpen&&<SeriesPanel pair={pair} onClose={()=>setSeriesOpen(false)} onOpen={select}/>}
     <main ref={workspaceRef} className={`workspace${resultsRun?' results-mode':''}`} style={{'--split-a':`${layout.split}fr`,'--split-b':`${1-layout.split}fr`,'--split-top':`${layout.height}fr`,'--split-bottom':`${1-layout.height}fr`} as CSSProperties}>
       <section ref={agentsRef} className="agents" aria-label="Agent activity">
         {seats.flatMap((seat,i)=>{const who=identity(seat),state=paneStatus(seat),own=lines(seat),slot=pair?.slots[seat];const pane=<article key={seat} className={`agent ${seat}`} aria-label={`Agent ${i+1} activity`}>
@@ -876,6 +884,8 @@ function App(){
           <div className="channel-title">{renaming!==null&&thread?<form onSubmit={e=>{e.preventDefault();void rename(renaming);}}><input className="rename" autoFocus aria-label="Thread name" maxLength={120} placeholder={thread.runIds.length?'Name (empty uses the first prompt)':'Name this session'} value={renaming} onChange={e=>setRenaming(e.target.value)} onBlur={()=>void rename(renaming)} onKeyDown={e=>{if(e.key==='Escape'){e.stopPropagation();setRenaming(null);}}}/></form>
             :<h1 title={thread?'Double-click to rename':undefined} onDoubleClick={()=>thread&&setRenaming(thread.named?thread.title:'')}>{thread?(thread.named||!thread.empty?thread.title||'Untitled':thread.current?'New session':'Private messages only'):'Agent vs Agent'}</h1>}{subtitle&&<p className={live?'live':undefined}>{live&&<span className="live-dot"/>}{subtitle}</p>}{turnNote&&<p role="status" aria-label="Debate turn order">{turnNote}</p>}</div>
           <div className="toolbar">
+            {gaming&&<button className="button small" onClick={()=>setPuzzlesOpen(true)}>Puzzles</button>}
+            {(gaming||mode==='conversation')&&<button className="button small" onClick={()=>setSeriesOpen(true)}>Series</button>}
             {resultsRun&&<><ResultsTabs runs={buildRuns} runId={resultsRun.id} tab={resultsTab} onChange={setResults}/><span className="toolbar-divider"/></>}
             {live&&<>{!benchmarkLive&&<><button className="icon-btn" aria-label={paused?'Resume':'Pause'} title={paused?(directPending?'Waiting for a private reply':'Resume'):'Pause after the current replies'} disabled={!!busy||status!=='running'&&status!=='paused'||paused&&directPending} onClick={()=>control(paused?'resume':'pause')}>{paused?<Icon.play/>:<Icon.pause/>}</button>
               <button className="icon-btn" aria-label="Next reply" title="Next reply (while paused)" disabled={!!busy||!paused||directPending} onClick={()=>control('step')}><Icon.next/></button></>}
@@ -902,7 +912,7 @@ function App(){
 
         {panel==='stats'?<div className="feed"><StatsView stats={stats} names={names} loading={!!promptCount}/></div>
         :gaming&&!mismatch&&(gameRun||roomView&&ready)?<GameView run={gameRun} moves={gameMoves} live={!!gameRun&&live&&gameRun.id===pair?.activeRunId} speaking={pair?.activeRun?.speaking??[]} names={{cli1:agentName('cli1'),cli2:agentName('cli2')}}
-            canStart={roomView&&ready&&!live} blocked={!roomView?'Open the room’s current thread to start a game.':!ready?'Activate both agents first.':live?'A game is running.':''} busy={!!busy} onStart={startGame}/>
+            canStart={roomView&&ready&&!live} blocked={!roomView?'Open the room’s current thread to start a game.':!ready?'Activate both agents first.':live?'A game is running.':''} busy={!!busy} onStart={startGame} pairId={pair?.id} agents={{cli1:pair?.slots.cli1.config,cli2:pair?.slots.cli2.config}}/>
         :resultsRun?<ResultsView run={resultsRun} tab={resultsTab} live={live&&resultsRun.id===pair?.activeRunId} agentName={agentName} reported={{cli1:!!shown?.messages.some(m=>m.runId===resultsRun.id&&m.sender==='cli1'),cli2:!!shown?.messages.some(m=>m.runId===resultsRun.id&&m.sender==='cli2')}}/>
         :<Scroller className="feed" label="Messages" role="log" follow={!focusedId}>
           {mismatch&&thread?<div className="empty">
@@ -982,11 +992,12 @@ function App(){
 
         {optionsOpen&&isRoomThread&&<div ref={sheetRef} className="sheet" role="dialog" aria-label="Options for the next prompt">
           <header><div><h2>{benchmark?'Prompt options':building?'Build options':'Options'}</h2><p>{benchmark?'The prompt goes to both agents exactly as you write it. To give one agent extra context, use its 1:1 line first.':building?'Ask mode allows scoped file tools in each agent’s own folder and refuses command execution. Bypass explicitly trusts unrestricted tools.':live?'Used when the next prompt starts. The running conversation keeps its settings.':'Used when the next prompt starts.'}</p></div><button className="icon-btn" aria-label="Close options" onClick={()=>setOptionsOpen(false)}><Icon.close/></button></header>
+          <div className="sheet-profile"><ProfileSelector pairId={pair?.id} agents={{cli1:pair?.slots.cli1.config,cli2:pair?.slots.cli2.config}} value={settings.profile??''} unit={benchmark||building?'answer':'speech'} onChange={(profile,ms)=>setSettings(s=>({...s,profile:profile||undefined,...(ms?(benchmark||building?{minutes:String(ms/60000)}:{speech:String(ms/60000)}):{})}))}/></div>
           {benchmark||building?<div className="sheet-body">
             <div className="group limits single">
-              <label><span>Time limit (minutes)</span><input type="number" min="0.5" max="60" step="any" placeholder={building?'30':'60'} value={settings.minutes} onChange={e=>setSettings(s=>({...s,minutes:e.target.value}))}/></label>
+              <label><span>Time limit (minutes)</span><input type="number" min="0.5" max="60" step="any" placeholder={building?'30':'60'} value={settings.minutes} onChange={e=>setSettings(s=>({...s,profile:undefined,minutes:e.target.value}))}/></label>
             </div>
-            {customized&&<button className="link" onClick={()=>setSettings(s=>({...s,minutes:''}))}>Reset to default</button>}
+            {customized&&<button className="link" onClick={()=>setSettings(s=>({...s,profile:undefined,minutes:''}))}>Reset to default</button>}
             <p className="sheet-note">{building?'Each agent reports once. Work that isn’t finished when the time limit ends is cancelled; what it built stays in its folder until Clear history.':'Each agent answers once. Answers that aren’t finished when the time limit ends are cancelled.'}</p>
           </div>
           :<div className="sheet-body">
@@ -1010,11 +1021,11 @@ function App(){
               <input aria-label={`Stop condition for Agent ${SEAT_NUMBER[seat]}`} placeholder="Stop when… (optional)" maxLength={4000} value={settings.stopWhen[seat]} onChange={e=>setSettings(s=>({...s,stopWhen:{...s.stopWhen,[seat]:e.target.value}}))}/>
             </div>)}</div>
             <div className="group limits">
-              <label className="judge-pick"><span>Speech time <small>per speech, thinking included; running over forfeits it</small></span><select aria-label="Speech time" value={settings.speech??String(DEFAULT_SPEECH_MINUTES)} onChange={e=>setSettings(s=>({...s,speech:e.target.value}))}>{SPEECH_TIMES.map(([value,label])=><option key={value} value={value}>{label}</option>)}</select></label>
+              <label className="judge-pick"><span>Speech time <small>per speech, thinking included; running over forfeits it</small></span><select aria-label="Speech time" value={settings.speech??String(DEFAULT_SPEECH_MINUTES)} onChange={e=>setSettings(s=>({...s,profile:undefined,speech:e.target.value}))}>{SPEECH_TIMES.map(([value,label])=><option key={value} value={value}>{label}</option>)}</select></label>
               <label className="judge-pick"><span>Judge</span><select aria-label="Judge" value={settings.judge??'claude'} onChange={e=>setSettings(s=>({...s,judge:e.target.value as PresetData['judge']}))}>{JUDGES.map(([value,label])=><option key={value} value={value}>{label}</option>)}</select></label>
               <label><span>Ends</span><select value={settings.completion} onChange={e=>setSettings(s=>({...s,completion:e.target.value as PresetData['completion']}))}><option value="auto">Default</option><option value="rounds">After the rounds</option><option value="duration">At the time limit</option><option value="either">When either agent is done</option><option value="both">When both agents are done</option></select></label>
               <label><span>Rounds</span><input type="number" min="1" max="100" step="1" placeholder={String(DEFAULT_ROUNDS)} disabled={settings.completion!=='rounds'&&settings.completion!=='auto'} value={settings.rounds??''} onChange={e=>setSettings(s=>({...s,rounds:e.target.value}))}/></label>
-              <label><span>Minutes</span><input type="number" min="0.01" max="1440" step="any" placeholder="From prompt" value={settings.minutes} onChange={e=>setSettings(s=>({...s,minutes:e.target.value}))}/></label>
+              <label><span>Minutes</span><input type="number" min="0.01" max="1440" step="any" placeholder="From prompt" value={settings.minutes} onChange={e=>setSettings(s=>({...s,profile:undefined,minutes:e.target.value}))}/></label>
               <label><span>Requests</span><input type="number" min="2" max="10000" placeholder="Automatic" value={settings.requests} onChange={e=>setSettings(s=>({...s,requests:e.target.value}))}/></label>
               <label><span>Pace (s)</span><input type="number" min="0" max="60" value={settings.pace} onChange={e=>setSettings(s=>({...s,pace:e.target.value}))}/></label>
             </div>

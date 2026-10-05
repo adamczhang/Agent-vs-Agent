@@ -1,4 +1,5 @@
-import type { GameKind } from './games/engine.js';
+import { CROSSCURRENT_DEFAULT_RULESET, CROSSCURRENT_RULESETS, GAME_BOARDS, GAME_KINDS, type CrosscurrentRuleset, type GameKind } from './games/engine.js';
+import type { RunProfile } from './run-profiles.js';
 export const SEATS = ['cli1', 'cli2'] as const;
 export type Seat = typeof SEATS[number];
 // vercel: the Vercel AI Gateway (hundreds of models from many makers), driven by the Codex agent; see src/gateway.ts.
@@ -36,6 +37,7 @@ export type RoomMode = NonNullable<RunConfig['mode']>;
 // text files are inlined into the prompt.
 export interface AttachmentRef { id: string; name: string; mediaType: string; size: number; kind: 'image' | 'text' }
 export interface RunConfig {
+  profile?: RunProfile;
   // conversation (shown as Debate): the agents talk to each other. benchmark: both get the same prompt at the same
   // moment, each answers once in plain text, and the run ends. build: like a benchmark, but each agent works in its own
   // copy of a project and may read, edit and run commands there (absent on older runs: conversation). game (shown as
@@ -89,9 +91,9 @@ export interface Run {
   // A Gamer run (J2): each agent's illegal answers so far, and the result once the game is over.
   game?: GameRecord;
 }
-// A game's setup (J2): which game, the board size (Go), which agent moves first (White in chess, Black in checkers and Go),
+// A game's setup (J2): which game, the board size (Go or Crosscurrent), which agent moves first,
 // the time for each move, and how many illegal answers in a row an agent may give before it loses.
-export interface GameSetup { kind: GameKind; size?: number; first: Seat; moveMs: number; maxIllegal: number }
+export interface GameSetup { kind: GameKind; size?: number; ruleset?: CrosscurrentRuleset; first: Seat; moveMs: number; maxIllegal: number }
 export interface GameRecord { illegal: Record<Seat, number>; result?: { winner?: Seat; reason: string; score?: string } }
 export const GAME_DEFAULTS = { moveMs: 300_000, maxIllegal: 3 };
 // A bug planted in every copy of a scored bug hunt (H2): an exact piece of the original code (find), what it becomes
@@ -139,7 +141,15 @@ export interface Judgment {
   blind?: { redacted: number };
   // Three ballots (G16): each debater's own scoring of the debate, beside the judge's. The side most ballots name wins.
   panel?: Partial<Record<Seat, PanelBallot>>;
+  orderChecks?: JudgmentOrderCheck[];
   error?: string;
+}
+export interface JudgmentOrderCheck {
+  id: string; status: 'running' | 'done' | 'failed' | 'cancelled' | 'interrupted'; judge: ProviderConfig;
+  startedAt: string; finishedAt?: string; requestCeiling: number; requestsAdmitted: number; originalWinner?: Seat;
+  transcriptFingerprint: string;
+  ballots: Array<{ first: Seat; winner: Seat; scores: Record<Seat, Record<JudgeCategory, number>>; reason: string }>;
+  consistent?: boolean; error?: string;
 }
 // A debater's own ballot (G16), asked through its 1:1 line once the debate is over.
 export interface PanelBallot { status: 'reviewing' | 'done' | 'failed'; scores?: Record<Seat, Record<JudgeCategory, number>>; winner?: Seat; reason?: string; error?: string }
@@ -249,12 +259,14 @@ export function conversationConfig(topic: string, overrides: Partial<RunConfig> 
 // for it to act first. Requests cover the longest game and an illegal answer for every move.
 function gameConfig(topic: string, overrides: Partial<RunConfig>): RunConfig {
   const game = overrides.game;
-  if (!game || !['chess', 'checkers', 'go'].includes(game.kind)) throw new AvAError('INVALID_CONFIG', 'Choose a game: chess, checkers or Go.');
-  if (game.kind === 'go' ? ![9, 13, 19].includes(game.size ?? 9) : game.size !== undefined) throw new AvAError('INVALID_CONFIG', 'Go is played on 9x9, 13x13 or 19x19; other games have one board.');
+  if (!game || !GAME_KINDS.includes(game.kind)) throw new AvAError('INVALID_CONFIG', 'Choose a game: chess, checkers, Go or Crosscurrent.');
+  const board = GAME_BOARDS[game.kind];
+  if (game.ruleset !== undefined && (game.kind !== 'crosscurrent' || !CROSSCURRENT_RULESETS.includes(game.ruleset))) throw new AvAError('INVALID_CONFIG', 'Choose a supported Crosscurrent ruleset; other games do not use this setting.');
+  if (board ? !board.sizes.includes(game.size ?? board.defaultSize) : game.size !== undefined) throw new AvAError('INVALID_CONFIG', 'Go is played on 9x9, 13x13 or 19x19; Crosscurrent on 7x7 only; chess and checkers each have one board.');
   if (!Number.isFinite(game.moveMs) || game.moveMs < 30_000 || game.moveMs > 1_800_000) throw new AvAError('INVALID_CONFIG', 'A move time limit must be from 30 seconds to 30 minutes.');
   if (!Number.isInteger(game.maxIllegal) || game.maxIllegal < 1 || game.maxIllegal > 10) throw new AvAError('INVALID_CONFIG', 'Allow 1 to 10 illegal answers before a game is lost.');
   if (!topic.trim() || topic.length > 16000) throw new AvAError('INVALID_CONFIG', 'Enter a topic of 1–16000 characters.');
-  return { topic, instructions: { cli1: '', cli2: '' }, stopWhen: { cli1: '', cli2: '' }, completion: 'duration', durationMs: 28_800_000, maxRequests: 4000,
-    perTurnMs: Math.min(3_600_000, game.moveMs + 60_000), paceMs: overrides.paceMs ?? 1000, mode: 'game', game: { ...game, ...(game.kind === 'go' ? { size: game.size ?? 9 } : {}) },
+  return { topic, ...(overrides.profile ? { profile: overrides.profile } : {}), instructions: { cli1: '', cli2: '' }, stopWhen: { cli1: '', cli2: '' }, completion: 'duration', durationMs: 28_800_000, maxRequests: 4000,
+    perTurnMs: Math.min(3_600_000, game.moveMs + 60_000), paceMs: overrides.paceMs ?? 1000, mode: 'game', game: { ...game, ...(board ? { size: game.size ?? board.defaultSize } : {}), ...(game.kind === 'crosscurrent' ? { ruleset: game.ruleset ?? CROSSCURRENT_DEFAULT_RULESET } : {}) },
     opening: game.first, lead: other(game.first) };
 }

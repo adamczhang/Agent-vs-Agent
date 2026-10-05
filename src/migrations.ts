@@ -40,5 +40,9 @@ export const MIGRATIONS: ReadonlyArray<(db: DatabaseSync) => void> = [
     CREATE TABLE IF NOT EXISTS bench_attempts(id TEXT PRIMARY KEY, job_id TEXT NOT NULL REFERENCES bench_jobs(id), task_id TEXT NOT NULL, task_version INTEGER NOT NULL, digest TEXT NOT NULL, provider TEXT NOT NULL, model TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, data TEXT NOT NULL);
     CREATE INDEX IF NOT EXISTS bench_attempts_job ON bench_attempts(job_id);
     CREATE INDEX IF NOT EXISTS bench_attempts_task ON bench_attempts(task_id,task_version,digest);`),
+  // 10: puzzle comparisons persist independently of conversation history, like benchmark jobs.
+  db => db.exec('CREATE TABLE IF NOT EXISTS puzzle_jobs(id TEXT PRIMARY KEY, data TEXT NOT NULL)'),
+  // 11: paired game/debate experiments retain settings, outcomes and transcripts.
+  db => db.exec('CREATE TABLE IF NOT EXISTS series_jobs(id TEXT PRIMARY KEY, data TEXT NOT NULL)'),
 ];
 export const SCHEMA_VERSION = MIGRATIONS.length;

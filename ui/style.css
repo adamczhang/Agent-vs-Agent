@@ -676,7 +676,7 @@ kbd { font: 12px var(--mono); background: var(--field); border-radius: 5px; padd
 
 /* Gamer mode (J3): the board fills the pane beside a column of cards. Quiet slate squares for chess and checkers, warm
    wood for Go, the last move in the room's blue. */
-.game-view { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 300px; grid-template-rows: minmax(0, 1fr); gap: 24px; padding: 18px 28px 22px; }
+.game-view { flex: 1; min-height: 0; container-type: size; display: grid; grid-template-columns: minmax(0, 1fr) 300px; grid-template-rows: minmax(0, 1fr); gap: 24px; padding: 18px 28px 22px; }
 .game-stage { container-type: size; min-width: 0; min-height: 0; display: flex; align-items: flex-start; justify-content: center; }
 .board { display: block; width: min(100cqw, 100cqh, 720px); height: auto; aspect-ratio: 1; border-radius: 10px; box-shadow: 0 0 0 1px var(--line), 0 6px 24px rgba(0, 0, 0, .07); }
 .board text { font-family: var(--font); user-select: none; }
@@ -711,9 +711,36 @@ kbd { font: 12px var(--mono); background: var(--field); border-radius: 5px; padd
 .stone.white { fill: #f8f8f6; stroke: #8f8475; stroke-width: .8; }
 .stone .shadow { fill: rgba(0, 0, 0, .22); stroke: none; }
 .stone .last-ring { fill: none; stroke: #3b82f6; stroke-width: 2.4; }
-.game-side { min-height: 0; overflow-y: auto; overscroll-behavior: contain; display: flex; flex-direction: column; gap: 12px; padding: 1px; }
+.game-side { min-height: 0; overflow-y: auto; overflow-anchor: none; overscroll-behavior: contain; display: flex; flex-direction: column; gap: 12px; padding: 1px; }
 .game-card { display: flex; flex-direction: column; gap: 10px; padding: 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg); }
 .game-card h3 { margin: 0; font-size: 13px; font-weight: 600; }
+.game-replay-error { overflow-wrap: anywhere; }
+.analysis-finding { display: flex; flex-direction: column; gap: 8px; padding-top: 12px; border-top: 1px solid var(--line); }
+.analysis-finding .link { text-align: left; }
+.game-card form { display: flex; flex-direction: column; gap: 8px; }
+.game-card form label { display: flex; flex-direction: column; gap: 6px; }
+.puzzles-panel { width: min(1000px, 96vw); }
+.puzzle-layout { display: grid; grid-template-columns: minmax(240px, 1fr) minmax(220px, 1fr); gap: 24px; margin: 16px 0; }
+.puzzle-layout .board { width: 100%; height: auto; }
+.puzzle-layout section, .puzzle-comparison, .puzzle-layout form { display: flex; flex-direction: column; gap: 12px; }
+.puzzles-panel table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 12px; }
+.puzzles-panel td, .puzzles-panel th { text-align: left; padding: 8px; border-bottom: 1px solid var(--line); }
+.puzzles-panel pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+.series-panel { width: min(900px, 96vw); }
+.series-setup { display: flex; flex-direction: column; gap: 12px; margin-bottom: 20px; }
+.series-panel label { display: flex; gap: 8px; align-items: center; }
+.series-panel textarea { width: 100%; min-height: 70px; }
+.series-panel pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
+.series-panel li { margin: 10px 0; }
+.series-panel li .link { display: block; margin-top: 4px; }
+.profile-selector { display: flex; flex-direction: column; gap: 6px; padding: 10px; border: 1px solid var(--line); border-radius: 8px; }
+.profile-selector label { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.sheet-profile { padding: 0 20px 12px; }
+.ballot-agreement { padding: 10px; background: var(--field); border-radius: 8px; font-size: 13px; }
+.participant-reviews, .order-check { margin: 16px 0; padding-top: 14px; border-top: 1px solid var(--line); }
+.participant-reviews p, .order-check p { font-size: 13px; line-height: 1.5; }
+.order-check details, .participant-reviews details { margin: 10px 0; }
+@media (max-width: 650px) { .puzzle-layout { grid-template-columns: 1fr; } }
 .game-card > header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .game-card > header .link { font-size: 12px; color: var(--text-2); }
 .game-new { display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
@@ -721,6 +748,7 @@ kbd { font: 12px var(--mono); background: var(--field); border-radius: 5px; padd
 .game-field { display: flex; flex-direction: column; gap: 5px; }
 .game-field > span { font-size: 11.5px; font-weight: 500; color: var(--text-3); }
 .game-field .segmented { display: flex; }
+.game-field .game-kinds { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .game-field .segmented button { flex: 1; min-width: 0; display: inline-flex; align-items: center; justify-content: center; gap: 5px; padding: 5px 6px; overflow: hidden; font-size: 12.5px; white-space: nowrap; text-overflow: ellipsis; }
 .segmented button[aria-checked="true"] { background: var(--bg); color: var(--text); box-shadow: 0 1px 2px rgba(0, 0, 0, .12); }
 .game-setup .button.primary { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 34px; margin-top: 2px; }
@@ -733,6 +761,34 @@ kbd { font: 12px var(--mono); background: var(--field); border-radius: 5px; padd
 .game-token.white { background: #fff; box-shadow: inset 0 0 0 1.5px #1d1d1f; }
 .game-token.black { background: #2b2d31; }
 .game-token.chess { border-radius: 5px; }
+.game-token.crosscurrent.circle { background: var(--cli1); }
+.game-token.crosscurrent.diamond { background: var(--cli2); border-radius: 0; clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%); }
+.game-token.crosscurrent.star { background: #d9a520; border-radius: 0; clip-path: polygon(50% 0, 62% 35%, 100% 38%, 70% 61%, 80% 100%, 50% 77%, 20% 100%, 30% 61%, 0 38%, 38% 35%); }
+.crosscurrent-board .crosscurrent-star { fill: #e4b737; stroke: #805600; stroke-width: 1.5; stroke-linejoin: round; }
+.crosscurrent-board .surface { fill: var(--bg); }
+.crosscurrent-board .cell { fill: var(--bg); stroke: var(--line-strong); stroke-width: 1; }
+.crosscurrent-board .cell.shifted { fill: var(--focus-soft); }
+.crosscurrent-board .cooldown-outline { fill: none; stroke: var(--text-2); stroke-width: 1.5; stroke-dasharray: 5 4; pointer-events: none; }
+.crosscurrent-cooldown { padding: 6px 8px; border: 1px dashed var(--line-strong); border-radius: 5px; }
+.crosscurrent-board .crosscurrent-coord { fill: var(--text-2); font-size: 16px; font-weight: 500; }
+.crosscurrent-stone.circle { fill: var(--cli1); }
+.crosscurrent-stone.diamond { fill: var(--cli2); }
+.crosscurrent-stone .new-stone { fill: none; stroke: var(--text); stroke-width: 1.5; }
+.crosscurrent-board .connection { fill: none; stroke-width: 4; stroke-linecap: round; stroke-linejoin: round; }
+.crosscurrent-board .connection.circle { stroke: var(--cli1); }
+.crosscurrent-board .connection.diamond { stroke: var(--cli2); }
+.crosscurrent-legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 12px; color: var(--text-2); }
+.crosscurrent-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.crosscurrent-legend .game-token { width: 14px; height: 14px; }
+.crosscurrent-progress-player { display: grid; gap: 6px; margin-top: 10px; font-size: 12px; }
+.crosscurrent-progress-player > div:first-child { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.crosscurrent-progress-player > div:first-child span { display: inline-flex; align-items: center; gap: 6px; }
+.crosscurrent-progress-player small { color: var(--text-2); }
+.crosscurrent-progress .game-token { width: 12px; height: 12px; }
+.crosscurrent-edges { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; }
+.crosscurrent-edge { border: 1px solid var(--line-strong); border-radius: 5px; padding: 4px 2px; text-align: center; color: var(--text-3); }
+.crosscurrent-progress-player.circle .reached { color: var(--cli1-ink); background: var(--cli1-soft); border-color: var(--cli1); }
+.crosscurrent-progress-player.diamond .reached { color: var(--cli2-ink); background: var(--cli2-soft); border-color: var(--cli2); }
 .game-player-name { flex: 1; min-width: 0; overflow: hidden; font-size: 13px; font-weight: 550; white-space: nowrap; text-overflow: ellipsis; }
 .game-player-name .seat-dot { display: inline-block; margin-right: 6px; vertical-align: 1px; }
 .game-player-name small { display: block; font-size: 11.5px; font-weight: 400; color: var(--text-3); }
@@ -746,13 +802,13 @@ kbd { font: 12px var(--mono); background: var(--field); border-radius: 5px; padd
 .game-moves { flex: 1; min-height: 0; margin: 0; padding: 0; overflow-y: auto; list-style: none; font: 12.5px/1.5 var(--mono); font-variant-numeric: tabular-nums; }
 .game-moves li { display: grid; grid-template-columns: 3.5ch minmax(0, 1fr) minmax(0, 1fr); gap: 4px; }
 .game-move-no { padding: 2px 0; text-align: right; color: var(--text-3); }
-.game-moves button { padding: 2px 6px; border: 0; border-radius: 5px; background: none; color: var(--text); font: inherit; text-align: left; }
+.game-moves button { padding: 2px 6px; border: 0; border-radius: 5px; background: none; color: var(--text); font: inherit; text-align: left; overflow-wrap: anywhere; }
 .game-moves button:hover { background: var(--hover); }
 .game-moves button[aria-current="true"] { background: var(--cli1-soft); color: var(--cli1-ink); }
 @media (max-width: 900px) {
   .game-view { display: block; overflow-y: auto; }
-  .game-stage { container-type: inline-size; margin-bottom: 16px; }
-  .board { width: min(100cqw, 560px); }
+  .game-stage { container-type: normal; margin-bottom: 16px; }
+  .board { width: min(100%, 100cqh, 560px); }
   .game-side { overflow: visible; }
   .game-moves { max-height: 280px; }
 }

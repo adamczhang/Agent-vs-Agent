@@ -1,4 +1,5 @@
 import type { QuickPlan } from '../src/quick.js';
+import type { RunProfile } from '../src/run-profiles.js';
 import type { AgentUsage, AnswerCheck, GameRecord, GameSetup, HuntResult as HuntResultData, JudgeProvider, Judgment, Pair, PromptResult as PromptResultData, ProviderConfig, RoomMessage, Seat, Stance } from '../src/types.js';
 
 // Shapes returned by the service's thread calls (src/service.ts threads.list / thread.get).
@@ -21,6 +22,7 @@ export interface ThreadView { thread: ThreadSummary | null; runs: ThreadRun[]; m
 export interface SearchHit { runId: string; threadId: string; messageId: string; sender: string; snippet: string; runTopic: string; runCreatedAt: string | null; participants: Record<Seat, ProviderConfig> | null; judgment?: Judgment | null; result?: PromptResultData | null }
 export type PairView = Pair & { connected: Record<Seat, boolean>; images?: Record<Seat, boolean>; usage?: Record<Seat, AgentUsage | null>; mode: 'live' | 'simulation'; version?: string; quick?: Record<Seat, QuickPlan>; activeRun: { id: string; status: string; reason: string | null; mode?: Mode; nextSeat?: Seat; speaking?: Seat[]; queued?: number } | null };
 export interface PresetData { instructions: Record<Seat, string>; stopWhen: Record<Seat, string>; completion: 'duration' | 'either' | 'both' | 'rounds' | 'auto'; rounds?: string;
+  profile?: RunProfile;
   // Internet for each agent, set by a debate prompt or in Options; applied through the agent's switch when the debate
   // starts. Absent: the switch stays as it is.
   internet?: Partial<Record<Seat, boolean>>;

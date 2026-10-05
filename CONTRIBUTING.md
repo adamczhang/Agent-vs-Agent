@@ -85,7 +85,9 @@ Describe the trigger, the previous behavior and the resulting behavior, then lis
 
 The maintainer checkout keeps private development history. Each completed roadmap step gets one local commit, `<ID>: <title>`, using the existing author identity. Release attribution is Adam Zhang; omit tool co-author trailers and generated-by notices.
 
-The maintainer-only `scripts/export-release.ts` exports product files from **committed HEAD** to `public`, removes private evidence and machine-specific data settings, scans for private paths and secrets, and makes an annotated version tag. This script is deliberately absent from the public source checkout.
+The maintainer-only `scripts/export-release.ts` exports product files from **committed HEAD** to `public`, removes private evidence and machine-specific data settings, and scans for private paths and secrets. Its release mode makes an annotated version tag; `--snapshot` makes an unreleased commit without a tag. The script is deliberately absent from the public source checkout. Tests must use checked-in portable fixtures, not files under the excluded `pilot-evidence/` directory.
+
+To publish development source without a release, update `CHANGELOG.md` under **Unreleased**, [unreleased source notes](docs/release-unreleased.md), and the user guide. Keep package/manifests and existing tags unchanged. Commit locally, run `node --import tsx scripts/export-release.ts --snapshot`, inspect and validate a clean checkout of `public`, then push only `git -c push.followTags=false push origin public:main`. Verify hosted CI. Do not create a tag, GitHub release or release assets, and do not install into real host profiles.
 
 1. Complete the roadmap acceptance gate. A quota limit or early stop is not a passing timed test.
 2. For a new release, bump `package.json`, the lockfile root entries, and both plugin manifests. Update the changelog and release notes, verify offline, and commit.
